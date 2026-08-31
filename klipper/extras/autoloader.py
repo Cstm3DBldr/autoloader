@@ -388,6 +388,11 @@ class Autoloader:
                                 i, self.STATE_EMPTY,
                                 "entry sensor clear for %.1fs (runout)"
                                 % self.runout_timeout_seconds)
+                            # The filament that profile described is gone. Clearing it
+                            # lets the logo fall back to the breathing white that means
+                            # "nothing here", and stops the next load inheriting the old
+                            # brand, colour and temperatures.
+                            self._clear_material_profile(i)
         except Exception:
             logging.exception(
                 "Autoloader: state monitor tick failed (suppressed)")

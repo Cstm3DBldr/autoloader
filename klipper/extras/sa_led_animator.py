@@ -10,7 +10,9 @@
 #   2. Temp-aware active-tool nozzle — when the printer is NOT
 #      actively printing (idle, ready, or paused), the active tool's
 #      nozzle pair (INDEX=1,2) reflects hotend warmth as a safety
-#      indicator: red-orange while still warm, dim blue once cooled.
+#      indicator: red-orange while still warm, blue once cooled. The
+#      cooled colour is brighter than the docked tools' parked_cold so
+#      the mounted tool stays identifiable.
 #      The "warm" signal is read from the toolhead's heater_fan state
 #      (which Klipper already manages with a >= 50 C threshold) so we
 #      don't duplicate the threshold logic. This keeps the nozzle's
@@ -239,8 +241,11 @@ class SaLedAnimator:
                                 and active_tool >= 0)
         if animator_owns_nozzle:
             warm = self._is_tool_warm(active_tool, eventtime)
+            # 'active_cold' rather than 'parked_cold': same hue, brighter, so
+            # the mounted tool is still tellable from the docked ones when
+            # every hotend happens to be cold.
             color = self._get_nozzle_color(
-                'heating' if warm else 'parked_cold')
+                'heating' if warm else 'active_cold')
             if color is not None:
                 for tool_n, _, helper in self._led_chains:
                     if tool_n == active_tool:
