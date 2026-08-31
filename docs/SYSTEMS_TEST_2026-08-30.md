@@ -211,3 +211,53 @@ edge of the display and cannot be read.
 The encoder housings are candidates for a reprint, possibly a small redesign
 to make them serviceable — the load/unload failure that prompted this test was
 a dirty sensor that was awkward to reach.
+
+---
+
+# Round 3 — LED behaviour
+
+## Hardware fault: T2 logo LED, blue element dead
+
+The Voron logo LED on toolhead 2 renders yellow where the other toolheads
+render white. Confirmed by comparison rather than inference:
+
+- Paths 0, 1 and 2 were all in state `empty`, so `sa_led_animator` was driving
+  all three logos with identical equal-RGB breathing white values
+- T0 and T1 showed white, T2 showed yellow
+
+White minus blue is yellow. Same command, same code path, one LED behaving
+differently, so this is the LED, not the software.
+
+An earlier test in this session set all three of T2's LEDs to blue and the
+result looked correct, which pointed the wrong way. The nozzle LEDs are much
+brighter than the logo and were what got read. Isolating the logo is what
+settled it — and note that with a path in `empty` state the animator
+overwrites the logo at 15 Hz, so a bare `SET_LED` on index 3 will not appear
+to stick.
+
+Index mapping on T2 was verified correct along the way: index 1 is the left
+nozzle, 2 the right nozzle, 3 the logo, matching T0.
+
+**Action:** replace the logo LED on T2. Until then that toolhead shows every
+filament colour shifted toward yellow, and cannot display blue at all.
+
+## Fixed this round
+
+- **Logos keyed on stored colour rather than path state.** `_SA_LED_FROM_STATE`
+  chose PARKED whenever a colour hex existed, so an emptied path kept showing
+  the colour of whatever it last held. Now keyed on `path_states`.
+- **New `_SA_LED_STAGED`** for `partial` — filament colour at 25 %, so a path
+  holding filament that was never driven to the nozzle reads as neither
+  loaded nor empty.
+- **Active tool was indistinguishable from parked tools.** `parked_cold` was
+  introduced for docked tools but the animator also used it for a mounted
+  tool with a cold hotend. Added `active_cold`, same hue and brighter.
+- **Profile now cleared on runout.** A path that empties has its brand,
+  material, product line, colour name, hex and type wiped, in memory and in
+  `variables.cfg`. Answers the "does anything clear these automatically"
+  question: it does now. It also stops the next load silently inheriting the
+  previous filament's brand and temperatures.
+- **Runout monitor could not clear `partial`,** and **wrongly promoted to
+  `loaded`** on nothing more than the entry sensor. Both corrected; promotion
+  now belongs to the load and unload sequences, which are the only things
+  that know how far the filament actually travelled.
