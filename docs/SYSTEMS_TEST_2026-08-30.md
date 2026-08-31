@@ -261,3 +261,104 @@ filament colour shifted toward yellow, and cannot display blue at all.
   `loaded`** on nothing more than the entry sensor. Both corrected; promotion
   now belongs to the load and unload sequences, which are the only things
   that know how far the filament actually travelled.
+
+---
+
+# Machine status — end of session
+
+| | |
+|---|---|
+| active tool | T5 |
+| `homed_axes` | `''` — not homed |
+| selector | at 122.46 mm, `current_path` 5, servo disengaged |
+| `cal_state` | empty |
+| print state | standby |
+
+| T | entry | extr | tool | state | material | colour |
+|---|---|---|---|---|---|---|
+| 0 | – | – | – | empty | – | – |
+| 1 | – | – | – | empty | – | – |
+| 2 | – | – | – | empty | – | – |
+| 3 | Y | – | – | partial | PLA | #27AE60 |
+| 4 | Y | – | – | partial | PLA | #DABCC8 |
+| 5 | Y | – | – | partial | PLA | #DABCC8 |
+
+Paths 3–5 hold filament parked at the drive gear. Paths 0–2 are empty and
+their profiles were cleared automatically by the runout handling added today.
+
+---
+
+# Spec — clearing a stub from a toolhead
+
+Not built. Recorded from discussion so the reasoning is not lost.
+
+## The problem
+
+A path can end up with filament past the extruder gears and nothing at the
+entry: a cut or snapped length left behind. That was the state of paths 0–3
+at the start of today. `do_load` refuses it with "possible broken filament
+piece in tube", which is safe but leaves the user to clear it by hand.
+
+## Geometry, and why it constrains the design
+
+```
+bowden → [extruder_sensor] → EXTRUDER GEARS → [toolhead_sensor] → hotend → nozzle
+```
+
+`extruder_sensor` sits before the gears, `toolhead_sensor` after them. The
+gears are between the two.
+
+This is the constraint: the extruder can only push a stub while the gears
+still grip it. Once the tail passes the gears nothing can move it, and
+`nozzle_distance` is 50 mm, so up to 50 mm of scrap can strand below the
+gears with no way to drive it out.
+
+Which is why pushing the old scrap through with the *new* filament is the
+only method that reliably clears the whole thing. It is also what Bambu
+machines do for an unfinished or broken roll.
+
+## Proposed, in two parts
+
+**1. Teach `do_load` to handle a stub instead of refusing.** When a new roll
+is present at the entry, park it at the encoder and load normally — the
+incoming filament drives the scrap ahead of it — then purge the extra needed
+to flush it out. Most of this exists already in `_fill_and_purge`.
+
+**2. `SA_PURGE_CLEAR TOOL=N` for when there is no new roll.** Heat to the
+last-loaded material's temperature, extrude in chunks, stop once
+`toolhead_sensor` clears plus a margin. Its limitation — that it can only
+clear what the gears still hold — should be stated in the response text
+rather than discovered.
+
+## Detecting broken filament
+
+Engage the drive, extrude with the extruder, watch the encoder. Filament
+continuous from roll to nozzle turns the encoder; filament broken somewhere
+in the bowden means the extruder moves its own stub while the encoder sees
+nothing.
+
+Worth having because it separates two faults that look alike from the
+sensors: a break stalls the encoder, a clog stalls the extruder.
+
+## Aborting it — the part that needs designing
+
+Klipper holds the gcode mutex for the whole of a command handler, so nothing
+can interrupt a running purge loop. An `SA_ABORT` typed during one simply
+queues behind it. `CLAUDE.md` already records this constraint: no blocking
+`reactor.pause()` poll loops, use the state machine in `SACalibration`.
+
+Options:
+
+- **State machine.** Each chunk is its own gcode command, rescheduled through
+  `UPDATE_DELAYED_GCODE`. The mutex is free between chunks so an abort lands.
+  Correct, consistent with the existing calibration pattern, and the bulk of
+  the work.
+- **Self-limiting only.** Hard cap on total extrusion plus stall detection —
+  extrude a chunk, and if neither the encoder nor the sensors change, stop.
+  No user abort short of `M112`.
+- **Physical button.** A `[gcode_button]` setting the abort flag. Composes
+  with either of the above.
+
+The state machine is the one to build, given the requirement is specifically
+to stop it mid-process. A purge into a clogged nozzle or a failed extruder is
+exactly when you want a stop that is not an emergency shutdown.
