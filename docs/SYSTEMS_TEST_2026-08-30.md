@@ -106,9 +106,6 @@ That guard exists precisely for this case and fired as designed.
   toolhead holding an orphaned stub is invisible to path state.
 - **Stale docstring.** `park_filament()` says "Called by SA_PARK_FILAMENT";
   the registered command is `SA_PARK`.
-- **Repo drift on the printer.** `filaments/brands/` moved to
-  `filaments/brands.bak/`, leaving only `zyltech.cfg` tracked. The deployed
-  `filament_profiles/` still has all 15 brands, so no runtime effect.
 - **Mainsail v2.14.0** on the printer vs v2.19.0 upstream. Relevant to the
   custom-panel plugin work, which targets 2.19.
 
@@ -242,6 +239,27 @@ nozzle, 2 the right nozzle, 3 the logo, matching T0.
 filament colour shifted toward yellow, and cannot display blue at all.
 
 ## Fixed this round
+
+- **Missing filament brands — this was the "missing Polymaker product lines"
+  fault, and the earlier "no runtime effect" call in this document was
+  wrong.** `filaments/brands/` on the printer had 14 of its 15 brand cfgs
+  deleted from the working tree and copied aside into `filaments/brands.bak/`,
+  leaving only `zyltech.cfg`. That was recorded here as harmless repo drift on
+  the reasoning that `filament_profiles/` still held every brand — but
+  `sa_moonraker.py` sets `_BRANDS_DIR` to `~/autoloader/filaments/brands`, so
+  the catalog the UI reads *is* that directory. `GET /machine/autoloader/brands`
+  was returning exactly one brand, which is why Polymaker had no product lines
+  to offer: it was not in the list at all. The stored per-path strings still
+  said "Polymaker Panchroma™" because those live in `variables.cfg` and do not
+  come from the catalog, which is what made the fault look like missing lines
+  rather than a missing brand.
+
+  The 14 files were byte-identical to `HEAD`, so `git checkout --
+  filaments/brands/` restored them; `brands.bak/` was left in place. The
+  endpoint now returns all 15 brands, and Polymaker's 12 product lines and
+  Panchroma's 23 all populate with colours. No service restart was needed —
+  the directory is scanned per request.
+
 
 - **Logos keyed on stored colour rather than path state.** `_SA_LED_FROM_STATE`
   chose PARKED whenever a colour hex existed, so an emptied path kept showing
