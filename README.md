@@ -489,6 +489,52 @@ To disable auto-timeout behavior, set `stepper_timeout: 0` in `hardware.cfg`. No
 
 ---
 
+## Backing up the printer
+
+`scripts/backup_printer_config.sh` snapshots the printer's live configuration
+onto a dedicated `printer-backup/known-good-<date>` branch, so there is a
+known-good reference to diff against or restore from after a change goes
+wrong. Run it from the repo on your PC, not on the printer:
+
+```
+bash "/c/Users/Mike/Claude Project Files/Autoloader/scripts/backup_printer_config.sh"
+```
+
+Add a label to distinguish two snapshots taken the same day:
+
+```
+bash "/c/Users/Mike/Claude Project Files/Autoloader/scripts/backup_printer_config.sh" before-respooler
+```
+
+It captures two sets of files, for two different reasons:
+
+- Files the repo already tracks and deploys (`autoloader/*.cfg`,
+  KlipperScreen panels, `sa_klipperscreen.conf`) land in their normal repo
+  paths, so `git diff main <branch>` shows exactly what drifted on the
+  printer — tuned values, Mainsail config-editor edits, and whatever
+  `SAVE_CONFIG` wrote. In practice the drift is `autoloader/variables.cfg`,
+  which holds the calibration results.
+- The rest of `~/printer_data/config` — `printer.cfg`, `macros.cfg`,
+  `homing.cfg`, `moonraker.conf`, `Toolchanger/` — is not tracked anywhere
+  else and exists only on the SD card. It lands under `printer_snapshot/`,
+  along with a `MANIFEST.md` recording the deployed commit and the Klipper,
+  Moonraker, KlipperScreen and Mainsail versions.
+
+Gcode files, logs and the Moonraker database are skipped. The script refuses
+to run with uncommitted work or an unreachable printer, and returns you to
+your original branch when it finishes.
+
+Restoring is a normal checkout:
+
+```
+git checkout printer-backup/known-good-2026-08-30 -- autoloader/parameters.cfg
+git checkout printer-backup/known-good-2026-08-30 -- printer_snapshot/
+```
+
+The branch is an archive and is never merged.
+
+---
+
 ## Troubleshooting
 
 ### Encoder shows no motion during load
@@ -517,3 +563,38 @@ To disable auto-timeout behavior, set `stepper_timeout: 0` in `hardware.cfg`. No
 - The calibration routine waits 300 seconds (5 minutes) by default for `SA_RESPOND`.
 - If you miss the window, re-run the calibration command.
 - Calibration can always be aborted mid-sequence with `SA_RESPOND VALUE=abort`.
+
+### `SA_PARK` says "nothing to park" and does not move
+`park_filament()` gates on the entry sensor before doing anything, so a path
+whose entry sensor reads empty returns immediately regardless of what is
+further down the tube. Check `SA_STATUS` — if the extruder and toolhead
+sensors read present while entry reads empty, the filament is loaded but its
+tail no longer reaches the entry sensor, and there is nothing for the drive
+gear to grip.
+
+### Parking or loading fails with "Must home axis first"
+Both `_park()` and `PARK_ON_COOLING_PAD` issue `G0` moves, so the printer must
+be homed first. Check `homed_axes` in the `toolhead` object — an empty string
+means nothing is homed. This is separate from the selector, which homes itself
+via `SA_HOME` or automatically at the start of a load.
+
+### A path reads `empty` although filament is loaded
+Path state is inferred from the **entry sensor only** — both
+`_initialize_states_from_sensors()` and the runout monitor ignore the extruder
+and toolhead sensors. A path loaded to the nozzle whose tail has passed the
+entry sensor will therefore read `empty`. Use `SA_SET_STATE TOOL=N STATE=loaded`
+to correct it.
+
+---
+
+## Test logs
+
+Point-in-time captures of what works and what doesn't live in `docs/`:
+
+| File | Notes |
+|---|---|
+| `docs/SYSTEMS_TEST_2026-08-30.md` | Baseline after the LED work. Encoders and selector calibrated, 5 of 6 bowden lengths set, `SA_PARK` blocked by the entry-sensor gate, printer unhomed so toolhead parking untestable. |
+
+---
+
+*Last updated: 2026-08-30 — added the printer backup script and the first systems-test log.*
