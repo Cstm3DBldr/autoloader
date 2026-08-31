@@ -355,10 +355,16 @@ class Autoloader:
                         self._set_state_persist(i, self.STATE_LOADED,
                                                 "entry sensor saw filament")
                 else:
-                    if self.path_states[i] == self.STATE_LOADED:
-                        # Sensor inactive on a "loaded" path — could be
-                        # real runout or could be a flicker. Debounce
-                        # against runout_timeout_seconds.
+                    if self.path_states[i] in (self.STATE_LOADED,
+                                               self.STATE_PARTIAL):
+                        # Sensor inactive on a path that still believes it
+                        # holds filament. Both states qualify: an unload ends
+                        # by parking the filament at the drive gear and
+                        # leaving the path "partial", so a path the roll is
+                        # then pulled from would otherwise sit on "partial"
+                        # forever with nothing to clear it. Debounce either
+                        # way against runout_timeout_seconds so a flicker
+                        # does not empty a good path.
                         last_active = self._sensor_last_active_time.get(
                             i, eventtime - self.runout_timeout_seconds)
                         if (eventtime - last_active
