@@ -565,25 +565,29 @@ The branch is an archive and is never merged.
 - Calibration can always be aborted mid-sequence with `SA_RESPOND VALUE=abort`.
 
 ### `SA_PARK` says "nothing to park" and does not move
-`park_filament()` gates on the entry sensor before doing anything, so a path
-whose entry sensor reads empty returns immediately regardless of what is
-further down the tube. Check `SA_STATUS` — if the extruder and toolhead
-sensors read present while entry reads empty, the filament is loaded but its
-tail no longer reaches the entry sensor, and there is nothing for the drive
-gear to grip.
+Expected when the entry sensor is inactive. `park_filament()` checks the entry
+sensor first because parking is drive-gear work — with no filament at the
+entry there is nothing to grip. Feed filament in and it will park normally.
 
-### Parking or loading fails with "Must home axis first"
-Both `_park()` and `PARK_ON_COOLING_PAD` issue `G0` moves, so the printer must
-be homed first. Check `homed_axes` in the `toolhead` object — an empty string
-means nothing is homed. This is separate from the selector, which homes itself
-via `SA_HOME` or automatically at the start of a load.
+### `SA_LOAD` reports "possible broken filament piece in tube"
+Raised when the extruder or toolhead sensor reads present while the entry
+sensor does not. Usually a cut or snapped length left behind after a manual
+unload. Clear it from the toolhead before loading that path — this guard is
+protecting you from feeding new filament into an occupied tube.
 
-### A path reads `empty` although filament is loaded
-Path state is inferred from the **entry sensor only** — both
-`_initialize_states_from_sensors()` and the runout monitor ignore the extruder
-and toolhead sensors. A path loaded to the nozzle whose tail has passed the
-entry sensor will therefore read `empty`. Use `SA_SET_STATE TOOL=N STATE=loaded`
-to correct it.
+### A path reads `empty` although a toolhead holds filament
+Path state describes the **autoloader's** path, and is inferred from the entry
+sensor only — `_initialize_states_from_sensors()` and the runout monitor both
+ignore the extruder and toolhead sensors. An orphaned length sitting in a
+toolhead is therefore invisible to path state, which is correct: the
+autoloader path really is empty. Use `SA_SET_STATE TOOL=N STATE=loaded` only
+if the state is genuinely wrong.
+
+### Sequences run `G28` on their own
+`do_load()` and `do_unload()` check `_is_homed()` and home the printer
+themselves before any toolhead motion, so an unhomed machine is not a blocker
+for either. `park_filament()` never moves the toolhead at all — it is selector
+and drive work only.
 
 ---
 
@@ -593,7 +597,7 @@ Point-in-time captures of what works and what doesn't live in `docs/`:
 
 | File | Notes |
 |---|---|
-| `docs/SYSTEMS_TEST_2026-08-30.md` | Baseline after the LED work. Encoders and selector calibrated, 5 of 6 bowden lengths set, `SA_PARK` blocked by the entry-sensor gate, printer unhomed so toolhead parking untestable. |
+| `docs/SYSTEMS_TEST_2026-08-30.md` | Baseline after the LED work. Nothing broken — two reported failures were the entry guards correctly refusing paths whose filament had been cut out. Encoders and selector calibrated, 5 of 6 bowden lengths set. |
 
 ---
 
