@@ -127,3 +127,87 @@ That guard exists precisely for this case and fired as designed.
 `SA_CLEAN_NOZZLE`, `SA_HOME`, `SA_SELECT`, `SA_ENGAGE` / `SA_DISENGAGE`,
 `SA_BUZZ_*`. All blocked on the machine being reloaded rather than on any
 defect.
+
+---
+
+# Round 2 — live load/unload testing
+
+Machine reloaded after clearing the cut stubs. Results below supersede the
+"not yet exercised" list above.
+
+## Working
+
+- **Auto load and unload on paths 0–2** — full cycle, no intervention
+- **Auto load on paths 3–5**
+- **Encoder parking** — the three-phase park runs correctly:
+  retract until the encoder goes quiet, feed forward to re-acquire the edge,
+  back off `park_offset` (5 mm). Verified in the path-2 unload.
+- Toolchange integration, per-tool heating, heatbreak retract, post-unload
+  prompt, `SA_RESPOND` flow
+
+The earlier load/unload failure is explained: a dirty entry sensor, fixed
+before the printer was put away. Not a software fault.
+
+## Defects found
+
+### 1. Tip forming crushes the tip against the extruder gears
+
+Measured 2.25 mm on one axis, 1.4 mm on the other — a flattened oval, not a
+blob. Volume is conserved; the tip is being squashed, not swollen. It then
+jams the loader gates on reload and has to be cut off by hand.
+
+Cause is geometry. Tracking tip height above the nozzle, with the extruder
+gears at `nozzle_distance` = 50 mm:
+
+| Step | Move | Tip ends at | Time |
+|---|---|---|---|
+| push | 8 mm down | nozzle | — |
+| Phase 1 fast | 48 mm @ 70 mm/s | 48 mm | 0.69 s |
+| Phase 2 first half | 20 mm @ 10 mm/s | 68 mm | 2 s |
+| dwell 5 s | — | 68 mm | — |
+| Phase 2 second half | 20 mm | 88 mm | 2 s |
+| Phase 3 slow | `52.5 − 88 = −35.5` | — | never runs |
+
+The tip crosses the gear pinch at 50 mm — 2 mm into Phase 2, roughly **0.9 s
+after leaving the melt zone**, still molten. The dwell that is supposed to set
+the tip happens at 68 mm, **18 mm after** the gears have already crushed it.
+
+### 2. Phase 3 is dead code
+
+`slow_dist = nozzle_to_sensor_dist × 1.05 − (fast_dist + heatbreak_dist)`
+evaluates to −35.5, so the `if slow_dist > 0` guard always skips it.
+`tip_form_slow_speed` (7.5 mm/s) therefore has no effect, and the gear transit
+happens at Phase 2's 10 mm/s. Confirmed by the absence of any "Slow retract"
+line in the console.
+
+**Proposed fix for 1 and 2:** Phase 1 already parks the tip at 48 mm, 2 mm
+below the gears — the right place to cool. Move the dwell to the end of Phase
+1, then cross the gears at `tip_form_slow_speed`. Dwell will likely need to be
+longer than 5 s; that is a config value and tunable without a reflash.
+
+### 3. No filament tracking during a print
+
+`_state_monitor_tick()` polls the entry sensors at 1 Hz, flips `path_states`
+and persists them, with a `runout_timeout_seconds` debounce. That is all it
+does. It does not check whether the affected path is the actively printing
+tool, and never issues `PAUSE` or `M600`. There is no jam detection during a
+print either — no comparison of encoder movement against commanded extrusion.
+`slip_tolerance` applies only during load.
+
+So a runout or jam mid-print is recorded but not acted on.
+
+### 4. KlipperScreen menu gating is not repeatable
+
+The post-load menu appears on the touchscreen sometimes and not others. Needs
+the menu flow worked through as a whole rather than patched case by case.
+
+### 5. Extruder page sensor rows render off-screen
+
+The sensors listed at the bottom of the extruder page hang past the bottom
+edge of the display and cannot be read.
+
+## Hardware note
+
+The encoder housings are candidates for a reprint, possibly a small redesign
+to make them serviceable — the load/unload failure that prompted this test was
+a dirty sensor that was awkward to reach.
