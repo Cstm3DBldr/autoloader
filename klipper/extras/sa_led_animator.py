@@ -254,7 +254,11 @@ class SaLedAnimator:
                 elif st == 'partial':
                     state_name = 'staged'
                 else:
-                    state_name = 'off'
+                    # Mounted with nothing loaded. Deliberately not 'off':
+                    # a dark nozzle on the tool that is actually on the
+                    # carriage reads as a dead toolhead rather than an
+                    # empty one.
+                    state_name = 'active_empty'
             color = self._get_nozzle_color(state_name)
             if color is not None:
                 for tool_n, _, helper in self._led_chains:

@@ -385,7 +385,7 @@ class SACalibration:
 
             owner._cal_state = 'drv_meas'
             self._prompt(gcmd,
-                "Measure from your mark to the new filament end (target: 100mm).",
+                "Measure from the encoder exit back to your mark - that is how far the filament travelled (target: 100mm).",
                 "SA_RESPOND VALUE=100.0  (replace with actual mm)")
 
         elif state == 'drv_meas':
@@ -568,8 +568,9 @@ class SACalibration:
             owner._cal_state = 'enc_meas_%d' % path
 
             self._prompt(gcmd,
-                "Servo engaged, drive holding. Measure from your mark to "
-                "filament end (target 100mm).",
+                "Servo engaged, drive holding. Measure from the encoder exit "
+                "back to your mark - that is how far the filament travelled "
+                "(target 100mm).",
                 "SA_RESPOND VALUE=100.0  (replace with actual mm)")
 
         elif state.startswith('enc_meas_'):
