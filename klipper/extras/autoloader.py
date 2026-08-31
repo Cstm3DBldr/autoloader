@@ -296,19 +296,32 @@ class Autoloader:
 
     def _initialize_states_from_sensors(self):
         """For paths still STATE_UNKNOWN after _restore_material_profiles
-        (no `sa_state_<N>` saved), use the entry sensor to make a best
-        guess and persist it. Skips paths that already have a known
-        state — those have an explicit save and shouldn't be overridden
-        on boot just because the sensor disagrees momentarily.
+        (no `sa_state_<N>` saved), infer a state from the sensors and
+        persist it. Skips paths that already have a known state — those
+        have an explicit save and shouldn't be overridden on boot just
+        because a sensor disagrees momentarily.
+
+        All three sensors are consulted, because each answers a different
+        question. The toolhead sensor is the only one that can say the
+        filament actually reached the nozzle, so it alone justifies
+        'loaded'. Filament at the entry with nothing past it means the
+        path holds filament that was never driven through, which is
+        'partial'. Nothing anywhere is 'empty'.
         """
         for i in range(self.num_paths):
             if self.path_states[i] != self.STATE_UNKNOWN:
                 continue
             try:
-                active = self._entry_sensor_active(i)
+                at_entry    = self._entry_sensor_active(i)
+                at_toolhead = self._toolhead_sensor_active(i)
             except Exception:
                 continue
-            new_state = self.STATE_LOADED if active else self.STATE_EMPTY
+            if at_toolhead:
+                new_state = self.STATE_LOADED
+            elif at_entry:
+                new_state = self.STATE_PARTIAL
+            else:
+                new_state = self.STATE_EMPTY
             self.path_states[i] = new_state
             try:
                 self.gcode.run_script_from_command(
@@ -318,7 +331,8 @@ class Autoloader:
                 logging.exception(
                     "Autoloader: could not persist inferred state for path %d", i)
             logging.info("Autoloader: path %d state inferred from "
-                         "entry sensor: %s", i, new_state)
+                         "sensors (entry=%s toolhead=%s): %s",
+                         i, at_entry, at_toolhead, new_state)
 
     def _start_state_monitor(self):
         """Reactor timer that reconciles path_states with the entry
@@ -348,12 +362,13 @@ class Autoloader:
                 except Exception:
                     continue
                 if active:
+                    # Only record that filament is present, as the debounce
+                    # reference for the runout check below. The state itself is
+                    # left alone: the entry sensor sees filament arriving at the
+                    # entry, which says nothing about whether it has been driven
+                    # through the bowden to the nozzle. Only the load and unload
+                    # sequences know that, so only they promote a path.
                     self._sensor_last_active_time[i] = eventtime
-                    if self.path_states[i] == self.STATE_EMPTY:
-                        # Filament just appeared on a path that was
-                        # marked empty — react immediately.
-                        self._set_state_persist(i, self.STATE_LOADED,
-                                                "entry sensor saw filament")
                 else:
                     if self.path_states[i] in (self.STATE_LOADED,
                                                self.STATE_PARTIAL):
