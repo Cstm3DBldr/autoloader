@@ -1,0 +1,28 @@
+{
+    "name": "autoloader-panel-plugin",
+    "version": "1.0.0",
+    "description": "Autoloader status and control panel for Mainsail",
+    "type": "module",
+    "main": "./dist/autoloader-panel-plugin.mjs",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "serve": "vite preview"
+    },
+    "peerDependencies": {
+        "vue": "^2.7.0",
+        "vue-class-component": "^7.2.0",
+        "vue-property-decorator": "^9.1.2"
+    },
+    "devDependencies": {
+        "@mdi/js": "^7.4.47",
+        "@pedrolamas/plugin-vue2": "^2.4.1",
+        "typescript": "^5.0.0",
+        "vite": "^8.1.2",
+        "vue": "^2.7.16",
+        "vue-class-component": "^7.2.3",
+        "vue-property-decorator": "^9.1.2",
+        "vue-template-compiler": "^2.7.16",
+        "vuex": "^3.6.2"
+    }
+}

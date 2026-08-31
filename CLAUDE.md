@@ -258,7 +258,8 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `klipper/extras/sa_calibration.py` | All calibration routines (drive, encoder, selector, bowden) |
 | `klipper/extras/sa_encoder.py` | Encoder driver — pulse counting via Klipper buttons module |
 | `moonraker/sa_moonraker.py` | Moonraker component — REST endpoints + status broadcast |
-| `web/mainsail/AutoloaderPanel.vue` | Mainsail UI panel |
+| `web/mainsail-plugin/` | Autoloader panel as a runtime-loaded Mainsail plugin — one self-contained `.mjs`, no Mainsail fork required. Needs Mainsail with custom-panel support. See its README |
+| `web/mainsail/AutoloaderPanel.vue` | Mainsail UI panel (in-tree fork variant, superseded by `web/mainsail-plugin/`) |
 | `web/fluidd/AutoloaderPanel.vue` | Fluidd UI panel |
 | `KlipperScreen/panels/sa_*.py` | KlipperScreen touchscreen panels |
 | `KlipperScreen/sa_filament_db.py` | Filament profile DB loader (shared with Moonraker) |
@@ -537,6 +538,7 @@ If you add a new file to the project, add its destination here AND update
 | `KlipperScreen/sa_*.py` | `~/KlipperScreen/` | direct copy (post_update.sh) |
 | `KlipperScreen/sa_klipperscreen.conf` | `~/printer_data/config/sa_klipperscreen.conf` | direct copy (post_update.sh) |
 | `web/mainsail/AutoloaderPanel.vue` | compiled into `~/mainsail/assets/*.js` | manual rebuild from VS source — not auto-synced |
+| `web/mainsail-plugin/dist/*.mjs` | served anywhere the browser can reach; registered in the Moonraker DB | `npm run build`, then deploy the one file — not auto-synced |
 | `web/fluidd/AutoloaderPanel.vue` | depends on Fluidd host setup | user-managed |
 
 ### Rename-class changes — extra steps beyond the routine deploy

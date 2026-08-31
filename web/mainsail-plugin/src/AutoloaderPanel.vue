@@ -1,0 +1,2642 @@
+<template>
+    <div>
+        <!-- MAIN PANEL -->
+        <v-card-text v-if="saExists" class="pa-0">
+                <!-- Calibration toolbar — mirrors KlipperScreen's calibration panel -->
+                <div class="sa-cal-bar">
+                    <v-btn small outlined class="sa-cal-btn" @click="openCalibration">
+                        <v-icon size="16" left>{{ mdiCogOutline }}</v-icon>
+                        {{ $t('Panels.AutoloaderPanel.CalibrationGuide') }}
+                    </v-btn>
+                </div>
+
+                <!-- Grid: header + path rows -->
+                <div class="sa-grid">
+                    <!-- Header row -->
+                    <div class="sa-row sa-header-row">
+                        <div class="sa-center">{{ $t('Panels.AutoloaderPanel.ColToolheadPath') }}</div>
+                        <div></div>
+                        <div>{{ $t('Panels.AutoloaderPanel.ColMaterial') }}</div>
+                        <div class="sa-center">{{ $t('Panels.AutoloaderPanel.ColLoadout') }}</div>
+                        <v-tooltip bottom>
+                            <template #activator="{ on }">
+                                <div class="sa-center" v-on="on">EN</div>
+                            </template>
+                            <span>{{ $t('Panels.AutoloaderPanel.Entry') }}</span>
+                        </v-tooltip>
+                        <v-tooltip bottom>
+                            <template #activator="{ on }">
+                                <div class="sa-center" v-on="on">EX</div>
+                            </template>
+                            <span>{{ $t('Panels.AutoloaderPanel.Extruder') }}</span>
+                        </v-tooltip>
+                        <v-tooltip bottom>
+                            <template #activator="{ on }">
+                                <div class="sa-center" v-on="on">TH</div>
+                            </template>
+                            <span>{{ $t('Panels.AutoloaderPanel.Toolhead') }}</span>
+                        </v-tooltip>
+                    </div>
+
+                    <!-- Data rows -->
+                    <div
+                        v-for="i in saPathIndices"
+                        :key="i"
+                        :class="[
+                            'sa-row',
+                            'sa-data-row',
+                            { 'sa-row--active': saStatus.current_path === i },
+                            { 'sa-row--open': (pathModalOpen || profileOpen) && pathModalIdx === i },
+                        ]"
+                        @click="openPathModal(i)">
+                        <!-- Tool label -->
+                        <div class="sa-tool-label sa-center">T{{ i }}</div>
+
+                        <!-- Color swatch (single or multi-color) -->
+                        <div class="sa-swatch-cell">
+                            <!-- Tri+ → SVG pie (avoids conic-gradient AA bleed at small sizes) -->
+                            <svg
+                                v-if="saColorMode(i) === 'multi'"
+                                class="sa-color-swatch sa-color-swatch--svg"
+                                viewBox="0 0 36 36">
+                                <path
+                                    v-for="(slice, k) in saPieSlices(i)"
+                                    :key="k"
+                                    :d="slice.d"
+                                    :fill="slice.fill" />
+                                <circle
+                                    cx="18"
+                                    cy="18"
+                                    r="17.25"
+                                    fill="none"
+                                    :stroke="saSwatchBorderColor(i)"
+                                    stroke-width="1.5" />
+                            </svg>
+                            <!-- Dual → SVG semicircles (no linear-gradient hard-stop bleed) -->
+                            <svg
+                                v-else-if="saColorMode(i) === 'dual'"
+                                class="sa-color-swatch sa-color-swatch--svg"
+                                viewBox="0 0 36 36">
+                                <path
+                                    v-for="(slice, k) in saDualSlices(i)"
+                                    :key="k"
+                                    :d="slice.d"
+                                    :fill="slice.fill" />
+                                <circle
+                                    cx="18"
+                                    cy="18"
+                                    r="17.25"
+                                    fill="none"
+                                    :stroke="saSwatchBorderColor(i)"
+                                    stroke-width="1.5" />
+                            </svg>
+                            <div
+                                v-else
+                                class="sa-color-swatch"
+                                :style="{
+                                    background: saColorBackground(i) || 'transparent',
+                                    border: saColorBackground(i)
+                                        ? `1px solid ${saSwatchBorderColor(i)}`
+                                        : '1px solid rgba(255,255,255,0.25)',
+                                }" />
+                        </div>
+
+                        <!-- Material / brand / color name -->
+                        <div class="sa-material-cell">
+                            <div class="caption">
+                                <span v-if="saStatus.path_materials[i]">
+                                    {{ saStatus.path_materials[i] }}
+                                    <span v-if="saStatus.path_brands[i]" class="grey--text">
+                                        · {{ saStatus.path_brands[i] }}
+                                    </span>
+                                </span>
+                                <span v-else class="grey--text text--darken-1">—</span>
+                            </div>
+                            <div v-if="saStatus.path_color_names[i]" class="caption grey--text">
+                                {{ saStatus.path_color_names[i] }}
+                            </div>
+                        </div>
+
+                        <!-- Loadout badge -->
+                        <div class="sa-center">
+                            <v-chip x-small :color="saStateColor(saEffectiveState(i))" dark>
+                                {{ saEffectiveState(i) }}
+                            </v-chip>
+                        </div>
+
+                        <!-- Sensor dots -->
+                        <div class="sa-center">
+                            <div
+                                class="sa-dot"
+                                :class="saStatus.entry_filament[i] ? 'sa-dot--on' : 'sa-dot--off'" />
+                        </div>
+                        <div class="sa-center">
+                            <div
+                                class="sa-dot"
+                                :class="saStatus.extruder_filament[i] ? 'sa-dot--on' : 'sa-dot--off'" />
+                        </div>
+                        <div class="sa-center">
+                            <div
+                                class="sa-dot"
+                                :class="saStatus.toolhead_filament[i] ? 'sa-dot--on' : 'sa-dot--off'" />
+                        </div>
+                    </div>
+                </div>
+
+            </v-card-text>
+
+        <!-- ─── CONTROLS DIALOG ─────────────────────────────────── -->
+        <v-dialog v-model="pathModalOpen" max-width="380" :retain-focus="false">
+            <v-card v-if="pathModalIdx !== null" class="sa-dialog">
+                <v-card-title class="sa-dialog-title">
+                    <v-icon left size="18">{{ saSpoolIcon }}</v-icon>
+                    <span class="subtitle-2">
+                        T{{ pathModalIdx }} — {{ $t('Panels.AutoloaderPanel.Controls') }}
+                    </span>
+                    <v-spacer />
+                    <v-btn icon small @click="pathModalOpen = false">
+                        <v-icon size="18">{{ mdiClose }}</v-icon>
+                    </v-btn>
+                </v-card-title>
+                <v-divider />
+                <v-card-text class="pa-3">
+                    <!-- Current profile tile (clickable → opens profile editor) -->
+                    <div class="sa-profile-tile mb-3" @click="openProfile">
+                        <div
+                            class="sa-color-swatch-lg sa-profile-tile-swatch"
+                            :style="{
+                                background: saColorBackground(pathModalIdx) || 'transparent',
+                                border: saColorBackground(pathModalIdx)
+                                    ? `1px solid ${saSwatchBorderColor(pathModalIdx)}`
+                                    : '2px dashed rgba(255,255,255,0.25)',
+                            }" />
+                        <div class="sa-profile-tile-info">
+                            <div v-if="saStatus.path_materials[pathModalIdx]" class="body-2">
+                                {{ saStatus.path_materials[pathModalIdx] }}
+                                <span v-if="saStatus.path_brands[pathModalIdx]" class="grey--text">
+                                    · {{ saStatus.path_brands[pathModalIdx] }}
+                                </span>
+                            </div>
+                            <div v-else class="body-2 grey--text">
+                                {{ $t('Panels.AutoloaderPanel.NoProfile') }}
+                            </div>
+                            <div
+                                v-if="saStatus.path_color_names[pathModalIdx]"
+                                class="caption grey--text">
+                                {{ saStatus.path_color_names[pathModalIdx] }}
+                            </div>
+                            <div v-else class="caption grey--text">
+                                {{ $t('Panels.AutoloaderPanel.EditProfile') }}
+                            </div>
+                        </div>
+                        <v-icon small class="sa-profile-tile-icon">{{ mdiPencil }}</v-icon>
+                    </div>
+
+                    <div class="caption grey--text mb-1">
+                        {{ $t('Panels.AutoloaderPanel.Selector') }}
+                    </div>
+                    <div class="sa-btn-group mb-3">
+                        <v-btn
+                            small
+                            class="sa-group-btn"
+                            :class="{
+                                'sa-group-btn--primary': isSelectorHomed,
+                                'sa-group-btn--warning': !isSelectorHomed,
+                            }"
+                            @click="saGcode('SA_HOME')">
+                            {{ $t('Panels.AutoloaderPanel.Home') }}
+                        </v-btn>
+                        <v-btn
+                            small
+                            class="sa-group-btn"
+                            :class="{ 'sa-group-btn--primary': isServoEngaged }"
+                            :disabled="!isSelectorHomed"
+                            @click="doEngage">
+                            {{ $t('Panels.AutoloaderPanel.Engage') }}
+                        </v-btn>
+                        <v-btn
+                            small
+                            class="sa-group-btn"
+                            :class="{ 'sa-group-btn--primary': !isServoEngaged }"
+                            @click="saGcode('SA_DISENGAGE')">
+                            {{ $t('Panels.AutoloaderPanel.Disengage') }}
+                        </v-btn>
+                    </div>
+
+                    <!-- Manual feed / retract -->
+                    <div class="caption grey--text mb-1">
+                        {{ $t('Panels.AutoloaderPanel.FeedRetract') }}
+                    </div>
+                    <v-row dense class="mb-2">
+                        <v-col>
+                            <v-text-field
+                                v-model.number="feedDistance"
+                                :label="$t('Panels.AutoloaderPanel.Distance')"
+                                type="number"
+                                dense
+                                outlined
+                                hide-details
+                                suffix="mm" />
+                            <div class="sa-btn-group mt-2">
+                                <v-btn
+                                    v-for="d in feedDistancePresets"
+                                    :key="d"
+                                    small
+                                    class="sa-group-btn sa-preset-btn"
+                                    :class="{ 'sa-preset-btn--active': feedDistance === d }"
+                                    @click="feedDistance = d">
+                                    {{ d }}
+                                </v-btn>
+                            </div>
+                        </v-col>
+                        <v-col>
+                            <v-text-field
+                                v-model.number="feedSpeed"
+                                :label="$t('Panels.AutoloaderPanel.Speed')"
+                                type="number"
+                                dense
+                                outlined
+                                hide-details
+                                suffix="mm/s" />
+                            <div class="sa-btn-group mt-2">
+                                <v-btn
+                                    v-for="s in feedSpeedPresets"
+                                    :key="s"
+                                    small
+                                    class="sa-group-btn sa-preset-btn"
+                                    :class="{ 'sa-preset-btn--active': feedSpeed === s }"
+                                    @click="feedSpeed = s">
+                                    {{ s }}
+                                </v-btn>
+                            </div>
+                        </v-col>
+                    </v-row>
+                    <div class="d-flex mb-3">
+                        <v-btn
+                            small
+                            class="sa-feed-btn flex-grow-1 mr-2"
+                            :loading="isLoading"
+                            @click="doRetract">
+                            <v-icon small class="mr-1">{{ mdiArrowUpBold }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.Retract') }}
+                        </v-btn>
+                        <v-btn
+                            small
+                            class="sa-feed-btn flex-grow-1"
+                            :loading="isLoading"
+                            @click="doFeed">
+                            <v-icon small class="mr-1">{{ mdiArrowDownBold }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.Feed') }}
+                        </v-btn>
+                    </div>
+
+                    <div class="d-flex align-center mb-3">
+                        <span class="caption grey--text mr-2">
+                            {{ $t('Panels.AutoloaderPanel.Sensors') }}:
+                        </span>
+                        <v-tooltip bottom>
+                            <template #activator="{ on }">
+                                <div
+                                    class="sa-dot mr-1"
+                                    :class="saStatus.entry_filament[pathModalIdx] ? 'sa-dot--on' : 'sa-dot--off'"
+                                    v-on="on" />
+                            </template>
+                            <span>{{ $t('Panels.AutoloaderPanel.Entry') }}</span>
+                        </v-tooltip>
+                        <v-tooltip bottom>
+                            <template #activator="{ on }">
+                                <div
+                                    class="sa-dot mr-1"
+                                    :class="saStatus.extruder_filament[pathModalIdx] ? 'sa-dot--on' : 'sa-dot--off'"
+                                    v-on="on" />
+                            </template>
+                            <span>{{ $t('Panels.AutoloaderPanel.Extruder') }}</span>
+                        </v-tooltip>
+                        <v-tooltip bottom>
+                            <template #activator="{ on }">
+                                <div
+                                    class="sa-dot mr-2"
+                                    :class="saStatus.toolhead_filament[pathModalIdx] ? 'sa-dot--on' : 'sa-dot--off'"
+                                    v-on="on" />
+                            </template>
+                            <span>{{ $t('Panels.AutoloaderPanel.Toolhead') }}</span>
+                        </v-tooltip>
+                        <v-chip x-small :color="saStateColor(saEffectiveState(pathModalIdx))" dark>
+                            {{ saEffectiveState(pathModalIdx) }}
+                        </v-chip>
+                    </div>
+
+                    <div class="d-flex">
+                        <v-btn
+                            small
+                            color="primary"
+                            class="flex-grow-1 mr-2"
+                            :disabled="!canLoadModal"
+                            :loading="isLoading"
+                            @click="doLoad">
+                            {{ $t('Panels.AutoloaderPanel.Load') }}
+                        </v-btn>
+                        <v-btn
+                            small
+                            color="error"
+                            class="flex-grow-1"
+                            :disabled="!canUnloadModal"
+                            :loading="isLoading"
+                            @click="doUnload">
+                            {{ $t('Panels.AutoloaderPanel.Unload') }}
+                        </v-btn>
+                    </div>
+                    <div v-if="!canLoadModal && pathModalIdx !== null" class="caption grey--text mt-1 sa-hint">
+                        <span v-if="saEffectiveState(pathModalIdx) === 'loaded'">
+                            {{ $t('Panels.AutoloaderPanel.AlreadyLoaded') }}
+                        </span>
+                        <span v-else-if="!saStatus.path_color_hexes[pathModalIdx]">
+                            {{ $t('Panels.AutoloaderPanel.NoProfileSet') }}
+                        </span>
+                    </div>
+                </v-card-text>
+            </v-card>
+        </v-dialog>
+
+        <!-- ─── PROFILE DIALOG ──────────────────────────────────── -->
+        <v-dialog v-model="profileOpen" max-width="460" :retain-focus="false">
+            <v-card v-if="pathModalIdx !== null" class="sa-dialog">
+                <v-card-title class="sa-dialog-title">
+                    <span class="subtitle-2">
+                        T{{ pathModalIdx }} — {{ $t('Panels.AutoloaderPanel.FilamentProfile') }}
+                    </span>
+                    <v-spacer />
+                    <v-btn icon small @click="profileOpen = false">
+                        <v-icon size="18">{{ mdiClose }}</v-icon>
+                    </v-btn>
+                </v-card-title>
+                <v-divider />
+                <v-card-text class="pa-3">
+                    <!-- Current profile read-only summary -->
+                    <div
+                        v-if="pathModalIdx !== null && (saStatus.path_materials[pathModalIdx] || saStatus.path_brands[pathModalIdx] || saStatus.path_color_names[pathModalIdx])"
+                        class="sa-current-profile mb-3">
+                        <div class="d-flex align-center">
+                            <div
+                                class="sa-color-swatch-lg mr-3"
+                                :style="{
+                                    background: saColorBackground(pathModalIdx) || 'transparent',
+                                    border: saColorBackground(pathModalIdx)
+                                        ? `1px solid ${saSwatchBorderColor(pathModalIdx)}`
+                                        : '2px solid rgba(255,255,255,0.25)',
+                                }" />
+                            <div>
+                                <div class="caption grey--text">
+                                    {{ $t('Panels.AutoloaderPanel.CurrentProfile') }}
+                                </div>
+                                <div class="body-2">
+                                    <span v-if="saStatus.path_materials[pathModalIdx]">
+                                        {{ saStatus.path_materials[pathModalIdx] }}
+                                    </span>
+                                    <span v-if="saStatus.path_brands[pathModalIdx]" class="grey--text">
+                                        · {{ saStatus.path_brands[pathModalIdx] }}
+                                    </span>
+                                </div>
+                                <div v-if="saStatus.path_color_names[pathModalIdx]" class="caption grey--text">
+                                    {{ saStatus.path_color_names[pathModalIdx] }}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Catalog cascade: Brand → Line → Color -->
+                    <v-select
+                        v-model="selectedBrandPath"
+                        :items="brandItems"
+                        :label="$t('Panels.AutoloaderPanel.BrandSelect')"
+                        :loading="loadingBrands"
+                        :menu-props="{ maxHeight: 480 }"
+                        item-text="display_name"
+                        item-value="filepath"
+                        dense
+                        outlined
+                        hide-details
+                        clearable
+                        class="mb-2"
+                        @change="onBrandChange" />
+                    <v-select
+                        v-model="selectedLineId"
+                        :items="productLineItems"
+                        :label="$t('Panels.AutoloaderPanel.LineSelect')"
+                        :disabled="!selectedBrandPath"
+                        :loading="loadingLines"
+                        :menu-props="{ maxHeight: 480 }"
+                        item-text="display_name"
+                        item-value="line_id"
+                        dense
+                        outlined
+                        hide-details
+                        clearable
+                        class="mb-2"
+                        @change="onLineChange" />
+                    <v-select
+                        v-model="selectedColorId"
+                        :items="colorItems"
+                        :label="$t('Panels.AutoloaderPanel.ColorSelect')"
+                        :disabled="!selectedLineId"
+                        :menu-props="{ maxHeight: 480 }"
+                        item-text="name"
+                        item-value="id"
+                        dense
+                        outlined
+                        hide-details
+                        clearable
+                        :class="{ 'mb-3': !isCustomColor, 'mb-2': isCustomColor }"
+                        @change="onColorChange">
+                        <template #selection="{ item }">
+                            <div class="d-flex align-center">
+                                <div class="sa-dd-swatch mr-2" :style="catalogSwatchStyle(item)" />
+                                {{ item.name }}
+                            </div>
+                        </template>
+                        <template #item="{ item }">
+                            <div class="d-flex align-center">
+                                <div class="sa-dd-swatch mr-2" :style="catalogSwatchStyle(item)" />
+                                {{ item.name }}
+                            </div>
+                        </template>
+                    </v-select>
+
+                    <!-- Custom color overrides (only when ✨ Custom is picked) -->
+                    <div v-if="isCustomColor" class="mb-3">
+                        <!-- 3-way mode slider -->
+                        <div class="caption grey--text mb-1">
+                            {{ $t('Panels.AutoloaderPanel.ColorMode') }}
+                        </div>
+                        <v-slider
+                            v-model="colorModeIdx"
+                            :tick-labels="colorModeLabels"
+                            :max="2"
+                            :min="0"
+                            step="1"
+                            ticks="always"
+                            tick-size="6"
+                            hide-details
+                            class="sa-mode-slider mb-3" />
+
+                        <!-- Clickable pie (single = full circle) -->
+                        <div class="d-flex align-center mb-2">
+                            <svg viewBox="-50 -50 100 100" class="sa-pie">
+                                <g v-for="(slice, idx) in pieSlices" :key="idx">
+                                    <circle
+                                        v-if="slice.type === 'circle'"
+                                        cx="0"
+                                        cy="0"
+                                        :r="slice.r"
+                                        :fill="slice.color"
+                                        :stroke="saBorderForHex(slice.color)"
+                                        stroke-width="1.2"
+                                        class="sa-pie-slice"
+                                        @click="openPicker(idx)" />
+                                    <path
+                                        v-else
+                                        :d="slice.d"
+                                        :fill="slice.color"
+                                        :stroke="saBorderForHex(slice.color)"
+                                        stroke-width="1.2"
+                                        class="sa-pie-slice"
+                                        @click="openPicker(idx)" />
+                                </g>
+                            </svg>
+                            <div class="ml-3 caption grey--text">
+                                {{ $t('Panels.AutoloaderPanel.ClickSliceToEdit') }}
+                            </div>
+                        </div>
+
+                        <v-text-field
+                            v-model="editColorName"
+                            :label="$t('Panels.AutoloaderPanel.ColorName')"
+                            dense
+                            outlined
+                            hide-details />
+                    </div>
+
+                    <v-divider class="mb-3" />
+
+                    <!-- Temperatures + purge (always editable) -->
+                    <v-row dense class="mb-1">
+                        <v-col>
+                            <v-text-field
+                                v-model.number="editLoadTemp"
+                                :label="$t('Panels.AutoloaderPanel.LoadTemp')"
+                                type="number"
+                                dense
+                                outlined
+                                hide-details
+                                suffix="°C" />
+                        </v-col>
+                        <v-col>
+                            <v-text-field
+                                v-model.number="editUnloadTemp"
+                                :label="$t('Panels.AutoloaderPanel.UnloadTemp')"
+                                type="number"
+                                dense
+                                outlined
+                                hide-details
+                                suffix="°C" />
+                        </v-col>
+                    </v-row>
+                    <v-row dense>
+                        <v-col>
+                            <v-text-field
+                                v-model.number="editPurgeSpeed"
+                                :label="$t('Panels.AutoloaderPanel.PurgeSpeed')"
+                                type="number"
+                                dense
+                                outlined
+                                hide-details
+                                suffix="mm/s" />
+                        </v-col>
+                        <v-col>
+                            <v-text-field
+                                v-model.number="editPurgeLength"
+                                :label="$t('Panels.AutoloaderPanel.PurgeLength')"
+                                type="number"
+                                dense
+                                outlined
+                                hide-details
+                                suffix="mm" />
+                        </v-col>
+                    </v-row>
+                </v-card-text>
+                <v-card-actions class="px-3 py-2 flex-wrap">
+                    <v-btn small text @click="backToControls">
+                        ← {{ $t('Panels.AutoloaderPanel.BackToControls') }}
+                    </v-btn>
+                    <v-spacer />
+                    <v-btn
+                        small
+                        text
+                        :disabled="!selectedLineId"
+                        class="mr-1"
+                        @click="resetToDefault">
+                        {{ $t('Panels.AutoloaderPanel.ResetDefault') }}
+                    </v-btn>
+                    <v-btn
+                        small
+                        text
+                        color="error"
+                        class="mr-1"
+                        :disabled="saEffectiveState(pathModalIdx) !== 'empty'"
+                        @click="clearProfile">
+                        {{ $t('Panels.AutoloaderPanel.ClearProfile') }}
+                    </v-btn>
+                    <v-btn
+                        small
+                        color="primary"
+                        :loading="isLoading"
+                        @click="saveProfile">
+                        {{ $t('Panels.AutoloaderPanel.SaveProfile') }}
+                    </v-btn>
+                </v-card-actions>
+            </v-card>
+        </v-dialog>
+
+        <!-- ─── CALIBRATION GUIDE DIALOG ────────────────────────── -->
+        <v-dialog v-model="calOpen" max-width="560" :retain-focus="false" scrollable>
+            <v-card class="sa-dialog">
+                <v-card-title class="sa-dialog-title">
+                    <v-icon left size="18">{{ mdiCogOutline }}</v-icon>
+                    <span class="subtitle-2">
+                        {{ $t('Panels.AutoloaderPanel.CalibrationGuide') }}
+                        — {{ $t('Panels.AutoloaderPanel.Step') }} {{ calStep + 1 }} /
+                        {{ calTotalSteps }}
+                    </span>
+                    <v-spacer />
+                    <v-btn icon small @click="calOpen = false">
+                        <v-icon size="18">{{ mdiClose }}</v-icon>
+                    </v-btn>
+                </v-card-title>
+                <v-divider />
+                <v-card-text class="pa-3 sa-cal-body">
+                    <!-- Step 0 — Motor direction -->
+                    <div v-if="calStep === 0">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalMotors') }}
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalMotorsHint') }}
+                        </div>
+                        <div class="d-flex mb-3">
+                            <v-btn small class="mr-2 sa-feed-btn" @click="saGcode('SA_BUZZ_DRIVE')">
+                                {{ $t('Panels.AutoloaderPanel.BuzzDrive') }}
+                            </v-btn>
+                            <v-btn small class="sa-feed-btn" @click="saGcode('SA_BUZZ_SELECTOR')">
+                                {{ $t('Panels.AutoloaderPanel.BuzzSelector') }}
+                            </v-btn>
+                        </div>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalMotorsExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalMotorsWarn') }}
+                        </div>
+                    </div>
+
+                    <!-- Step 1 — Home -->
+                    <div v-if="calStep === 1">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalHome') }}
+                        </div>
+                        <div
+                            class="sa-cal-status"
+                            :class="isSelectorHomed ? 'sa-cal-status--ok' : 'sa-cal-status--warn'">
+                            {{ isSelectorHomed
+                                ? $t('Panels.AutoloaderPanel.CalHomeOk')
+                                : $t('Panels.AutoloaderPanel.CalHomeNo') }}
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalHomeHint') }}
+                        </div>
+                        <v-btn small class="sa-feed-btn mb-3" @click="saGcode('SA_HOME')">
+                            {{ $t('Panels.AutoloaderPanel.Home') }}
+                        </v-btn>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalHomeExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalHomeWarn') }}
+                        </div>
+                    </div>
+
+                    <!-- Step 2 — Selector positions -->
+                    <div v-if="calStep === 2">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalSelector') }}
+                        </div>
+                        <div
+                            class="sa-cal-status"
+                            :class="selectorCalibrated ? 'sa-cal-status--ok' : 'sa-cal-status--warn'">
+                            <template v-if="selectorCalibrated">
+                                ✓ {{ $t('Panels.AutoloaderPanel.Calibrated') }}:
+                                {{ selectorPositionsLabel }}
+                            </template>
+                            <template v-else>
+                                ✗ {{ $t('Panels.AutoloaderPanel.CalSelectorDefaults') }}
+                            </template>
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalSelectorHint') }}
+                        </div>
+                        <v-btn
+                            small
+                            class="sa-feed-btn mb-3"
+                            :disabled="!isSelectorHomed"
+                            @click="saGcode('SA_CALIBRATE_SELECTOR')">
+                            {{ $t('Panels.AutoloaderPanel.RunSelector') }}
+                        </v-btn>
+                        <div v-if="!isSelectorHomed" class="caption grey--text mb-2">
+                            {{ $t('Panels.AutoloaderPanel.HomeRequired') }}
+                        </div>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalSelectorExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalSelectorWarn') }}
+                        </div>
+                    </div>
+
+                    <!-- Step 3 — Drive rotation distance -->
+                    <div v-if="calStep === 3">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalDrive') }}
+                        </div>
+                        <div
+                            class="sa-cal-status"
+                            :class="driveCalibrated ? 'sa-cal-status--ok' : 'sa-cal-status--warn'">
+                            <template v-if="driveCalibrated">
+                                ✓ rotation_distance = {{ saStatus.drive_rotation_distance.toFixed(4) }}
+                            </template>
+                            <template v-else>
+                                ✗ {{ $t('Panels.AutoloaderPanel.NotCalibrated') }}
+                            </template>
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalDriveHint') }}
+                        </div>
+                        <v-btn
+                            small
+                            class="sa-feed-btn mb-3"
+                            @click="saGcode('SA_CALIBRATE_DRIVE')">
+                            {{ $t('Panels.AutoloaderPanel.RunDrive') }}
+                        </v-btn>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalDriveExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalDriveWarn') }}
+                        </div>
+                    </div>
+
+                    <!-- Step 4 — Encoder max speed -->
+                    <div v-if="calStep === 4">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalEncSpeed') }}
+                        </div>
+                        <div
+                            class="sa-cal-status"
+                            :class="encoderSpeedCalibrated ? 'sa-cal-status--ok' : 'sa-cal-status--warn'">
+                            <template v-if="encoderSpeedCalibrated">
+                                ✓ Max = {{ encoderMaxSpeed.toFixed(1) }} mm/s
+                                ({{ $t('Panels.AutoloaderPanel.Blast') }}
+                                = {{ (encoderMaxSpeed * 0.75).toFixed(1) }} mm/s)
+                            </template>
+                            <template v-else>
+                                ✗ {{ $t('Panels.AutoloaderPanel.CalEncSpeedDefault') }}
+                            </template>
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalEncSpeedHint') }}
+                        </div>
+                        <v-btn
+                            small
+                            class="sa-feed-btn mb-3"
+                            @click="saGcode('SA_CALIBRATE_ENCODER_SPEED')">
+                            {{ $t('Panels.AutoloaderPanel.RunEncSpeed') }}
+                        </v-btn>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalEncSpeedExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalEncSpeedWarn') }}
+                        </div>
+                    </div>
+
+                    <!-- Step 5 — Per-tool encoder mm/pulse -->
+                    <div v-if="calStep === 5">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalEncoder') }}
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalEncoderHint') }}
+                        </div>
+                        <div class="sa-tool-grid mb-3">
+                            <div
+                                v-for="i in saPathIndices"
+                                :key="i"
+                                class="sa-tool-cell">
+                                <div
+                                    class="caption mb-1"
+                                    :class="toolEncoderDone(i) ? 'success--text' : 'grey--text'">
+                                    T{{ i }} ·
+                                    {{ toolEncoderDone(i)
+                                        ? saStatus.encoder_mpp[i].toFixed(4)
+                                        : '—' }}
+                                </div>
+                                <v-btn
+                                    small
+                                    block
+                                    class="sa-feed-btn"
+                                    @click="saGcode(`SA_CALIBRATE_ENCODER TOOL=${i}`)">
+                                    {{ $t('Panels.AutoloaderPanel.Run') }}
+                                </v-btn>
+                            </div>
+                        </div>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalEncoderExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalEncoderWarn') }}
+                        </div>
+                    </div>
+
+                    <!-- Step 6 — Per-tool bowden length -->
+                    <div v-if="calStep === 6">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalBowden') }}
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalBowdenHint') }}
+                        </div>
+                        <div class="sa-tool-grid mb-3">
+                            <div
+                                v-for="i in saPathIndices"
+                                :key="i"
+                                class="sa-tool-cell">
+                                <div
+                                    class="caption mb-1"
+                                    :class="toolBowdenDone(i) ? 'success--text' : 'grey--text'">
+                                    T{{ i }} ·
+                                    {{ toolBowdenDone(i)
+                                        ? `${saStatus.bowden_lengths[i].toFixed(0)}mm`
+                                        : '—' }}
+                                </div>
+                                <v-btn
+                                    small
+                                    block
+                                    class="sa-feed-btn"
+                                    @click="saGcode(`SA_CALIBRATE_BOWDEN TOOL=${i}`)">
+                                    {{ $t('Panels.AutoloaderPanel.Run') }}
+                                </v-btn>
+                            </div>
+                        </div>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalBowdenExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalBowdenWarn') }}
+                        </div>
+                        <div class="caption grey--text mt-3">
+                            {{ $t('Panels.AutoloaderPanel.CalSaveNote') }}
+                            <v-btn x-small text class="sa-save-config" @click="saGcode('SAVE_CONFIG')">
+                                {{ $t('Panels.AutoloaderPanel.SaveConfig') }}
+                            </v-btn>
+                        </div>
+                    </div>
+                </v-card-text>
+                <v-divider />
+                <v-card-actions class="px-3 py-2">
+                    <v-btn small text :disabled="calStep === 0" @click="calStep--">
+                        <v-icon size="16" left>{{ mdiArrowLeft }}</v-icon>
+                        {{ $t('Panels.AutoloaderPanel.Back') }}
+                    </v-btn>
+                    <v-spacer />
+                    <v-btn
+                        v-if="calStep < calTotalSteps - 1"
+                        small
+                        color="primary"
+                        @click="calStep++">
+                        {{ $t('Panels.AutoloaderPanel.Next') }}
+                        <v-icon size="16" right>{{ mdiArrowRight }}</v-icon>
+                    </v-btn>
+                    <v-btn v-else small color="primary" @click="calOpen = false">
+                        {{ $t('Panels.AutoloaderPanel.Finish') }}
+                    </v-btn>
+                </v-card-actions>
+            </v-card>
+        </v-dialog>
+
+        <!-- ─── PROMPT DIALOG ──────────────────────────────────────
+             Three modes driven by cal_state, mirroring KlipperScreen's
+             sa_post_load.py:
+               * load_purge   → load-complete action panel
+               * unload_done  → unload-complete action panel
+               * anything else → generic calibration prompt
+        -->
+        <v-dialog v-model="promptOpen" max-width="480" persistent :retain-focus="false">
+            <v-card class="sa-dialog">
+                <v-card-title class="sa-dialog-title">
+                    <v-icon
+                        left
+                        size="18"
+                        :color="promptKind === 'load' ? 'success' : promptKind === 'unload' ? 'warning' : 'warning'">
+                        {{ promptKind === 'generic' ? mdiAlertCircleOutline : mdiCheckCircle }}
+                    </v-icon>
+                    <span class="subtitle-2">{{ promptDialogTitle }}</span>
+                </v-card-title>
+                <v-divider />
+
+                <!-- ─── LOAD COMPLETE ────────────────────────────── -->
+                <template v-if="promptKind === 'load'">
+                    <v-card-text class="pa-4 sa-prompt-header">
+                        <div class="success--text font-weight-bold sa-prompt-headline">
+                            {{ $t('Panels.AutoloaderPanel.LoadComplete') }} · T{{ saStatus.cal_path }}
+                        </div>
+                        <div class="caption grey--text">
+                            {{ $t('Panels.AutoloaderPanel.LoadCompleteSub') }}
+                        </div>
+                    </v-card-text>
+                    <v-divider />
+                    <v-card-actions class="px-3 py-2 sa-prompt-row">
+                        <v-btn small color="success" class="ma-1 flex-grow-1" @click="sendPromptValue('more')">
+                            <v-icon left size="16">{{ mdiAutorenew }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.Purge60') }}
+                        </v-btn>
+                        <v-btn small class="ma-1 flex-grow-1" @click="sendPromptValue('park')">
+                            <v-icon left size="16">{{ mdiHomeMapMarker }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.Park') }}
+                        </v-btn>
+                        <v-btn small color="error" class="ma-1 flex-grow-1" @click="sendPromptValue('exit')">
+                            <v-icon left size="16">{{ mdiClose }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.Exit') }}
+                        </v-btn>
+                    </v-card-actions>
+                </template>
+
+                <!-- ─── UNLOAD COMPLETE ──────────────────────────── -->
+                <template v-else-if="promptKind === 'unload'">
+                    <v-card-text class="pa-4 sa-prompt-header">
+                        <div class="warning--text font-weight-bold sa-prompt-headline">
+                            {{ $t('Panels.AutoloaderPanel.UnloadComplete') }} · T{{ saStatus.cal_path }}
+                        </div>
+                        <div class="caption grey--text">
+                            {{ $t('Panels.AutoloaderPanel.UnloadCompleteSub') }}
+                        </div>
+                    </v-card-text>
+                    <v-divider />
+                    <v-card-actions class="px-3 py-2 sa-prompt-row">
+                        <v-btn small class="ma-1 flex-grow-1" @click="sendPromptValue('park')">
+                            <v-icon left size="16">{{ mdiHomeMapMarker }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.Park') }}
+                        </v-btn>
+                        <v-btn small color="error" class="ma-1 flex-grow-1" @click="sendPromptValue('exit')">
+                            <v-icon left size="16">{{ mdiClose }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.Exit') }}
+                        </v-btn>
+                    </v-card-actions>
+                    <v-divider />
+                    <v-card-actions class="px-3 py-2">
+                        <v-btn small color="success" class="ma-1 flex-grow-1" @click="sendPromptValue('load')">
+                            <v-icon left size="16">{{ mdiPlay }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.LoadSamePath') }}
+                        </v-btn>
+                    </v-card-actions>
+                </template>
+
+                <!-- Path grids — shared by both load and unload modes -->
+                <template v-if="promptKind === 'load' || promptKind === 'unload'">
+                    <v-divider />
+                    <v-card-text class="pa-3">
+                        <div class="caption mb-1" style="color:#90CAF9;">
+                            <v-icon size="14" left color="#90CAF9">{{ mdiUpload }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.LoadPath') }}
+                        </div>
+                        <div class="sa-path-grid mb-3">
+                            <v-btn
+                                v-for="i in saPathIndices"
+                                :key="`load-${i}`"
+                                small
+                                outlined
+                                class="sa-path-btn"
+                                @click="sendPathAction('load', i)">
+                                T{{ i }}
+                            </v-btn>
+                        </div>
+                        <div class="caption mb-1" style="color:#FFCC80;">
+                            <v-icon size="14" left color="#FFCC80">{{ mdiDownload }}</v-icon>
+                            {{ $t('Panels.AutoloaderPanel.UnloadPath') }}
+                        </div>
+                        <div class="sa-path-grid">
+                            <v-btn
+                                v-for="i in saPathIndices"
+                                :key="`unload-${i}`"
+                                small
+                                outlined
+                                class="sa-path-btn"
+                                @click="sendPathAction('unload', i)">
+                                T{{ i }}
+                            </v-btn>
+                        </div>
+                    </v-card-text>
+                </template>
+
+                <!-- ─── GENERIC CAL PROMPT ───────────────────────── -->
+                <template v-else>
+                    <v-card-text class="pa-4 sa-prompt-text">
+                        {{ saStatus.cal_prompt }}
+                    </v-card-text>
+                    <v-divider />
+                    <v-card-actions class="px-3 py-2 flex-wrap sa-prompt-actions">
+                        <v-btn small class="sa-feed-btn ma-1" @click="sendPromptValue('yes')">
+                            {{ $t('Panels.AutoloaderPanel.Yes') }}
+                        </v-btn>
+                        <v-btn small class="sa-feed-btn ma-1" @click="sendPromptValue('no')">
+                            {{ $t('Panels.AutoloaderPanel.No') }}
+                        </v-btn>
+                        <v-btn small class="sa-feed-btn ma-1" @click="sendPromptValue('ok')">
+                            {{ $t('Panels.AutoloaderPanel.OK') }}
+                        </v-btn>
+                        <v-btn small class="sa-feed-btn ma-1" @click="sendPromptValue('continue')">
+                            {{ $t('Panels.AutoloaderPanel.Continue') }}
+                        </v-btn>
+                        <v-btn small class="sa-feed-btn ma-1" @click="sendPromptValue('cancel')">
+                            {{ $t('Panels.AutoloaderPanel.Cancel') }}
+                        </v-btn>
+                    </v-card-actions>
+                    <v-divider />
+                    <v-card-actions class="px-3 py-2">
+                        <v-text-field
+                            v-model="calResponse"
+                            :label="$t('Panels.AutoloaderPanel.CalResponse')"
+                            dense
+                            outlined
+                            hide-details
+                            @keyup.enter="sendCalResponse" />
+                        <v-btn
+                            small
+                            color="primary"
+                            class="ml-2"
+                            :disabled="!calResponse.trim()"
+                            @click="sendCalResponse">
+                            {{ $t('Panels.AutoloaderPanel.Respond') }}
+                        </v-btn>
+                    </v-card-actions>
+                </template>
+            </v-card>
+        </v-dialog>
+
+        <!-- ─── COLOR PICKER DIALOG (for custom pie slices) ────── -->
+        <v-dialog v-model="pickerOpen" max-width="320" :retain-focus="false">
+            <v-card class="sa-dialog">
+                <v-card-title class="sa-dialog-title">
+                    <span class="subtitle-2">
+                        {{ $t('Panels.AutoloaderPanel.PickColor') }}
+                        <span v-if="colorMode !== 'single'" class="grey--text">
+                            — {{ pickerSliceLabel }}
+                        </span>
+                    </span>
+                    <v-spacer />
+                    <v-btn icon small @click="pickerOpen = false">
+                        <v-icon size="18">{{ mdiClose }}</v-icon>
+                    </v-btn>
+                </v-card-title>
+                <v-divider />
+                <v-color-picker
+                    v-model="pickerColor"
+                    mode="hexa"
+                    hide-mode-switch
+                    flat
+                    dot-size="20" />
+            </v-card>
+        </v-dialog>
+    </div>
+</template>
+
+<script lang="ts">
+import { Component, Mixins, Prop, Watch } from 'vue-property-decorator'
+import {
+    mdiClose,
+    mdiArrowUpBold,
+    mdiArrowDownBold,
+    mdiPencil,
+    mdiCogOutline,
+    mdiArrowLeft,
+    mdiArrowRight,
+    mdiAlertCircleOutline,
+    mdiCheckCircle,
+    mdiAutorenew,
+    mdiHomeMapMarker,
+    mdiPlay,
+    mdiUpload,
+    mdiDownload,
+} from '@mdi/js'
+import axios from './lib/http'
+import SaMixin, { saBorderForHex } from './mixin'
+import localeMessages from './locales/index.json'
+import { saSpoolIcon } from './icons'
+
+interface SaBrand {
+    display_name: string
+    filepath: string
+}
+
+interface SaColor {
+    id: string
+    name: string
+    hex: string
+    /** Explicit fields from new-format brand cfgs — present once the catalog
+     *  provides them. When set, these win over name/line heuristics. */
+    color_type?: string
+    hex_2?: string
+    hex_3?: string
+    /** Enrichment: 'single'|'dual'|'tri'|'gradient' derived from name/line. */
+    mode?: 'single' | 'dual' | 'tri' | 'gradient'
+    /** Enrichment: full hex list for single/dual/tri. Always includes base hex first. */
+    hexes?: string[]
+}
+
+interface SaProductLine {
+    line_id: string
+    display_name: string
+    material: string
+    description: string
+    load_temp: number
+    unload_temp: number
+    purge_speed: number
+    purge_length: number
+    bed_temp: number
+    notes: string
+    colors: SaColor[]
+}
+
+/**
+ * Common filament color names → representative hex. Used to derive the
+ * second / third hex for catalog entries with multi-color names like
+ * "Dual Gold/Black" — the config only carries ONE hex, so we look up
+ * "Black" here to paint the second pie slice.
+ */
+const NAMED_COLORS: Record<string, string> = {
+    black: '#1A1A1A',
+    white: '#F0F0F0',
+    grey: '#808080',
+    gray: '#808080',
+    charcoal: '#36454F',
+    natural: '#E8DCC4',
+    beige: '#E5D5B7',
+    cream: '#FFF8DC',
+    ivory: '#FFFFF0',
+    red: '#E53935',
+    blue: '#1E88E5',
+    green: '#43A047',
+    yellow: '#FDD835',
+    orange: '#FB8C00',
+    purple: '#8E24AA',
+    violet: '#7E57C2',
+    pink: '#EC407A',
+    magenta: '#C2185B',
+    cyan: '#00ACC1',
+    teal: '#00897B',
+    gold: '#FFC107',
+    silver: '#BDBDBD',
+    bronze: '#8D6E63',
+    copper: '#BF5F00',
+    brown: '#6D4C41',
+    tan: '#B08E5A',
+    navy: '#1A237E',
+    maroon: '#5D1A1A',
+    burgundy: '#4E1519',
+    lime: '#C0CA33',
+    mint: '#26A69A',
+    coral: '#FF7043',
+    salmon: '#FF8A65',
+    peach: '#FFAB91',
+    clear: '#F5F5F5',
+    transparent: '#F5F5F5',
+    translucent: '#F5F5F5',
+}
+
+function cleanColorWord(w: string): string {
+    // Strip "(UV shift)" style parentheticals; lowercase; trim
+    return w
+        .replace(/\s*\([^)]*\)\s*/g, '')
+        .trim()
+        .toLowerCase()
+}
+
+// ── HSL helpers for generating pie-slice colors when the catalog only
+//    carries one representative hex (e.g. Polymaker Panchroma Dual Silk
+//    entries named "Aubergine", "Beluga", etc. with no second-color hint).
+function hexToHsl(hex: string): [number, number, number] {
+    const h = hex.replace(/^#/, '').padEnd(6, '0')
+    const r = parseInt(h.slice(0, 2), 16) / 255
+    const g = parseInt(h.slice(2, 4), 16) / 255
+    const b = parseInt(h.slice(4, 6), 16) / 255
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const l = (max + min) / 2
+    if (max === min) return [0, 0, l * 100]
+    const d = max - min
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+    let hue = 0
+    if (max === r) hue = (g - b) / d + (g < b ? 6 : 0)
+    else if (max === g) hue = (b - r) / d + 2
+    else hue = (r - g) / d + 4
+    return [(hue / 6) * 360, s * 100, l * 100]
+}
+
+function hslToHex(hDeg: number, sPct: number, lPct: number): string {
+    const h = (((hDeg % 360) + 360) % 360) / 360
+    const s = sPct / 100
+    const l = lPct / 100
+    if (s === 0) {
+        const v = Math.round(l * 255)
+            .toString(16)
+            .padStart(2, '0')
+        return `#${v}${v}${v}`.toUpperCase()
+    }
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+    const p = 2 * l - q
+    const hue2rgb = (t: number): number => {
+        if (t < 0) t += 1
+        if (t > 1) t -= 1
+        if (t < 1 / 6) return p + (q - p) * 6 * t
+        if (t < 1 / 2) return q
+        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+        return p
+    }
+    const r = hue2rgb(h + 1 / 3)
+    const g = hue2rgb(h)
+    const b = hue2rgb(h - 1 / 3)
+    const toHex = (v: number): string =>
+        Math.round(v * 255)
+            .toString(16)
+            .padStart(2, '0')
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase()
+}
+
+/** Rotate the hue of a hex color by `degrees` (e.g. 180 = complementary). */
+function shiftHue(hex: string, degrees: number): string {
+    if (!hex) return hex
+    const [h, s, l] = hexToHsl(hex)
+    // Keep saturation above a visible floor so complement of near-greys
+    // doesn't come out as just another grey.
+    const sBoosted = Math.max(s, 30)
+    return hslToHex(h + degrees, sBoosted, l)
+}
+
+function namedColorToHex(word: string, fallback: string): string {
+    const cleaned = cleanColorWord(word)
+    if (!cleaned) return fallback
+    if (NAMED_COLORS[cleaned]) return NAMED_COLORS[cleaned]
+    // Partial match ("Cold White" → "white", "Rose Gold" → "gold")
+    for (const key of Object.keys(NAMED_COLORS)) {
+        if (cleaned.endsWith(key) || cleaned.includes(` ${key}`) || cleaned.startsWith(`${key} `)) {
+            return NAMED_COLORS[key]
+        }
+    }
+    return fallback
+}
+
+/**
+ * Inspect a catalog color and determine whether it's single/dual/tri/gradient.
+ * Rules:
+ *   - product line marked "gradient" in name/description → gradient
+ *   - name starts with "Dual|Tri|Bicolor|Tricolor" and has an X/Y split → that mode
+ *   - name has "/" separator(s) → dual (1 slash) or tri (2 slashes)
+ *   - otherwise single
+ * The stored hex is always the first color; additional hexes are derived
+ * from the remaining words via NAMED_COLORS.
+ */
+function parseMultiColor(
+    name: string,
+    baseHex: string,
+    line?: SaProductLine,
+    explicit?: { color_type?: string; hex_2?: string; hex_3?: string }
+): { mode: 'single' | 'dual' | 'tri' | 'gradient'; hexes: string[] } {
+    const normBase = baseHex ? (baseHex.startsWith('#') ? baseHex : `#${baseHex}`) : ''
+    const norm = (h: string): string => (h ? (h.startsWith('#') ? h : `#${h}`) : '')
+
+    // EXPLICIT fields from new-format brand cfgs win unconditionally — they
+    // carry actual hex values for each slice, not heuristic guesses.
+    if (explicit?.color_type) {
+        const t = explicit.color_type.toLowerCase()
+        const h2 = norm(explicit.hex_2 ?? '')
+        const h3 = norm(explicit.hex_3 ?? '')
+        if (t === 'tri' && h2 && h3) {
+            return { mode: 'tri', hexes: [normBase, h2, h3] }
+        }
+        if (t === 'dual' && h2) {
+            return { mode: 'dual', hexes: [normBase, h2] }
+        }
+        if (t === 'gradient') {
+            return { mode: 'gradient', hexes: h2 ? [normBase, h2] : [normBase] }
+        }
+        // color_type === 'single' (or unrecognized) → fall through to heuristics
+    }
+
+    const ctx = `${line?.display_name ?? ''} ${line?.description ?? ''}`.toLowerCase()
+
+    // Gradient context wins first — most specific product-line signal.
+    if (/\bgradient\b|\brainbow\s*spool\b|\bmulti-?color\b/.test(ctx)) {
+        return { mode: 'gradient', hexes: [normBase] }
+    }
+
+    // Explicit X/Y (or X/Y/Z) pattern in the color name — Amolen style.
+    // "Dual Gold/Black" → split on '/' and look up each word in NAMED_COLORS.
+    const cleanName = (name || '')
+        .replace(/^(Dual|Tri|Bi-?color|Tri-?color|Tricolored|Two-tone)\s+/i, '')
+        .replace(/\s*\([^)]*\)\s*/g, '')
+        .trim()
+    const parts = cleanName
+        .split(/\s*\/\s*/)
+        .map((p) => p.trim())
+        .filter((p) => p)
+    if (parts.length >= 3) {
+        return {
+            mode: 'tri',
+            hexes: [
+                normBase,
+                namedColorToHex(parts[1], shiftHue(normBase, 120)),
+                namedColorToHex(parts[2], shiftHue(normBase, 240)),
+            ],
+        }
+    }
+    if (parts.length === 2) {
+        return {
+            mode: 'dual',
+            hexes: [normBase, namedColorToHex(parts[1], shiftHue(normBase, 180))],
+        }
+    }
+
+    // Line-context multi-color: the color NAME doesn't split, but the product
+    // line itself is a dual/tri product (Polymaker Panchroma Dual Silk/Matte,
+    // etc.). Each color entry still carries only one representative hex, so
+    // generate the remaining slice(s) via hue rotation to visually indicate
+    // the multi-color nature.
+    if (/\btri-?color(ed)?\b/i.test(ctx)) {
+        return {
+            mode: 'tri',
+            hexes: [normBase, shiftHue(normBase, 120), shiftHue(normBase, 240)],
+        }
+    }
+    if (/\bdual\b|\bbi-?color\b|\btwo-?tone\b|\bco-?extru/i.test(ctx)) {
+        return { mode: 'dual', hexes: [normBase, shiftHue(normBase, 180)] }
+    }
+
+    return { mode: 'single', hexes: [normBase] }
+}
+
+// Named explicitly: minification renames the class, and Vue registers a
+// class component under that name. A one-letter minified name collides with
+// a real HTML tag and Vue warns about a reserved component id.
+@Component({ name: 'AutoloaderPanel' })
+export default class AutoloaderPanel extends Mixins(SaMixin) {
+    /*
+     * Props supplied by Mainsail's CustomPanel host.
+     *
+     * panelStore/panelSocket are the sanctioned way for a plugin to reach the
+     * host; $store and $socket also happen to resolve because the plugin
+     * shares Mainsail's Vue constructor and renders inside its component
+     * tree, but that is an implementation detail rather than a contract.
+     */
+    @Prop({ type: Object, required: true }) declare readonly panelConfig: Record<string, unknown>
+    @Prop({ type: Object, required: true }) declare readonly panelStore: any
+    @Prop({ type: Object, required: true }) declare readonly panelSocket: any
+
+    /**
+     * Moonraker's base URL. Upstream this came from BaseMixin, which a plugin
+     * cannot import — it lives inside Mainsail's own source tree. The getter
+     * body is the same one BaseMixin uses.
+     */
+    get apiUrl(): string {
+        return this.panelStore.getters['socket/getUrl']
+    }
+
+    /*
+     * The panel's ~120 translation keys ship with the plugin instead of
+     * Mainsail's locale files, since the host has no reason to carry strings
+     * for a panel it does not know about. Merging in created() puts them in
+     * place before the first render, so no $t call ever renders a raw key.
+     */
+    created(): void {
+        const messages = localeMessages as Record<string, Record<string, unknown>>
+
+        Object.keys(messages).forEach((locale) => {
+            this.$i18n.mergeLocaleMessage(locale, messages[locale])
+        })
+    }
+
+    saSpoolIcon = saSpoolIcon
+    mdiClose = mdiClose
+    mdiArrowUpBold = mdiArrowUpBold
+    mdiArrowDownBold = mdiArrowDownBold
+    mdiPencil = mdiPencil
+    mdiCogOutline = mdiCogOutline
+    mdiArrowLeft = mdiArrowLeft
+    mdiArrowRight = mdiArrowRight
+    mdiAlertCircleOutline = mdiAlertCircleOutline
+    mdiCheckCircle = mdiCheckCircle
+    mdiAutorenew = mdiAutorenew
+    mdiHomeMapMarker = mdiHomeMapMarker
+    mdiPlay = mdiPlay
+    mdiUpload = mdiUpload
+    mdiDownload = mdiDownload
+    saBorderForHex = saBorderForHex
+
+    /** Auto-shown when the autoloader sets cal_state non-empty (calibration
+     *  prompts, unload-confirm prompts, etc.). Closes when the printer
+     *  clears cal_state. */
+    promptOpen = false
+
+    // Calibration wizard state (mirrors KlipperScreen sa_calibration_guide)
+    calOpen = false
+    calStep = 0
+    calTotalSteps = 7
+
+    // Feed/Retract state
+    feedDistance = 50
+    feedSpeed = 10
+    feedDistancePresets = [10, 50, 100, 200]
+    feedSpeedPresets = [5, 10, 25, 50]
+
+    pathModalOpen = false
+    pathModalIdx: number | null = null
+    profileOpen = false
+    calResponse = ''
+
+    editMaterial = ''
+    editBrand = ''
+    editLine = ''
+    editColorName = ''
+    editColorHex = ''
+    editLoadTemp = 200
+    editUnloadTemp = 185
+    editPurgeSpeed = 5
+    editPurgeLength = 30
+
+    // Catalog cascade state
+    brandItems: SaBrand[] = []
+    productLineItems: SaProductLine[] = []
+    colorItems: SaColor[] = []
+    selectedBrandPath = ''
+    selectedLineId = ''
+    selectedColorId = ''
+    loadingBrands = false
+    loadingLines = false
+
+    // Custom-color state (single / dual / tri)
+    colorMode: 'single' | 'dual' | 'tri' = 'single'
+    // Authoritative type for the saved profile (matches what the autoloader
+    // klipper module accepts/exposes). 'gradient' has no editor toggle but is
+    // preserved when the user picks a gradient catalog entry.
+    editColorType: 'single' | 'dual' | 'tri' | 'gradient' = 'single'
+    customHexes: string[] = ['FFFFFF', '000000', '808080']
+
+    // Color picker dialog
+    pickerOpen = false
+    pickerSlice = 0
+    pickerColor = '#FFFFFF'
+
+    // Client-side homed tracker. The autoloader module does NOT expose its
+    // `_selector_homed` flag through `get_status`, so we infer homed state
+    // from (a) any path being currently selected (current_path >= 0 — impossible
+    // without a prior home), or (b) having seen an "SA: Selector homed"
+    // gcode response message since the last Klippy connect/shutdown.
+    selectorHomedSawMessage = false
+    private _unsubStore: (() => void) | null = null
+
+    get isCustomColor(): boolean {
+        return this.selectedColorId === '__custom__'
+    }
+
+    get selectedLine(): SaProductLine | undefined {
+        return this.productLineItems.find((l) => l.line_id === this.selectedLineId)
+    }
+
+    get colorModeLabels(): string[] {
+        return [
+            this.$t('Panels.AutoloaderPanel.Single') as string,
+            this.$t('Panels.AutoloaderPanel.Dual') as string,
+            this.$t('Panels.AutoloaderPanel.Tri') as string,
+        ]
+    }
+
+    get colorModeIdx(): number {
+        return ['single', 'dual', 'tri'].indexOf(this.colorMode)
+    }
+
+    set colorModeIdx(val: number) {
+        this.colorMode = (['single', 'dual', 'tri'] as const)[val] ?? 'single'
+        // User touched the toggle → that is now the authoritative type
+        // (any prior 'gradient' selection is replaced).
+        this.editColorType = this.colorMode
+    }
+
+    get pieSliceCount(): number {
+        return this.colorMode === 'tri' ? 3 : this.colorMode === 'dual' ? 2 : 1
+    }
+
+    get pieSlices(): Array<{ type: 'circle' | 'arc'; d?: string; r?: number; color: string }> {
+        const sliceColor = (i: number): string => {
+            const raw = (this.customHexes[i] || '').replace(/^#/, '')
+            return raw ? `#${raw}` : '#E0E0E0'
+        }
+        if (this.colorMode === 'single') {
+            return [{ type: 'circle', r: 45, color: sliceColor(0) }]
+        }
+        if (this.colorMode === 'dual') {
+            // KlipperScreen convention: hex[0] on left, hex[1] on right.
+            // arcPath(180, 360) sweeps clockwise from 6→12 via the 9 o'clock side → LEFT.
+            // arcPath(0, 180)   sweeps clockwise from 12→6 via the 3 o'clock side → RIGHT.
+            return [
+                { type: 'arc', d: this.arcPath(180, 360, 45), color: sliceColor(0) },
+                { type: 'arc', d: this.arcPath(0, 180, 45), color: sliceColor(1) },
+            ]
+        }
+        // Tri — three 120° sectors starting from the top.
+        const slices: Array<{ type: 'circle' | 'arc'; d?: string; color: string }> = []
+        const step = 360 / 3
+        for (let i = 0; i < 3; i++) {
+            slices.push({
+                type: 'arc',
+                d: this.arcPath(i * step, (i + 1) * step, 45),
+                color: sliceColor(i),
+            })
+        }
+        return slices
+    }
+
+    get pickerSliceLabel(): string {
+        const n = this.pickerSlice + 1
+        const labels = ['1st', '2nd', '3rd']
+        return labels[this.pickerSlice] ?? `#${n}`
+    }
+
+    arcPath(startAngle: number, endAngle: number, r: number): string {
+        // Start angles are measured from top (12 o'clock), going clockwise.
+        const rad = (deg: number): number => ((deg - 90) * Math.PI) / 180
+        const x1 = r * Math.cos(rad(startAngle))
+        const y1 = r * Math.sin(rad(startAngle))
+        const x2 = r * Math.cos(rad(endAngle))
+        const y2 = r * Math.sin(rad(endAngle))
+        const largeArc = endAngle - startAngle > 180 ? 1 : 0
+        return `M 0,0 L ${x1.toFixed(3)},${y1.toFixed(3)} A ${r},${r} 0 ${largeArc},1 ${x2.toFixed(3)},${y2.toFixed(3)} Z`
+    }
+
+    openPicker(idx: number): void {
+        this.pickerSlice = idx
+        const hex = (this.customHexes[idx] || 'FFFFFF').replace(/^#/, '')
+        this.pickerColor = `#${hex}`
+        this.pickerOpen = true
+    }
+
+    @Watch('pickerColor')
+    onPickerColorChange(val: unknown): void {
+        if (!this.pickerOpen) return
+        // v-color-picker can emit either a string "#RRGGBB"/"#RRGGBBAA" or an
+        // object { hex: ..., hexa: ..., rgba: ..., ... }. Normalize here.
+        let hex = ''
+        if (typeof val === 'string') {
+            hex = val
+        } else if (val && typeof val === 'object') {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const obj = val as any
+            hex = obj.hex ?? obj.hexa ?? ''
+        }
+        const clean = hex.replace(/^#/, '').substring(0, 6).toUpperCase()
+        if (clean.length !== 6) return
+        const next = [...this.customHexes]
+        next[this.pickerSlice] = clean
+        this.customHexes = next
+    }
+
+    get canLoadModal(): boolean {
+        if (this.pathModalIdx === null) return false
+        const i = this.pathModalIdx
+        if (this.saEffectiveState(i) === 'loaded') return false
+        if (!this.saStatus.path_color_hexes[i]) return false
+        return true
+    }
+
+    get canUnloadModal(): boolean {
+        if (this.pathModalIdx === null) return false
+        const state = this.saEffectiveState(this.pathModalIdx)
+        return state !== 'empty' && state !== 'unknown'
+    }
+
+    get isLoading(): boolean {
+        return this.$store.state.socket.loadings.includes('sendGcode')
+    }
+
+    /**
+     * Config-declared stepper key under `stepper_enable.steppers`.
+     * e.g. "manual_stepper sa_selector".
+     */
+    get selectorStepperKey(): string {
+        return (
+            this.$store.state.printer?.configfile?.settings?.autoloader
+                ?.selector_stepper ?? 'manual_stepper sa_selector'
+        )
+    }
+
+    /**
+     * True when the selector stepper is currently energized. If it's off,
+     * the selector has lost its reference — must re-home before trusting
+     * any position.
+     */
+    get selectorStepperEnabled(): boolean {
+        const steppers = this.$store.state.printer?.stepper_enable?.steppers
+        if (!steppers) return true // data not yet available — fail-safe
+        return !!steppers[this.selectorStepperKey]
+    }
+
+    /**
+     * Returns true when the selector is homed. Requires BOTH:
+     *   (1) The selector stepper is currently energized — `stepper_enable`
+     *       flips this to false on M84 / DISABLE_MOTORS / any TURN_OFF_MOTORS.
+     *   (2) We've observed a "SA: Selector homed" gcode response since the
+     *       last disable or Klippy reconnect.
+     * Using stepper_enable is authoritative; event-text matching on its own
+     * missed M84 sent via macros / buttons.
+     */
+    get isSelectorHomed(): boolean {
+        return this.selectorStepperEnabled && this.selectorHomedSawMessage
+    }
+
+    @Watch('selectorStepperEnabled')
+    onSelectorStepperEnabledChange(enabled: boolean): void {
+        // Any transition to "disabled" invalidates the homed flag — position
+        // is unknown once the motor is de-energized. Re-enabling doesn't
+        // restore home; SA_HOME must run again.
+        if (!enabled) {
+            this.selectorHomedSawMessage = false
+        }
+    }
+
+    get isServoEngaged(): boolean {
+        return !!this.saStatus.servo_engaged
+    }
+
+    get klippyState(): string {
+        return this.$store.state.server?.klippy_state ?? ''
+    }
+
+    @Watch('klippyState')
+    onKlippyStateChange(val: string): void {
+        // Any loss of Klippy connection wipes the homed state — the printer
+        // has to re-home when it comes back up.
+        if (val !== 'ready') {
+            this.selectorHomedSawMessage = false
+        }
+    }
+
+    mounted(): void {
+        // Scan recent gcode events to recover the "homed" flag across a page
+        // refresh. `stepper_enable` covers the "unhomed" side authoritatively.
+        if (this.selectorStepperEnabled) {
+            const events = this.$store.state.server?.events ?? []
+            for (let i = events.length - 1; i >= 0; i--) {
+                const msg = events[i]?.message
+                if (typeof msg === 'string' && /SA:\s*Selector\s+homed/i.test(msg)) {
+                    this.selectorHomedSawMessage = true
+                    break
+                }
+            }
+        }
+        // Subscribe to future gcode responses so the home indicator updates live.
+        this._unsubStore = this.$store.subscribe((mutation) => {
+            if (mutation.type !== 'server/addEvent') return
+            const msg = mutation.payload?.message
+            if (typeof msg === 'string' && /SA:\s*Selector\s+homed/i.test(msg)) {
+                this.selectorHomedSawMessage = true
+            }
+        })
+    }
+
+    beforeDestroy(): void {
+        if (this._unsubStore) {
+            this._unsubStore()
+            this._unsubStore = null
+        }
+    }
+
+    /**
+     * Short name of the autoloader's drive manual_stepper, read from
+     * `autoloader.drive_stepper` in the printer config.
+     * Example config value: "manual_stepper sa_drive" → returns "sa_drive".
+     */
+    get driveStepperName(): string {
+        const full =
+            this.$store.state.printer?.configfile?.settings?.autoloader?.drive_stepper
+        if (!full) return 'sa_drive'
+        const parts = String(full).trim().split(/\s+/)
+        return parts[parts.length - 1] || 'sa_drive'
+    }
+
+    doFeed(): void {
+        this.sendManualMove(Math.abs(this.feedDistance))
+    }
+
+    doRetract(): void {
+        this.sendManualMove(-Math.abs(this.feedDistance))
+    }
+
+    sendManualMove(distance: number): void {
+        const speed = Math.max(1, Number(this.feedSpeed) || 10)
+        const stepper = this.driveStepperName
+        const script = [
+            `MANUAL_STEPPER STEPPER=${stepper} ENABLE=1`,
+            `MANUAL_STEPPER STEPPER=${stepper} SET_POSITION=0`,
+            `MANUAL_STEPPER STEPPER=${stepper} MOVE=${distance} SPEED=${speed}`,
+        ].join('\n')
+        this.saGcode(script)
+    }
+
+    openPathModal(i: number): void {
+        this.pathModalIdx = i
+        this.pathModalOpen = true
+    }
+
+    openCalibration(): void {
+        this.calStep = 0
+        this.calOpen = true
+    }
+
+    // ── Calibration status helpers ────────────────────────────────────
+    get selectorCalibrated(): boolean {
+        const positions = this.saStatus.selector_positions ?? []
+        if (positions.length === 0) return false
+        // Defaults are spaced at exactly 21mm increments (0, 21, 42, ...).
+        // Once calibrated, the actual positions drift from those ideals.
+        return positions.some((p, i) => Math.abs(p - i * 21.0) > 1.0)
+    }
+
+    get selectorPositionsLabel(): string {
+        const positions = this.saStatus.selector_positions ?? []
+        return positions.map((p, i) => `T${i}:${p.toFixed(1)}`).join('  ')
+    }
+
+    get driveCalibrated(): boolean {
+        const d = this.saStatus.drive_rotation_distance
+        return typeof d === 'number' && d > 0
+    }
+
+    get encoderMaxSpeed(): number {
+        return this.saStatus.encoder_max_speed ?? 0
+    }
+
+    get encoderSpeedCalibrated(): boolean {
+        return this.encoderMaxSpeed > 0
+    }
+
+    toolEncoderDone(i: number): boolean {
+        const mpp = this.saStatus.encoder_mpp?.[i]
+        return typeof mpp === 'number' && mpp > 0
+    }
+
+    toolBowdenDone(i: number): boolean {
+        // Default length in config is 800mm; consider "calibrated" once it
+        // drifts from that by more than 5mm.
+        const len = this.saStatus.bowden_lengths?.[i]
+        return typeof len === 'number' && Math.abs(len - 800.0) > 5.0
+    }
+
+    async openProfile(): Promise<void> {
+        this.pathModalOpen = false
+        this.profileOpen = true
+        if (this.pathModalIdx !== null) {
+            const i = this.pathModalIdx
+            this.editMaterial = this.saStatus.path_materials?.[i] ?? ''
+            this.editBrand = this.saStatus.path_brands?.[i] ?? ''
+            this.editLine = this.saStatus.path_product_lines?.[i] ?? ''
+            this.editColorName = this.saStatus.path_color_names?.[i] ?? ''
+            const parts = this.saColorParts(i)
+            const mode = this.saColorMode(i)
+            // Reconstruct the editColorHex summary (slash-joined for display only).
+            this.editColorHex = parts.length ? parts.map((h) => `#${h}`).join('/') : ''
+            this.editLoadTemp = this.saStatus.path_load_temps?.[i] ?? 200
+            this.editUnloadTemp = this.saStatus.path_unload_temps?.[i] ?? 185
+            this.editPurgeSpeed = 5
+            this.editPurgeLength = this.saStatus.purge_length ?? 30
+            this.hydrateCustomHexesFromParts(parts, mode)
+        }
+        this.selectedBrandPath = ''
+        this.selectedLineId = ''
+        this.selectedColorId = ''
+        this.productLineItems = []
+        this.colorItems = []
+        if (this.brandItems.length === 0) {
+            await this.fetchBrands()
+        }
+        await this.matchProfileToCatalog()
+    }
+
+    /**
+     * When opening an existing profile, look up the stored brand / line /
+     * color in the catalog and pre-select the dropdowns. Leaves them blank
+     * on no match (e.g. user-typed brand that isn't in the catalog) or when
+     * the profile is empty. Does NOT overwrite edit fields — dropdowns are
+     * set programmatically so `@change` handlers never fire.
+     */
+    async matchProfileToCatalog(): Promise<void> {
+        if (this.pathModalIdx === null) return
+        const i = this.pathModalIdx
+        const storedBrand = this.saStatus.path_brands?.[i] ?? ''
+        const storedLine = this.saStatus.path_product_lines?.[i] ?? ''
+        const storedColorName = this.saStatus.path_color_names?.[i] ?? ''
+        const storedHex = this.saStatus.path_color_hexes?.[i] ?? ''
+        if (!storedBrand) return
+
+        const brand = this.brandItems.find((b) => b.display_name === storedBrand)
+        if (!brand) return
+
+        this.loadingLines = true
+        try {
+            const res = await axios.get(`${this.apiUrl}/machine/autoloader/filaments`, {
+                params: { brand: brand.filepath },
+            })
+            this.productLineItems = res.data?.result?.product_lines ?? []
+        } catch (e) {
+            this.productLineItems = []
+            this.loadingLines = false
+            return
+        }
+        this.loadingLines = false
+        this.selectedBrandPath = brand.filepath
+
+        if (!storedLine) return
+        const line = this.productLineItems.find((l) => l.display_name === storedLine)
+        if (!line) return
+        this.colorItems = [
+            ...this.enrichColors(line.colors, line),
+            { id: '__custom__', name: '✨ Custom color', hex: '' },
+        ]
+        this.selectedLineId = line.line_id
+
+        if (!storedColorName && !storedHex) return
+        const norm = (s: string): string => s.replace(/^#/, '').toUpperCase()
+        // Authoritative primary hex from the structured fields, with the
+        // legacy slash-joined fallback for old profiles.
+        const firstHex = (this.saColorParts(i)[0] ?? storedHex.split('/')[0] ?? '')
+        const color = this.colorItems.find((c) => {
+            if (c.id === '__custom__') return false
+            if (storedColorName && c.name === storedColorName) return true
+            if (firstHex && norm(c.hex) === norm(firstHex)) return true
+            return false
+        })
+        if (color) {
+            this.selectedColorId = color.id
+        } else if (storedHex) {
+            // Profile has a hex that doesn't match any catalog color in this line
+            // (custom-typed color or multi-color) → pre-select the Custom entry.
+            this.selectedColorId = '__custom__'
+        }
+    }
+
+    /**
+     * Hydrate the custom-color editor (mode toggle + customHexes) from the
+     * authoritative parts array + mode supplied by the SA mixin. The mixin
+     * already prefers the structured `path_color_types` / `path_color_hex2s`
+     * / `path_color_hex3s` fields and falls back to slash-joined for legacy
+     * data, so we don't duplicate that logic here.
+     */
+    hydrateCustomHexesFromParts(
+        parts: string[],
+        mode: 'none' | 'single' | 'dual' | 'gradient' | 'multi'
+    ): void {
+        const safe = (h: string | undefined, fallback: string): string =>
+            (h || '').trim() || fallback
+        if (mode === 'multi' || parts.length >= 3) {
+            this.colorMode = 'tri'
+            this.editColorType = 'tri'
+            this.customHexes = [
+                safe(parts[0], 'FFFFFF'),
+                safe(parts[1], '000000'),
+                safe(parts[2], '808080'),
+            ]
+        } else if (mode === 'dual' || (mode === 'none' && parts.length === 2)) {
+            this.colorMode = 'dual'
+            this.editColorType = 'dual'
+            this.customHexes = [safe(parts[0], 'FFFFFF'), safe(parts[1], '000000'), '808080']
+        } else if (mode === 'gradient') {
+            // Editor toggle has no gradient slot — fall back to single but
+            // preserve the type for save.
+            this.colorMode = 'single'
+            this.editColorType = 'gradient'
+            this.customHexes = [safe(parts[0], 'FFFFFF'), safe(parts[1], '000000'), '808080']
+        } else {
+            this.colorMode = 'single'
+            this.editColorType = 'single'
+            this.customHexes = [safe(parts[0], 'FFFFFF'), '000000', '808080']
+        }
+    }
+
+    buildCustomHex(): string {
+        const clean = (h: string): string =>
+            h.replace(/^#/, '').padEnd(6, '0').substring(0, 6).toUpperCase()
+        if (this.colorMode === 'single') {
+            const first = (this.customHexes[0] || '').trim()
+            if (!first) return ''
+            return `#${clean(first)}`
+        }
+        const count = this.pieSliceCount
+        return this.customHexes
+            .slice(0, count)
+            .map((h) => `#${clean(h || '000000')}`)
+            .join('/')
+    }
+
+    async fetchBrands(): Promise<void> {
+        this.loadingBrands = true
+        try {
+            const res = await axios.get(`${this.apiUrl}/machine/autoloader/brands`)
+            this.brandItems = res.data?.result?.brands ?? []
+        } catch (e) {
+            this.brandItems = []
+        } finally {
+            this.loadingBrands = false
+        }
+    }
+
+    async onBrandChange(filepath: string | null): Promise<void> {
+        this.productLineItems = []
+        this.colorItems = []
+        this.selectedLineId = ''
+        this.selectedColorId = ''
+        if (!filepath) return
+        this.loadingLines = true
+        try {
+            const res = await axios.get(`${this.apiUrl}/machine/autoloader/filaments`, {
+                params: { brand: filepath },
+            })
+            const data = res.data?.result ?? {}
+            this.productLineItems = data.product_lines ?? []
+            if (data.brand) this.editBrand = data.brand
+        } catch (e) {
+            this.productLineItems = []
+        } finally {
+            this.loadingLines = false
+        }
+    }
+
+    /**
+     * Enrich catalog colors with `mode` + `hexes` so multi-color entries
+     * render correctly in the dropdown pie swatches and can auto-set the
+     * profile editor's single/dual/tri toggle on selection.
+     */
+    enrichColors(colors: SaColor[], line: SaProductLine): SaColor[] {
+        return colors.map((c) => {
+            const info = parseMultiColor(c.name, c.hex, line, {
+                color_type: c.color_type,
+                hex_2: c.hex_2,
+                hex_3: c.hex_3,
+            })
+            return { ...c, mode: info.mode, hexes: info.hexes }
+        })
+    }
+
+    /**
+     * CSS background for a catalog color swatch, matching KlipperScreen:
+     *   single   → solid circle
+     *   dual     → vertical left/right split  (linear-gradient with hard 50% stop)
+     *   tri      → conic 120° sectors starting from top
+     *   gradient → horizontal linear-gradient (smooth). For gradient entries
+     *              that only carry one hex, we generate a lighter variant so
+     *              the swatch still visibly reads as a gradient.
+     */
+    catalogSwatchStyle(color: SaColor): Record<string, string> {
+        if (!color) return { background: 'transparent' }
+        const source = color.hexes && color.hexes.length > 0 ? color.hexes : [color.hex]
+        const list = source
+            .filter((h) => h)
+            .map((h) => (h.startsWith('#') ? h : `#${h}`))
+        if (list.length === 0) {
+            return {
+                background: 'transparent',
+                border: '1px dashed rgba(255,255,255,0.35)',
+            }
+        }
+        const border = `1px solid ${saBorderForHex(list[0])}`
+        const mode = color.mode ?? 'single'
+        if (mode === 'gradient') {
+            const start = list[0]
+            const end = list[1] ?? this.lightenHex(start, 0.35)
+            return { background: `linear-gradient(to right, ${start}, ${end})`, border }
+        }
+        if (mode === 'dual' && list.length >= 2) {
+            return {
+                background: `linear-gradient(to right, ${list[0]} 0 50%, ${list[1]} 50% 100%)`,
+                border,
+            }
+        }
+        if (mode === 'tri' && list.length >= 3) {
+            const step = 100 / 3
+            const stops = list
+                .slice(0, 3)
+                .map(
+                    (h, i) =>
+                        `${h} ${(i * step).toFixed(2)}% ${((i + 1) * step).toFixed(2)}%`
+                )
+                .join(', ')
+            return { background: `conic-gradient(from -90deg, ${stops})`, border }
+        }
+        return { background: list[0], border }
+    }
+
+    /** Nudge a hex color toward white by `amount` (0-1). Used for gradient previews
+     *  when only one hex is available. */
+    lightenHex(hex: string, amount: number): string {
+        const h = hex.replace(/^#/, '').padEnd(6, '0').substring(0, 6)
+        const ch = (i: number): number =>
+            Math.min(255, parseInt(h.slice(i, i + 2), 16) + Math.round(amount * 255))
+        const r = ch(0).toString(16).padStart(2, '0')
+        const g = ch(2).toString(16).padStart(2, '0')
+        const b = ch(4).toString(16).padStart(2, '0')
+        return `#${r}${g}${b}`.toUpperCase()
+    }
+
+    onLineChange(lineId: string | null): void {
+        this.colorItems = []
+        this.selectedColorId = ''
+        if (!lineId) return
+        const line = this.productLineItems.find((l) => l.line_id === lineId)
+        if (!line) return
+        this.colorItems = [
+            ...this.enrichColors(line.colors, line),
+            { id: '__custom__', name: '✨ Custom color', hex: '' },
+        ]
+        this.editMaterial = line.material
+        this.editLine = line.display_name
+        this.editLoadTemp = line.load_temp
+        this.editUnloadTemp = line.unload_temp
+        this.editPurgeSpeed = line.purge_speed
+        this.editPurgeLength = line.purge_length
+    }
+
+    onColorChange(colorId: string | null): void {
+        if (!colorId) return
+        if (colorId === '__custom__') {
+            // Leave editColorName / editColorHex / customHexes as they are —
+            // user will configure via picker/slider.
+            return
+        }
+        const color = this.colorItems.find((c) => c.id === colorId)
+        if (!color) return
+        this.editColorName = color.name
+        // Auto-set the mode toggle from the catalog's multi-color info. Gradient
+        // falls back to single mode since the toggle has no gradient position,
+        // but editColorType preserves it for the save payload.
+        const rawMode = color.mode ?? 'single'
+        const hexes = color.hexes ?? [color.hex]
+        this.colorMode = rawMode === 'gradient' ? 'single' : rawMode
+        this.editColorType = rawMode
+        const clean = (h: string): string => h.replace(/^#/, '').toUpperCase()
+        this.customHexes = [
+            clean(hexes[0] || color.hex || 'FFFFFF'),
+            clean(hexes[1] || '000000'),
+            clean(hexes[2] || '808080'),
+        ]
+        // editColorHex still used by the "Current profile" summary in the header.
+        // For multi-color entries, store the slash-joined form so saColorBackground
+        // renders a pie there too.
+        if (this.colorMode === 'single') {
+            this.editColorHex = clean(hexes[0] || color.hex)
+        } else {
+            const count = this.colorMode === 'tri' ? 3 : 2
+            this.editColorHex = hexes
+                .slice(0, count)
+                .map((h) => `#${clean(h)}`)
+                .join('/')
+        }
+    }
+
+    resetToDefault(): void {
+        const line = this.selectedLine
+        if (!line) return
+        this.editLoadTemp = line.load_temp
+        this.editUnloadTemp = line.unload_temp
+        this.editPurgeSpeed = line.purge_speed
+        this.editPurgeLength = line.purge_length
+    }
+
+    backToControls(): void {
+        this.profileOpen = false
+        this.pathModalOpen = true
+    }
+
+    /**
+     * Engage the currently selected path: move the selector to `pathModalIdx`
+     * first, then engage the servo. Noop if not homed — the button should be
+     * disabled in that case, but we guard again here defensively.
+     */
+    doEngage(): void {
+        if (this.pathModalIdx === null) return
+        if (!this.isSelectorHomed) return
+        const script = [`SA_SELECT TOOL=${this.pathModalIdx}`, `SA_ENGAGE`].join('\n')
+        this.saGcode(script)
+    }
+
+    doLoad(): void {
+        if (this.pathModalIdx === null) return
+        this.saGcode(`SA_LOAD TOOL=${this.pathModalIdx}`)
+    }
+
+    doUnload(): void {
+        if (this.pathModalIdx === null) return
+        this.saGcode(`SA_UNLOAD TOOL=${this.pathModalIdx}`)
+    }
+
+    sendCalResponse(): void {
+        const val = this.calResponse.trim()
+        if (!val) return
+        this.saGcode(`SA_RESPOND VALUE=${val}`)
+        this.calResponse = ''
+    }
+
+    /** Quick-action button — sends a fixed VALUE for the most common prompts
+     *  (yes/no/ok/continue/cancel) without making the user type. */
+    sendPromptValue(value: string): void {
+        this.saGcode(`SA_RESPOND VALUE=${value}`)
+        this.calResponse = ''
+    }
+
+    /** Path-action button on the post-load/post-unload prompt — sends
+     *  `SA_RESPOND VALUE=load:N` or `unload:N`, mirroring KlipperScreen's
+     *  sa_post_load.py path grids. */
+    sendPathAction(action: 'load' | 'unload', path: number): void {
+        this.saGcode(`SA_RESPOND VALUE=${action}:${path}`)
+        this.calResponse = ''
+    }
+
+    /** Which prompt UI to render for the current cal_state.
+     *   'load'    → post-load action panel (PURGE / PARK / EXIT + path grids)
+     *   'unload'  → post-unload action panel (PARK / EXIT / LOAD SAME + path grids)
+     *   'generic' → calibration prompt (cal_prompt text + Yes/No/OK/...)
+     *  Mirrors the cal_state values KlipperScreen's sa_post_load.py reacts to. */
+    get promptKind(): 'load' | 'unload' | 'generic' {
+        const s = this.saStatus.cal_state
+        if (s === 'load_purge') return 'load'
+        if (s === 'unload_done') return 'unload'
+        return 'generic'
+    }
+
+    get promptDialogTitle(): string {
+        if (this.promptKind === 'load') return this.$t('Panels.AutoloaderPanel.PromptTitleLoad') as string
+        if (this.promptKind === 'unload') return this.$t('Panels.AutoloaderPanel.PromptTitleUnload') as string
+        return this.$t('Panels.AutoloaderPanel.PromptTitle') as string
+    }
+
+    @Watch('saIsCalibrating', { immediate: true })
+    onCalStateChange(active: boolean): void {
+        // Auto-open the prompt dialog when the autoloader requests user
+        // input, auto-close when it clears. Persistent + non-dismissable
+        // to ensure the user always responds to a real printer prompt.
+        this.promptOpen = active
+        if (!active) this.calResponse = ''
+    }
+
+    saveProfile(): void {
+        if (this.pathModalIdx === null) return
+        const i = this.pathModalIdx
+        const q = (s: string): string => `"${s}"`
+        const clean = (h: string): string =>
+            h.replace(/^#/, '').padEnd(6, '0').substring(0, 6).toUpperCase()
+        // Use the editor's authoritative type ('single' | 'dual' | 'tri' | 'gradient').
+        // Pack each slot into its own field — COLOR_HEX is the primary single
+        // value, COLOR_HEX_2 / COLOR_HEX_3 carry secondary/tertiary. This is
+        // the convention the autoloader klipper module exposes (path_color_types
+        // / path_color_hex2s / path_color_hex3s), so KlipperScreen and mainsail
+        // both read back consistent data.
+        const type = this.editColorType
+        const slot = (idx: number): string => {
+            const raw = (this.customHexes[idx] || '').trim()
+            return raw ? `#${clean(raw)}` : ''
+        }
+        const hex1 = slot(0)
+        const hex2 = type === 'dual' || type === 'tri' || type === 'gradient' ? slot(1) : ''
+        const hex3 = type === 'tri' ? slot(2) : ''
+
+        let cmd = `SA_SET_MATERIAL TOOL=${i}`
+        cmd += ` MATERIAL=${q(this.editMaterial)}`
+        cmd += ` BRAND=${q(this.editBrand)}`
+        cmd += ` LINE=${q(this.editLine)}`
+        cmd += ` COLOR_NAME=${q(this.editColorName)}`
+        cmd += ` COLOR_HEX=${q(hex1)}`
+        cmd += ` COLOR_TYPE=${q(type)}`
+        cmd += ` COLOR_HEX_2=${q(hex2)}`
+        cmd += ` COLOR_HEX_3=${q(hex3)}`
+        cmd += ` LOAD_TEMP=${this.editLoadTemp}`
+        cmd += ` UNLOAD_TEMP=${this.editUnloadTemp}`
+        cmd += ` PURGE_SPEED=${this.editPurgeSpeed}`
+        cmd += ` PURGE_LENGTH=${this.editPurgeLength}`
+        this.saGcode(cmd)
+        // Return to the controls popup once save is fired off. The printer's
+        // status update will refresh the tile with the new data.
+        this.profileOpen = false
+        this.pathModalOpen = true
+    }
+
+    clearProfile(): void {
+        if (this.pathModalIdx === null) return
+        const i = this.pathModalIdx
+        this.saGcode(
+            `SA_SET_MATERIAL TOOL=${i} MATERIAL="" BRAND="" LINE="" ` +
+                `COLOR_NAME="" COLOR_HEX="" COLOR_TYPE="single" ` +
+                `COLOR_HEX_2="" COLOR_HEX_3="" ` +
+                `LOAD_TEMP=200 UNLOAD_TEMP=185 ` +
+                `PURGE_SPEED=5 PURGE_LENGTH=30`
+        )
+        // Reset edit fields
+        this.editMaterial = ''
+        this.editBrand = ''
+        this.editLine = ''
+        this.editColorName = ''
+        this.editColorHex = ''
+        this.editLoadTemp = 200
+        this.editUnloadTemp = 185
+        this.editPurgeSpeed = 5
+        this.editPurgeLength = 30
+        // Reset catalog dropdowns
+        this.selectedBrandPath = ''
+        this.selectedLineId = ''
+        this.selectedColorId = ''
+        this.productLineItems = []
+        this.colorItems = []
+        // Reset custom-color state
+        this.colorMode = 'single'
+        this.editColorType = 'single'
+        this.customHexes = ['FFFFFF', '000000', '808080']
+    }
+}
+</script>
+
+<style scoped>
+/* ── Prompt dialog body ──────────────────────────────────── */
+.sa-prompt-text {
+    font-size: 14px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.92);
+    white-space: pre-wrap;
+}
+.sa-prompt-actions {
+    background: rgba(255, 255, 255, 0.02);
+}
+.sa-prompt-header {
+    text-align: center;
+}
+.sa-prompt-headline {
+    font-size: 15px;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+.sa-prompt-row {
+    background: rgba(255, 255, 255, 0.02);
+}
+.sa-path-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
+    gap: 6px;
+}
+.sa-path-btn {
+    min-width: 0 !important;
+    padding: 0 !important;
+    font-weight: 600;
+}
+
+/* ── Calibration toolbar ─────────────────────────────────── */
+.sa-cal-bar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 12px 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.sa-cal-btn {
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    min-height: 28px !important;
+    border-color: rgba(255, 255, 255, 0.2) !important;
+    color: rgba(255, 255, 255, 0.87) !important;
+}
+
+/* Calibration dialog body can scroll if a step gets tall */
+.sa-cal-body {
+    max-height: 60vh;
+}
+
+/* Status banner at top of each step — current calibrated values */
+.sa-cal-status {
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-bottom: 10px;
+    line-height: 1.35;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.sa-cal-status--ok {
+    background: rgba(76, 175, 80, 0.15);
+    color: #81c784;
+    border-left: 3px solid #4caf50;
+}
+.sa-cal-status--warn {
+    background: rgba(255, 152, 0, 0.12);
+    color: #ffb74d;
+    border-left: 3px solid #ff9800;
+}
+
+/* "What to expect" green callout */
+.sa-cal-expect {
+    margin-top: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: rgba(129, 199, 132, 0.92);
+    background: rgba(76, 175, 80, 0.06);
+    border-left: 2px solid #4caf50;
+    border-radius: 0 4px 4px 0;
+    white-space: pre-line;
+}
+
+/* "Watch out for" amber callout */
+.sa-cal-warn {
+    margin-top: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: rgba(255, 183, 77, 0.92);
+    background: rgba(255, 152, 0, 0.05);
+    border-left: 2px solid #ff9800;
+    border-radius: 0 4px 4px 0;
+    white-space: pre-line;
+}
+
+/* Per-tool calibration grid (steps 5 and 6) */
+.sa-tool-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+.sa-tool-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.sa-save-config {
+    min-width: 0 !important;
+    padding: 0 6px !important;
+}
+
+/* ── Grid layout ─────────────────────────────────────────── */
+.sa-grid {
+    width: 100%;
+    /* Establish a containment context so the narrow-mode rules below react
+       to the PANEL's own width, not the viewport. This means widescreen
+       middle/right columns (which are wider) keep the full layout, while
+       only the narrow leftmost widescreen column triggers compaction. */
+    container-type: inline-size;
+    container-name: sa-grid;
+}
+.sa-row {
+    display: grid;
+    grid-template-columns: 72px 24px 1fr 80px 24px 24px 24px;
+    gap: 6px;
+    align-items: center;
+    padding: 6px 12px;
+}
+
+/* Narrow-panel layout (widescreen leftmost column).
+   Drops the three sensor-dot columns — sensor state is still inspectable
+   from the controls popup when you tap the row. The Loadout chip stays
+   since it already conveys the combined sensor state via saEffectiveState.
+   Material/brand/color text is forced to single-line with ellipsis so it
+   never overflows the row height when the column is squeezed. */
+@container sa-grid (max-width: 540px) {
+    .sa-row {
+        /* minmax(0, 1fr) is critical — the default 1fr won't shrink below
+           the material cell's intrinsic content width, which is what was
+           pushing text off the right edge. */
+        grid-template-columns: 52px 22px minmax(0, 1fr) auto;
+        gap: 6px;
+    }
+    .sa-row > :nth-child(5),
+    .sa-row > :nth-child(6),
+    .sa-row > :nth-child(7) {
+        display: none;
+    }
+    .sa-material-cell {
+        min-width: 0;
+    }
+    .sa-material-cell > div {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+}
+
+.sa-center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* ── Header row ──────────────────────────────────────────── */
+.sa-header-row {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.45);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 4px 12px;
+    background: rgba(0, 0, 0, 0.18);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ── Data rows ───────────────────────────────────────────── */
+.sa-data-row {
+    border-left: 3px solid transparent;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    transition: background 0.12s, border-color 0.12s;
+    cursor: pointer;
+    height: 52px;
+}
+.sa-data-row:last-child {
+    border-bottom: none;
+}
+.sa-data-row:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+.sa-row--active {
+    border-left-color: var(--v-primary-base);
+}
+.sa-row--open {
+    border-left-color: var(--v-accent-base);
+}
+.sa-row--active.sa-row--open {
+    border-left-color: var(--v-primary-base);
+}
+
+.sa-tool-label {
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+.sa-swatch-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.sa-material-cell {
+    overflow: hidden;
+    line-height: 1.15;
+}
+
+/* ── Color swatch ────────────────────────────────────────── */
+.sa-color-swatch {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    box-sizing: border-box;
+}
+.sa-color-swatch--svg {
+    /* SVG paths form their own circle — strip the rounded background clip
+       and any border so each slice's arc edge defines the perimeter. */
+    border-radius: 0;
+    border: none;
+    background: transparent;
+    overflow: visible;
+    display: block;
+}
+.sa-color-swatch-lg {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-sizing: border-box;
+}
+.sa-dd-swatch {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-sizing: border-box;
+}
+.sa-current-profile {
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+}
+
+/* ── Mode slider ─────────────────────────────────────────── */
+.sa-mode-slider ::v-deep .v-slider__tick-label {
+    font-size: 11px;
+}
+.sa-mode-slider {
+    padding-top: 6px;
+}
+
+/* ── Custom pie preview ──────────────────────────────────── */
+.sa-pie {
+    width: 80px;
+    height: 80px;
+    display: block;
+    flex-shrink: 0;
+}
+.sa-pie-slice {
+    cursor: pointer;
+    transition: filter 0.15s;
+}
+.sa-pie-slice:hover {
+    filter: brightness(1.25);
+}
+
+/* ── Sensor dots ─────────────────────────────────────────── */
+.sa-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-sizing: border-box;
+}
+.sa-dot--on {
+    background-color: #4caf50;
+}
+.sa-dot--off {
+    background-color: transparent;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+/* ── Hint text ───────────────────────────────────────────── */
+.sa-hint {
+    font-size: 11px !important;
+}
+
+/* ── Dialog ──────────────────────────────────────────────── */
+.sa-dialog {
+    background: #1e1e1e !important;
+}
+.sa-dialog-title {
+    background: #272727;
+    padding: 8px 12px !important;
+    min-height: 44px;
+}
+
+/* ── Profile tile (replaces Edit Profile button) ─────────── */
+.sa-profile-tile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: #272727;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+}
+.sa-profile-tile:hover {
+    background: #2f2f2f;
+    border-color: rgba(255, 255, 255, 0.2);
+}
+.sa-profile-tile-swatch {
+    width: 32px;
+    height: 32px;
+    flex-shrink: 0;
+}
+.sa-profile-tile-info {
+    flex: 1;
+    min-width: 0;
+    line-height: 1.2;
+}
+.sa-profile-tile-icon {
+    opacity: 0.6;
+    flex-shrink: 0;
+}
+
+/* ── Connected button group ──────────────────────────────── */
+.sa-btn-group {
+    display: flex;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.sa-group-btn {
+    flex: 1;
+    border-radius: 0 !important;
+    background: #272727 !important;
+    border: thin solid rgba(255, 255, 255, 0.12) !important;
+    border-left-width: 0 !important;
+    box-shadow: none !important;
+    height: 28px !important;
+    min-width: 0 !important;
+    font-size: 0.75rem !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    color: rgba(255, 255, 255, 0.87) !important;
+}
+.sa-group-btn:first-child {
+    border-radius: 4px 0 0 4px !important;
+    border-left-width: thin !important;
+}
+.sa-group-btn:last-child {
+    border-radius: 0 4px 4px 0 !important;
+}
+
+/* State-aware colors for selector buttons (Home/Engage/Disengage).
+   Match Mainsail's existing home-axis indicator pattern: primary when
+   the state is active (e.g. homed / engaged), warning when not. */
+.sa-group-btn.sa-group-btn--primary {
+    background: var(--v-primary-base) !important;
+    border-color: var(--v-primary-base) !important;
+    color: #fff !important;
+}
+.sa-group-btn.sa-group-btn--warning {
+    background: var(--v-warning-base) !important;
+    border-color: var(--v-warning-base) !important;
+    color: #fff !important;
+}
+
+/* ── Preset quick-select (match extruder _btn-qs) ────────── */
+.sa-preset-btn {
+    opacity: 0.8;
+    height: 24px !important;
+    font-size: 0.75rem !important;
+}
+.sa-preset-btn--active {
+    opacity: 1;
+    background: rgba(var(--v-primary-base), 0.16) !important;
+    color: var(--v-primary-base) !important;
+    border-color: var(--v-primary-base) !important;
+    /* Restore the left border so the active button is fully outlined on
+       all four sides — not just three — regardless of its position in
+       the connected button group. */
+    border-left-width: thin !important;
+    position: relative;
+    z-index: 1;
+}
+
+/* ── Feed / Retract action buttons ───────────────────────── */
+.sa-feed-btn {
+    background: #272727 !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    color: rgba(255, 255, 255, 0.87) !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    min-height: 32px !important;
+}
+</style>

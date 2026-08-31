@@ -1,0 +1,77 @@
+# Autoloader panel — Mainsail plugin
+
+The autoloader dashboard panel, packaged as a **runtime-loaded Mainsail
+plugin** instead of a patch against Mainsail's source tree.
+
+Previously this panel lived at
+`src/components/panels/autoloader/SAStatusPanel.vue` inside a fork of
+Mainsail, which meant every Mainsail release had to be re-forked, rebuilt
+and re-deployed to keep the panel. As a plugin it is a single `.mjs` file
+that stock Mainsail loads at runtime, so Mainsail can be updated normally.
+
+Requires Mainsail with custom-panel support (the `feat/custom-panel-plugins`
+work). It will not load on a Mainsail build without it.
+
+## Build
+
+```bash
+npm install && npm run build
+```
+
+Produces one self-contained file, `dist/autoloader-panel-plugin.mjs`
+(~90 kB, ~21 kB gzipped). Styles are folded into that file, so there is no
+second asset to deploy.
+
+## Install
+
+Serve `dist/autoloader-panel-plugin.mjs` from anywhere the browser can
+reach it, then register it. Prefer the Moonraker database over
+`config.json`: Moonraker's update manager wipes Mainsail's web root on a
+client update, which takes `config.json` with it unless it is listed under
+`persistent_files`.
+
+```json
+{
+    "id": "autoloader",
+    "title": "Autoloader",
+    "icon": "<svg path string>",
+    "entryUrl": "/plugins/autoloader-panel-plugin.mjs",
+    "collapsible": true
+}
+```
+
+`title` and `icon` are rendered by Mainsail's own panel chrome, which is
+why the component itself no longer draws a `<panel>` wrapper.
+
+## How it talks to the host
+
+Mainsail publishes its Vue instance and decorator packages on
+`window.__mainsail_plugin_runtime__`. The `shims/` directory maps `vue`,
+`vue-class-component` and `vue-property-decorator` onto that runtime via
+Vite aliases, so:
+
+- the plugin ships **no** copy of Vue, and shares the host's reactivity;
+- panel source keeps ordinary `import` statements and `@Component` /
+  `@Prop` decorators, matching Mainsail's own house style rather than
+  being forced into the options API by how it happens to be loaded.
+
+Because the host's Vue constructor is shared, and Mainsail installs the
+full Vuetify build (`Vue.use(Vuetify)` registers every component
+globally), all `v-*` components resolve inside the plugin with no
+registration. `$store`, `$socket`, `$i18n` and `$vuetify` resolve too.
+`<panel>` is the one exception — it is imported per-file in Mainsail, and
+the host's `CustomPanel` already supplies it.
+
+## Differences from the in-tree version
+
+The port is close to a straight copy. Only these changed:
+
+| In-tree | Plugin | Why |
+|---|---|---|
+| `<panel>` wrapper in the template | dropped | Host `CustomPanel` renders the chrome; `title`/`icon` moved to panel config |
+| `BaseMixin` | local `apiUrl` getter | `BaseMixin` lives in Mainsail's source tree; the panel used only `apiUrl` |
+| `axios` | `src/lib/http.ts` | Three plain GETs did not justify bundling ~35 kB; the shim matches axios's `get`/`res.data`/reject-on-non-2xx surface |
+| translations in Mainsail's `locales/*.json` | `src/locales/index.json` | The host carries no strings for a panel it does not know about; merged via `$i18n.mergeLocaleMessage` in `created()` before first render |
+
+The ~2600 lines of template, state and logic are otherwise unchanged, as
+are all 135 `$t` call sites and the Vuetify markup.

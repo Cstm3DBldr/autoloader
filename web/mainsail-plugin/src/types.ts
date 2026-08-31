@@ -1,0 +1,33 @@
+export interface SAStatus {
+    num_paths: number
+    current_path: number
+    servo_engaged: boolean
+    path_states: string[]
+    encoder_dist: number[]
+    entry_filament: boolean[]
+    toolhead_filament: boolean[]
+    extruder_filament: boolean[]
+    filament_loaded: boolean[]
+    selector_position: number
+    path_materials: string[]
+    path_brands: string[]
+    path_product_lines: string[]
+    path_color_names: string[]
+    path_color_hexes: string[]
+    path_color_types?: string[]
+    path_color_hex2s?: string[]
+    path_color_hex3s?: string[]
+    path_load_temps: number[]
+    path_unload_temps: number[]
+    feed_speed: number
+    purge_length: number
+    nozzle_distance: number
+    bowden_lengths: number[]
+    selector_positions: number[]
+    encoder_mpp: number[]
+    encoder_max_speed?: number
+    drive_rotation_distance: number
+    cal_state: string
+    cal_path: number
+    cal_prompt: string
+}
