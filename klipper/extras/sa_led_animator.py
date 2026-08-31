@@ -9,10 +9,10 @@
 #
 #   2. Temp-aware active-tool nozzle — when the printer is NOT
 #      actively printing (idle, ready, or paused), the active tool's
-#      nozzle pair (INDEX=1,2) reflects hotend warmth as a safety
-#      indicator: red-orange while still warm, blue once cooled. The
-#      cooled colour is brighter than the docked tools' parked_cold so
-#      the mounted tool stays identifiable.
+#      nozzle pair (INDEX=1,2) shows red-orange while the hotend is
+#      still warm, and otherwise follows the same load-state colours as
+#      the docked tools — green staged, blue loaded, off empty — one
+#      step brighter so the mounted tool stays identifiable.
 #      The "warm" signal is read from the toolhead's heater_fan state
 #      (which Klipper already manages with a >= 50 C threshold) so we
 #      don't duplicate the threshold logic. This keeps the nozzle's
@@ -229,7 +229,7 @@ class SaLedAnimator:
         # 'Printing' on ANY gcode activity (including a one-line
         # SET_LED from the console), which would briefly flip
         # animator_owns_nozzle to False and clear our cache. The
-        # cache clear lets a stale 'parked_cold' value re-emit on
+        # cache clear lets a stale value re-emit on
         # the next tick, wiping any STATUS_HOMING / STATUS_LEVELING
         # / etc. green/purple that an explicit macro just set.
         # print_stats.state only flips to 'printing' on a real
@@ -240,12 +240,22 @@ class SaLedAnimator:
                                 and not bool(cal_state)
                                 and active_tool >= 0)
         if animator_owns_nozzle:
-            warm = self._is_tool_warm(active_tool, eventtime)
-            # 'active_cold' rather than 'parked_cold': same hue, brighter, so
-            # the mounted tool is still tellable from the docked ones when
-            # every hotend happens to be cold.
-            color = self._get_nozzle_color(
-                'heating' if warm else 'active_cold')
+            # Heat outranks load state: a hot nozzle is a safety warning and
+            # should say so regardless of what is loaded. Otherwise the
+            # mounted tool follows the same load-state scheme as the docked
+            # ones, one step brighter so it stays identifiable.
+            if self._is_tool_warm(active_tool, eventtime):
+                state_name = 'heating'
+            else:
+                st = (path_states[active_tool]
+                      if active_tool < len(path_states) else 'unknown')
+                if st == 'loaded':
+                    state_name = 'loaded_active'
+                elif st == 'partial':
+                    state_name = 'staged'
+                else:
+                    state_name = 'off'
+            color = self._get_nozzle_color(state_name)
             if color is not None:
                 for tool_n, _, helper in self._led_chains:
                     if tool_n == active_tool:
