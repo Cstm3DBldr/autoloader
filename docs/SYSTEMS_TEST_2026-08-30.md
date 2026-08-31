@@ -362,3 +362,52 @@ Options:
 The state machine is the one to build, given the requirement is specifically
 to stop it mid-process. A purge into a clogged nozzle or a failed extruder is
 exactly when you want a stop that is not an emergency shutdown.
+
+---
+
+# Round 4 — remaining coverage
+
+## Now verified working
+
+- Auto unload on paths 3–5, completing the load/unload matrix across all six
+- `SA_HOME` standalone, from the KlipperScreen status panel
+- `SA_ENGAGE` / `SA_DISENGAGE` — exercised throughout every load, unload and
+  park run today rather than tested in isolation
+- `SA_CALIBRATE_BOWDEN TOOL=5` — path 5 now has its own bowden length instead
+  of silently borrowing path 4's
+
+Every path is `empty` at close of session, and T0 is the mounted tool.
+
+## Fixed this round
+
+- **Mounted tool went dark when its path was empty.** The animator chose
+  nozzle `off`, so the toolhead actually on the carriage looked dead rather
+  than empty. Added `active_empty`, a dim white.
+- **Calibration asked for the wrong measurement.** Both the encoder and drive
+  routines tell the user to mark the filament at the encoder exit, then feed
+  it forward 100 mm — so travel is encoder exit to mark. Both prompts asked to
+  measure from the mark to the filament end, which is only the same span if
+  the filament ends exactly at the encoder. Reworded, and they now say what
+  the number represents.
+
+## Open — KlipperScreen
+
+Three UI faults, all wanting one pass through the panels rather than
+individual patches:
+
+1. **Numpad is larger than the display**, so a calibration value cannot be
+   entered on the printer at all. This blocks running any interactive
+   calibration from the machine itself — worth treating as the priority of
+   the three.
+2. **Extruder page sensor rows render off the bottom edge** and cannot be
+   read.
+3. **Post-load menu gating is not repeatable** — the menu appears sometimes
+   and not others.
+
+## Still unverified
+
+- `SA_BUZZ_DRIVE` / `SA_BUZZ_SELECTOR`
+- Nozzle `blue` (needs a path loaded through to the nozzle) and `red`
+  (needs a path holding a cut stub) — both added today, neither yet seen
+- Anything print-related. Not planned; the aim of this session was the
+  autoloader core.
