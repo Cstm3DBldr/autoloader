@@ -1,2 +1,18 @@
-export const saSpoolIcon =
-    'M 12,2 C 6.480016,2 2,6.480016 2,12 2,17.519984 6.480016,22 12,22 17.519984,22 22,17.519984 22,12 22,6.480016 17.519984,2 12,2 Z m 0.172164,2.920284 0.03545,3.584346 c 0.0077,0.779735 -0.405463,1.502942 -1.081453,1.891637 -0.675989,0.388696 -1.509524,0.382264 -2.179542,-0.01664 L 5.875148,8.550923 6.028505,8.302804 C 7.309093,6.225785 9.564436,4.949446 12.004344,4.921727 Z m 5.958478,3.458478 0.138166,0.256799 c 1.158459,2.147536 1.13591,4.73871 -0.06004,6.865597 l -0.08247,0.146846 -3.121383,-1.76143 c -0.679122,-0.383199 -1.098741,-1.103183 -1.097367,-1.882957 0.0014,-0.779774 0.423408,-1.498537 1.103877,-1.87934 z m -8.056279,5.066551 c 0.376542,-0.0015 0.753548,0.09526 1.090857,0.290798 0.674617,0.391078 1.086115,1.115548 1.075665,1.895255 l -0.04774,3.574219 -0.291522,-0.008 C 9.46257,19.127075 7.229788,17.811511 5.985825,15.712341 l -0.08608,-0.144676 3.08666,-1.822916 C 9.322117,13.54648 9.697827,13.446797 10.074368,13.44527 Z'
+/*
+ * Autoloader mark: a formed filament tip travelling right, with three dashes
+ * trailing it.
+ *
+ * Replaces a spool glyph borrowed from Spoolman, which was another project's
+ * brand sitting in this panel's header.
+ *
+ * Drawn as four thick shapes on purpose. Vuetify renders this as a bare
+ * `fill: currentColor` path at 18 px in the panel header, so anything under
+ * about 2 units of the 24-unit grid disappears at that size — which is what
+ * ruled out the gear-driven versions, whose teeth turned to mush. Nothing
+ * here is thinner than 1.7 units.
+ *
+ * Keep the tip as the leading element if this is ever redrawn: the taper is
+ * what makes it read as filament rather than a generic bar.
+ */
+export const saFilamentIcon =
+    'M11 9.8H20L23.4 12L20 14.2H11ZM6.6 9.8h3.2v4.4H6.6ZM2.9 9.8h2.6v4.4H2.9ZM0.3 9.8h1.7v4.4H0.3Z'

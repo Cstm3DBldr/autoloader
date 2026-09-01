@@ -165,7 +165,7 @@
                 <!-- ─── CONTROLS VIEW ──────────────────────────────── -->
                 <template v-if="pathView === 'controls'">
                 <v-card-title class="sa-dialog-title">
-                    <v-icon left size="18">{{ saSpoolIcon }}</v-icon>
+                    <v-icon left size="18">{{ saFilamentIcon }}</v-icon>
                     <span class="subtitle-2">
                         T{{ pathModalIdx }} — {{ $t('Panels.AutoloaderPanel.Controls') }}
                     </span>
@@ -1107,7 +1107,7 @@ import {
 import axios from './lib/http'
 import SaMixin, { saBorderForHex } from './mixin'
 import localeMessages from './locales/index.json'
-import { saSpoolIcon } from './icons'
+import { saFilamentIcon } from './icons'
 
 interface SaBrand {
     display_name: string
@@ -1400,7 +1400,7 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         })
     }
 
-    saSpoolIcon = saSpoolIcon
+    saFilamentIcon = saFilamentIcon
     mdiClose = mdiClose
     mdiArrowUpBold = mdiArrowUpBold
     mdiArrowDownBold = mdiArrowDownBold

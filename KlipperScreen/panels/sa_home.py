@@ -65,7 +65,7 @@ def _effective_state(i, states, entry, toolhead, extruder):
 
 _HERO = [
     # (label,           panel,                  panel_title,         color,    icon)
-    ("STATUS",         "sa_main",              "SA Status",         "color1", "spoolman"),
+    ("STATUS",         "sa_main",              "SA Status",         "color1", "autoloader"),
     ("LOAD / UNLOAD",  "sa_load_unload",       "Load / Unload",     "color3", "load"),
 ]
 

@@ -28,6 +28,13 @@ if [ -d "${KS}/panels" ]; then
     cp -f "${REPO}"/KlipperScreen/panels/sa_*.py "${KS}/panels/" 2>/dev/null || true
     cp -f "${REPO}"/KlipperScreen/sa_*.py        "${KS}/"        2>/dev/null || true
     cp -f "${REPO}"/KlipperScreen/sa_klipperscreen.conf "${CONFIG}/" 2>/dev/null || true
+
+    # Icons are per-theme in KlipperScreen, so the file goes into every theme
+    # that is installed rather than just the active one — the active theme is
+    # not always pinned in config, and a missing icon renders as a blank tile.
+    for theme_images in "${KS}"/styles/*/images; do
+        [ -d "$theme_images" ] && cp -f "${REPO}"/KlipperScreen/images/*.svg "$theme_images/" 2>/dev/null || true
+    done
 else
     echo "[POST-UPDATE]   (KlipperScreen not installed — skipping panel sync)"
 fi
