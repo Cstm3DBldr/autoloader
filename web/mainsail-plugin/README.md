@@ -18,13 +18,13 @@ work). It will not load on a Mainsail build without it.
 npm install && npm run build
 ```
 
-Produces one self-contained file, `dist/autoloader-panel-plugin.mjs`
+Produces one self-contained file, `dist/autoloader-panel-plugin.js`
 (~90 kB, ~21 kB gzipped). Styles are folded into that file, so there is no
 second asset to deploy.
 
 ## Install
 
-Serve `dist/autoloader-panel-plugin.mjs` from anywhere the browser can
+Serve `dist/autoloader-panel-plugin.js` from anywhere the browser can
 reach it, then register it. Prefer the Moonraker database over
 `config.json`: Moonraker's update manager wipes Mainsail's web root on a
 client update, which takes `config.json` with it unless it is listed under
@@ -35,7 +35,7 @@ client update, which takes `config.json` with it unless it is listed under
     "id": "autoloader",
     "title": "Autoloader",
     "icon": "<svg path string>",
-    "entryUrl": "/plugins/autoloader-panel-plugin.mjs",
+    "entryUrl": "/plugins/autoloader-panel-plugin.js",
     "collapsible": true
 }
 ```
@@ -75,3 +75,23 @@ The port is close to a straight copy. Only these changed:
 
 The ~2600 lines of template, state and logic are otherwise unchanged, as
 are all 135 `$t` call sites and the Vuetify markup.
+
+## Two things that will stop it loading on a printer
+
+**Serve it as `.js`, not `.mjs`.** Plugins are fetched with a dynamic
+`import()`, and browsers refuse to execute a module served with a
+non-JavaScript MIME type. nginx as shipped on a standard Klipper host has no
+mapping for `.mjs` and serves it as `application/octet-stream`, so the plugin
+never loads — and the console says only *"Failed to fetch dynamically
+imported module"*, which looks like a missing file rather than a MIME
+problem. Check with:
+
+```bash
+curl -sI http://your-printer/plugins/autoloader-panel-plugin.js | grep -i content-type
+```
+
+**Do not set `hostname`/`port` in `config.json`.** A stock install leaves
+them null so the browser talks to its own origin and nginx reverse-proxies
+to Moonraker. Pinning them to `printer:7125` makes the browser cross-origin,
+and Moonraker's `cors_domains` usually does not allow a bare IP — Mainsail
+loads and then reports it cannot connect to Moonraker.

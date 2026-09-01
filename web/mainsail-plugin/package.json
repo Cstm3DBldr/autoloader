@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "description": "Autoloader status and control panel for Mainsail",
     "type": "module",
-    "main": "./dist/autoloader-panel-plugin.mjs",
+    "main": "./dist/autoloader-panel-plugin.js",
     "scripts": {
         "dev": "vite",
         "build": "vite build",
