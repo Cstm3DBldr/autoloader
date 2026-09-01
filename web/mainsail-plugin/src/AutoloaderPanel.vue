@@ -10,6 +10,20 @@
                     </v-btn>
                 </div>
 
+                <!-- Status strip — machine state at a glance, above the per-path table.
+                     The table answers "what is in each path"; this answers "what is the
+                     mechanism doing right now", which otherwise takes reading several
+                     rows and the dialogs to work out. -->
+                <div class="sa-status-strip">
+                    <div v-for="item in statusItems" :key="item.key" class="sa-status-cell">
+                        <span class="sa-status-label">{{ item.label }}</span>
+                        <span class="sa-status-value" :class="item.accent ? 'sa-status-value--accent' : null">
+                            {{ item.value }}
+                            <span v-if="item.sub" class="sa-status-sub">{{ item.sub }}</span>
+                        </span>
+                    </div>
+                </div>
+
                 <!-- Grid: header + path rows -->
                 <div class="sa-grid">
                     <!-- Header row -->
@@ -1632,6 +1646,79 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         }
     }
 
+    /**
+     * Index of the extruder currently on the carriage.
+     *
+     * Klipper names the first extruder "extruder" and the rest "extruderN",
+     * so the first one has no number to parse.  Returns -1 when there is no
+     * toolhead object yet, which happens before klippy is ready.
+     */
+    get activeToolIndex(): number {
+        const name = this.$store.state.printer?.toolhead?.extruder
+        if (typeof name !== 'string' || !name.startsWith('extruder')) return -1
+
+        const suffix = name.slice('extruder'.length)
+        if (suffix === '') return 0
+
+        const idx = parseInt(suffix, 10)
+
+        return Number.isNaN(idx) ? -1 : idx
+    }
+
+    /** Hotend temperature of the mounted tool, or null if it cannot be read. */
+    get activeToolTemp(): number | null {
+        const idx = this.activeToolIndex
+        if (idx < 0) return null
+
+        const key = idx === 0 ? 'extruder' : `extruder${idx}`
+        const temp = this.$store.state.printer?.[key]?.temperature
+
+        return typeof temp === 'number' ? temp : null
+    }
+
+    /**
+     * The four readings in the status strip.
+     *
+     * Built as data rather than markup so the template stays a single v-for,
+     * and so the empty cases are decided in one place: every value has a
+     * defined reading before the printer is homed or a profile is set.
+     */
+    get statusItems(): Array<{ key: string; label: string; value: string; sub?: string; accent?: boolean }> {
+        const sa = this.saStatus
+        const t = (k: string): string => this.$t(`Panels.AutoloaderPanel.${k}`) as string
+
+        // The selector holds no position until it has been homed, so an
+        // unhomed machine must say so rather than show a stale 0.00 mm.
+        const selectorHomed = sa.current_path >= 0
+        const selector = selectorHomed
+            ? { value: `T${sa.current_path}`, sub: `${(sa.selector_position ?? 0).toFixed(2)} mm` }
+            : { value: t('StatusUnhomed'), sub: undefined }
+
+        const activeIdx = this.activeToolIndex
+        const temp = this.activeToolTemp
+        const active = activeIdx >= 0
+            ? { value: `T${activeIdx}`, sub: temp === null ? undefined : `${temp.toFixed(1)} °C` }
+            : { value: '—', sub: undefined }
+
+        return [
+            { key: 'selector', label: t('Selector'), value: selector.value, sub: selector.sub },
+            {
+                key: 'drive',
+                label: t('StatusDriveGear'),
+                value: this.isServoEngaged ? t('StatusEngaged') : t('StatusNeutral'),
+                accent: this.isServoEngaged,
+            },
+            { key: 'active', label: t('StatusActiveTool'), value: active.value, sub: active.sub },
+            {
+                key: 'cal',
+                label: t('StatusCalibration'),
+                value: this.saIsCalibrating ? t('StatusRunning') : t('StatusIdle'),
+                sub: this.saIsCalibrating && sa.cal_path >= 0 ? `T${sa.cal_path}` : undefined,
+                accent: this.saIsCalibrating,
+            },
+        ]
+    }
+
     get isServoEngaged(): boolean {
         return !!this.saStatus.servo_engaged
     }
@@ -2399,6 +2486,62 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 }
 
 /* ── Header row ──────────────────────────────────────────── */
+/* ── Status strip ────────────────────────────────────────── */
+.sa-status-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(0, 0, 0, 0.18);
+}
+.sa-status-cell {
+    padding: 6px 12px;
+    min-width: 0;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+.sa-status-cell:last-child {
+    border-right: none;
+}
+.sa-status-label {
+    display: block;
+    font-size: 10px;
+    line-height: 1.4;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: rgba(255, 255, 255, 0.45);
+}
+.sa-status-value {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: rgba(255, 255, 255, 0.87);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sa-status-value--accent {
+    color: var(--v-primary-base);
+}
+.sa-status-sub {
+    font-weight: 400;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.55);
+}
+
+/* Four columns is too tight on a phone; two rows read better than
+   ellipsised values. */
+@media (max-width: 480px) {
+    .sa-status-strip {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    .sa-status-cell:nth-child(-n + 2) {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .sa-status-cell:nth-child(2n) {
+        border-right: none;
+    }
+}
+
 .sa-header-row {
     font-size: 10px;
     color: rgba(255, 255, 255, 0.45);
