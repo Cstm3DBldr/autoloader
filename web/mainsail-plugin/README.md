@@ -36,12 +36,34 @@ client update, which takes `config.json` with it unless it is listed under
     "title": "Autoloader",
     "icon": "<svg path string>",
     "entryUrl": "/plugins/autoloader-panel-plugin.js",
-    "collapsible": true
+    "collapsible": true,
+    "requiresPrinterObject": "autoloader"
 }
 ```
 
 `title` and `icon` are rendered by Mainsail's own panel chrome, which is
 why the component itself no longer draws a `<panel>` wrapper.
+
+`requiresPrinterObject` hides the panel on a printer that does not report an
+`[autoloader]` Klipper object. Without it the panel still draws its frame
+there and shows an empty card, because the panel hides its own body but the
+host draws the surrounding chrome. Its dashboard position is remembered
+either way, so the panel returns where you put it if the object comes back.
+
+Register it in the **Moonraker database** rather than `config.json` where you
+can. `config.json` lives in Mainsail's web root, which the update manager
+wipes on a Mainsail update, and it is a cacheable static file -- a browser
+holding an old copy will not show a newly added panel and gives no clue why:
+
+```bash
+curl -X POST 'http://your-printer:7125/server/database/item'     -H 'Content-Type: application/json'     -d '{"namespace":"mainsail","key":"view.customPanels","value":[ ... ]}'
+```
+
+Note the plugin file itself is not covered by that durability. If it lives in
+`~/mainsail/plugins/` a Mainsail update deletes it, leaving a registration
+pointing at a missing file -- the panel then shows a load error. Serve it
+from outside the web root, or add it to Moonraker's `persistent_files`.
+
 
 ## How it talks to the host
 
