@@ -34,6 +34,26 @@ synced by `post_update.sh`. They're documented here so a fresh install
 on a new printer (or a `git stash` / restore of `~/printer_data/config/`)
 knows what manual hooks to reapply.
 
+- **`~/printer_data/config/KlipperScreen.conf`** — carries the live
+  autoloader menu entries:
+  ```
+  [menu __main autoloader]
+  name: Autoloader
+  panel: sa_home
+  icon: autoloader
+
+  [menu __print autoloader]
+  name: Autoloader
+  panel: sa_home
+  icon: autoloader
+  ```
+  Note `KlipperScreen/sa_klipperscreen.conf` in this repo declares the same
+  menus and is copied to `~/printer_data/config/` by `post_update.sh`, but
+  **nothing includes it** — KlipperScreen.conf does not `[include]` it, so it
+  is inert on this printer. The repo copy is kept in step for a fresh install;
+  the file above is what actually renders. Change both, or the change appears
+  to do nothing.
+
 - **`~/printer_data/config/Toolchanger/toolchanger.cfg`** — at the end
   of `[toolchanger] after_change_gcode:`, added:
   ```
