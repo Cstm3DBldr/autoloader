@@ -60,7 +60,7 @@
                             'sa-row',
                             'sa-data-row',
                             { 'sa-row--active': saStatus.current_path === i },
-                            { 'sa-row--open': (pathModalOpen || profileOpen) && pathModalIdx === i },
+                            { 'sa-row--open': pathModalOpen && pathModalIdx === i },
                         ]"
                         @click="openPathModal(i)">
                         <!-- Tool label -->
@@ -160,8 +160,10 @@
             </v-card-text>
 
         <!-- ─── CONTROLS DIALOG ─────────────────────────────────── -->
-        <v-dialog v-model="pathModalOpen" max-width="380" :retain-focus="false">
+        <v-dialog v-model="pathModalOpen" :max-width="pathDialogWidth" :retain-focus="false">
             <v-card v-if="pathModalIdx !== null" class="sa-dialog">
+                <!-- ─── CONTROLS VIEW ──────────────────────────────── -->
+                <template v-if="pathView === 'controls'">
                 <v-card-title class="sa-dialog-title">
                     <v-icon left size="18">{{ saSpoolIcon }}</v-icon>
                     <span class="subtitle-2">
@@ -289,7 +291,7 @@
                         <v-btn
                             small
                             class="sa-feed-btn flex-grow-1 mr-2"
-                            :loading="isLoading"
+                            :loading="busyAction === 'retract'"
                             @click="doRetract">
                             <v-icon small class="mr-1">{{ mdiArrowUpBold }}</v-icon>
                             {{ $t('Panels.AutoloaderPanel.Retract') }}
@@ -297,7 +299,7 @@
                         <v-btn
                             small
                             class="sa-feed-btn flex-grow-1"
-                            :loading="isLoading"
+                            :loading="busyAction === 'feed'"
                             @click="doFeed">
                             <v-icon small class="mr-1">{{ mdiArrowDownBold }}</v-icon>
                             {{ $t('Panels.AutoloaderPanel.Feed') }}
@@ -346,7 +348,7 @@
                             color="primary"
                             class="flex-grow-1 mr-2"
                             :disabled="!canLoadModal"
-                            :loading="isLoading"
+                            :loading="busyAction === 'load'"
                             @click="doLoad">
                             {{ $t('Panels.AutoloaderPanel.Load') }}
                         </v-btn>
@@ -355,7 +357,7 @@
                             color="error"
                             class="flex-grow-1"
                             :disabled="!canUnloadModal"
-                            :loading="isLoading"
+                            :loading="busyAction === 'unload'"
                             @click="doUnload">
                             {{ $t('Panels.AutoloaderPanel.Unload') }}
                         </v-btn>
@@ -369,18 +371,16 @@
                         </span>
                     </div>
                 </v-card-text>
-            </v-card>
-        </v-dialog>
+                </template>
 
-        <!-- ─── PROFILE DIALOG ──────────────────────────────────── -->
-        <v-dialog v-model="profileOpen" max-width="460" :retain-focus="false">
-            <v-card v-if="pathModalIdx !== null" class="sa-dialog">
+                <!-- ─── PROFILE VIEW ───────────────────────────────── -->
+                <template v-else>
                 <v-card-title class="sa-dialog-title">
                     <span class="subtitle-2">
                         T{{ pathModalIdx }} — {{ $t('Panels.AutoloaderPanel.FilamentProfile') }}
                     </span>
                     <v-spacer />
-                    <v-btn icon small @click="profileOpen = false">
+                    <v-btn icon small @click="pathModalOpen = false">
                         <v-icon size="18">{{ mdiClose }}</v-icon>
                     </v-btn>
                 </v-card-title>
@@ -603,11 +603,12 @@
                     <v-btn
                         small
                         color="primary"
-                        :loading="isLoading"
+                        :loading="busyAction === 'save'"
                         @click="saveProfile">
                         {{ $t('Panels.AutoloaderPanel.SaveProfile') }}
                     </v-btn>
                 </v-card-actions>
+                </template>
             </v-card>
         </v-dialog>
 
@@ -1434,7 +1435,18 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 
     pathModalOpen = false
     pathModalIdx: number | null = null
-    profileOpen = false
+    /*
+     * Which view the path dialog is showing.
+     *
+     * Controls and the profile editor used to be two v-dialogs that swapped by
+     * closing one and opening the other in the same tick. Vuetify tears an
+     * overlay down asynchronously, so the closing dialog's teardown landed
+     * after the opening dialog had set up and stripped the scroll lock back
+     * off -- leaving the dashboard scrolling behind an open popup. One dialog
+     * with two views cannot race with itself, and swapping views no longer
+     * costs a close/open transition.
+     */
+    pathView: 'controls' | 'profile' = 'controls'
     calResponse = ''
 
     editMaterial = ''
@@ -1597,8 +1609,33 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         return state !== 'empty' && state !== 'unknown'
     }
 
-    get isLoading(): boolean {
-        return this.$store.state.socket.loadings.includes('sendGcode')
+    /**
+     * Name of the action this panel is currently running, or null.
+     *
+     * Replaces a spinner bound to socket.loadings, which is global: it holds
+     * 'sendGcode' while ANY g-code is in flight anywhere in Mainsail. Pressing
+     * Feed therefore span Load, Unload and Save Profile too, and so did
+     * running an unrelated macro from the console. Buttons appeared to be
+     * doing something for no reason the user could see.
+     */
+    busyAction: string | null = null
+
+    /**
+     * Run one action, showing progress on that action alone.
+     *
+     * Also serialises: a second press while one is running is dropped rather
+     * than queued. These commands move a real machine, and SA_LOAD twice from
+     * an impatient double-click is a genuine hazard, not just noise.
+     */
+    private async runAction(name: string, script: string): Promise<void> {
+        if (this.busyAction !== null) return
+
+        this.busyAction = name
+        try {
+            await this.saGcode(script)
+        } finally {
+            this.busyAction = null
+        }
     }
 
     /**
@@ -1780,14 +1817,14 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     }
 
     doFeed(): void {
-        this.sendManualMove(Math.abs(this.feedDistance))
+        this.sendManualMove(Math.abs(this.feedDistance), 'feed')
     }
 
     doRetract(): void {
-        this.sendManualMove(-Math.abs(this.feedDistance))
+        this.sendManualMove(-Math.abs(this.feedDistance), 'retract')
     }
 
-    sendManualMove(distance: number): void {
+    sendManualMove(distance: number, action = 'feed'): void {
         const speed = Math.max(1, Number(this.feedSpeed) || 10)
         const stepper = this.driveStepperName
         const script = [
@@ -1795,11 +1832,18 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
             `MANUAL_STEPPER STEPPER=${stepper} SET_POSITION=0`,
             `MANUAL_STEPPER STEPPER=${stepper} MOVE=${distance} SPEED=${speed}`,
         ].join('\n')
-        this.saGcode(script)
+        void this.runAction(action, script)
+    }
+
+    /** The profile editor needs more room than the controls. */
+    get pathDialogWidth(): number {
+        return this.pathView === 'profile' ? 460 : 380
     }
 
     openPathModal(i: number): void {
         this.pathModalIdx = i
+        // Always open on the controls, never on whichever view was last used.
+        this.pathView = 'controls'
         this.pathModalOpen = true
     }
 
@@ -1848,8 +1892,7 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     }
 
     async openProfile(): Promise<void> {
-        this.pathModalOpen = false
-        this.profileOpen = true
+        this.pathView = 'profile'
         if (this.pathModalIdx !== null) {
             const i = this.pathModalIdx
             this.editMaterial = this.saStatus.path_materials?.[i] ?? ''
@@ -2166,8 +2209,7 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     }
 
     backToControls(): void {
-        this.profileOpen = false
-        this.pathModalOpen = true
+        this.pathView = 'controls'
     }
 
     /**
@@ -2184,12 +2226,12 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 
     doLoad(): void {
         if (this.pathModalIdx === null) return
-        this.saGcode(`SA_LOAD TOOL=${this.pathModalIdx}`)
+        void this.runAction('load', `SA_LOAD TOOL=${this.pathModalIdx}`)
     }
 
     doUnload(): void {
         if (this.pathModalIdx === null) return
-        this.saGcode(`SA_UNLOAD TOOL=${this.pathModalIdx}`)
+        void this.runAction('unload', `SA_UNLOAD TOOL=${this.pathModalIdx}`)
     }
 
     sendCalResponse(): void {
@@ -2237,6 +2279,16 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         // Auto-open the prompt dialog when the autoloader requests user
         // input, auto-close when it clears. Persistent + non-dismissable
         // to ensure the user always responds to a real printer prompt.
+        // A prompt from the printer is not a peer of the dialogs the user
+        // opened -- it is waiting on an answer, and stacking it on top of them
+        // left two modals live at once with the focus and z-order decided by
+        // whichever happened to mount last. Take the screen instead.
+        if (active) {
+            this.pathModalOpen = false
+            this.calOpen = false
+            this.pickerOpen = false
+        }
+
         this.promptOpen = active
         if (!active) this.calResponse = ''
     }
@@ -2275,11 +2327,12 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         cmd += ` UNLOAD_TEMP=${this.editUnloadTemp}`
         cmd += ` PURGE_SPEED=${this.editPurgeSpeed}`
         cmd += ` PURGE_LENGTH=${this.editPurgeLength}`
-        this.saGcode(cmd)
-        // Return to the controls popup once save is fired off. The printer's
-        // status update will refresh the tile with the new data.
-        this.profileOpen = false
-        this.pathModalOpen = true
+        // Return to the controls view once the write has actually gone out,
+        // rather than immediately — switching straight back made a failed save
+        // look identical to a successful one.
+        void this.runAction('save', cmd).then(() => {
+            this.pathView = 'controls'
+        })
     }
 
     clearProfile(): void {

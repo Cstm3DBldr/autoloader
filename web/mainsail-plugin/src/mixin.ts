@@ -234,8 +234,12 @@ export default class SaMixin extends Vue {
         })
     }
 
-    saGcode(script: string): void {
-        this.$store.dispatch('printer/sendGcode', script)
+    /**
+     * Send g-code, returning the dispatch promise so a caller can show
+     * progress for its own action. Callers that do not care may ignore it.
+     */
+    saGcode(script: string): Promise<unknown> {
+        return this.$store.dispatch('printer/sendGcode', script)
     }
 
     /**
