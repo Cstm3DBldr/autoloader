@@ -120,6 +120,66 @@ does compression need its own signal to stop overfeeding? The per-path encoders
 already measure actual filament movement and could cross-check the feed rate
 without any new sensor.
 
+#### Three states on one wire (analog approach)
+
+Rather than two switches per channel, one wire can carry all three states via
+a divider: a resistor to 3.3 V and one to GND hold the line at mid-rail; the
+tension switch shorts it to GND, the compression switch shorts it to 3.3 V.
+
+| State | Voltage |
+|---|---|
+| Tension | 0 V |
+| Neutral | ~1.65 V |
+| Compression | 3.3 V |
+
+**This needs ADC pins, and they are scarce on this chip.** Klipper's ADC pin
+table for `CONFIG_MACH_STM32G0` (`src/stm32/stm32f0_adc.c`, *not* `adc.c` —
+that one is F1/F2/F4) is:
+
+```
+PA0 PA1 PA2 PA3 PA4 PA5 PA6 PA7 PB0 PB1 PB2 PB10 PB11 PB12 PC4 PC5
+```
+
+`PC0`–`PC3` are ADC-capable only on STM32F0, not G0. So of the six free
+headers, **only `PA0` (MOT2) can read analog** — Sensor `PC2`, RGB `PC3` and
+the I2C `PC0`/`PC1` are digital-only here. Meanwhile 8 of the 12 pins on the
+2x7 header *are* ADC-capable and are spent on encoders and entry sensors that
+only ever need digital.
+
+**Option A — analog multiplexer (no rewiring).** A 74HC4051 8:1 mux puts all
+six tension lines on one ADC pin: `PA0` for the analog input, plus three
+digital selects from `PA10` / `PD8` / `PD9`. Four pins total, nothing existing
+is displaced, and `PC0`–`PC3` stay free. Because only the active channel needs
+assist, the mux does not need fast scanning — set it when the selector parks
+at a channel and read steadily, discarding the first sample after each switch.
+
+**Option B — free up ADC pins (no extra parts).** Move five digital sensors
+off ADC-capable 2x7 pins onto free digital pins (`PA10`, `PD8`, `PD9`, `PC0`,
+`PC1`, `PC2`, `PC3` — seven available, five needed). That frees five ADC pins
+which, with `PA0`, gives six direct analog channels. Costs a harness rework of
+five existing sensors.
+
+**Electrical notes:**
+
+- **Divide from 3.3 V, never 5 V.** The MOT2, Sensor and RGB headers carry
+  5 V, and a G0 pin in analog mode is not 5 V tolerant — a compression event
+  would put 5 V on the ADC input. 3.3 V is available on the STOP headers, the
+  2x7 header and the I2C headers.
+- 20 K / 20 K gives ~1.65 V idle at 82 uA per channel; a closed switch draws
+  165 uA through the opposing leg. Klipper samples for 39.5 ADC clock cycles
+  at 16 MHz (2.47 us), which supports roughly 100 kOhm source impedance, so
+  20 K (10 K Thevenin) has wide margin. Values up to ~100 K would still work
+  if lower current matters.
+- **There is no `adc_button` module in this Klipper tree** (only
+  `adc_temperature`, `adc_scaled`, `query_adc`, `buttons`, `gcode_button`), so
+  this needs a small custom extra in the shape of `sa_encoder.py`. Suggested
+  thresholds with hysteresis: `< 0.5 V` tension, `1.2-2.1 V` neutral,
+  `> 2.8 V` compression.
+- **An analog line detects its own failure**, which two switches cannot: a
+  broken or unplugged sensor reads outside every valid band instead of looking
+  like a legitimate state. Worth designing the thresholds so a disconnected
+  channel is distinguishable rather than silently reading "neutral".
+
 ### 4. Full end-to-end test sweep — Mainsail panel
 
 Run every command from the Mainsail panel rather than the console, and log
