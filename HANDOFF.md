@@ -239,34 +239,51 @@ module but must not be fed back into the MCU.
   expander output driver, so this would mean new MCU firmware rather than
   configuration. Not worth it when six pins are already free.
 
-**Options to weigh:**
+**How much has to be respooled.** The calibrated Bowden lengths are
+1270–1461 mm (`parameters.cfg`, `bowden_length_0..5`), plus `nozzle_distance`
+and purge. So an unload pays back roughly **1.3–1.5 m per channel**, and a
+rewinder has to take up all of it.
 
-1. **Six small DC gearmotors**, one per spool, low-torque and driven only
-   while the unload retracts. Uses the six free pins. Needs a slip clutch or a
+**Springs are almost certainly out.** Mike's call, and the reasoning holds:
+
+- 1.5 m is a lot of take-up. On a full ~200 mm spool that is about 2.4 turns;
+  on a nearly empty one it is 5–8 turns depending on core diameter. The *same*
+  spring has to cover a roughly 3x range of required turns, at usable force
+  across all of it — which is exactly what a constant-force spring is bad at.
+- **Removing the roll releases everything the spring has stored.** A wound
+  spring holding 1.5 m of take-up is stored energy pointed at whoever unclips
+  the spool.
+- A nearly empty roll that jumps its track has the same problem, and is more
+  likely precisely when the spring is most wound.
+- A printed spring will not survive the cycle count; a steel one makes the
+  release hazard worse.
+
+**Direction: active rewind.** Mechanism not yet chosen. Parked until the
+items above are done — recorded here so the spring option is not re-proposed
+without the reasoning that ruled it out.
+
+**Options to weigh when it comes up:**
+
+1. **Six small DC gearmotors**, one per spool, low-torque, driven only while
+   the unload retracts. Uses the six free pins above. Needs a slip clutch or a
    current-limited driver so a taut spool cannot keep pulling — overwinding
    risks snapping filament at the entry, or dragging the path backwards
    against the drive gear.
-2. **Constant-force spring rewinders** on the spool holders. Zero pins, zero
-   code, nothing to fail electrically. The cost is permanent drag on every
-   path during printing, which works against the feed-assist system in
-   section 3 — these two features pull in opposite directions and should be
-   designed together.
-3. **One shared rewind motor** engaged per channel by a mechanism riding the
+2. **One shared rewind motor** engaged per channel by a mechanism riding the
    selector. Cheapest electrically, but the spools are remote from the
    selector carriage, so the mechanics are the hard part.
 
 **Open questions:**
 
-- What stops the rewind? Simplest is to run it while the drive motor retracts
-  and stop shortly after the entry sensor clears. Time- or current-based, not
-  position-based, since there is no encoder on the spool.
+- What stops the rewind? There is no encoder on the spool, so it is time- or
+  current-based: simplest is to run while the drive motor retracts and stop
+  shortly after the entry sensor clears.
 - The section 3 buffer sits between the drive gear and the toolhead, so it
-  cannot see slack on the spool side. If rewind needs closed-loop feedback it
-  needs its own sensor — which would eat the remaining free pins, or share the
-  tension ladder if a rewind switch per channel can be added to it (subject to
-  the same one-closure-at-a-time limit).
-- Does rewind ever need to run during a print (a retraction-heavy job slowly
-  paying out slack), or only during unload?
+  cannot see slack on the spool side. Closed-loop rewind would need its own
+  sensor — either eating the remaining free pins, or sharing the tension
+  ladder if a per-channel rewind switch can be added to it, subject to the
+  same one-closure-at-a-time limit.
+- Does rewind ever need to run during a print, or only during unload?
 
 ### 5. Full end-to-end test sweep — Mainsail panel
 
