@@ -62,7 +62,29 @@ class Panel(ScreenPanel):
         self._cal_state = ''
         self._entry_val = ''
 
+        # Claim exactly the framework's content budget and stop expanding.
+        # In landscape the action bar spans both rows of base_panel's grid,
+        # so it negotiates height with the content row; an exact request
+        # settles that on the first allocation pass rather than letting the
+        # two fight over the leftover.
+        self.content.set_size_request(-1, self._gtk.content_height)
+        self.content.set_vexpand(False)
+
         self._build_ui()
+
+    # -- Sizing derived from the framework, never hard-coded --------------------
+
+    def _touch_h(self):
+        """Minimum comfortable finger target height, in px.
+
+        Derived from the framework font size so it tracks resolution and the
+        user's font_size preference, with an absolute floor for tiny screens.
+        """
+        return int(max(44.0, self._gtk.font_size * 2.6))
+
+    def _pt(self, mult):
+        """Pango point size as a multiple of the framework font size."""
+        return max(7, int(round(self._gtk.font_size * mult)))
 
     # ── UI construction ────────────────────────────────────────────────────────
 
@@ -73,9 +95,14 @@ class Panel(ScreenPanel):
         # calibration is running ("SELECTOR · sel_confirm" etc.). Updated by
         # _apply_state() from the cal_state value.
         self._phase_lbl = Gtk.Label(halign=Gtk.Align.CENTER)
+        # Pinned to a point size derived from the framework font -- never
+        # em-based ("x-small") and never letter_spacing. Both are measured
+        # from font metrics that are unstable on the first realize pass, and
+        # each added a few px per label: the same failure that pushed
+        # sa_macros over budget and clipped the power icon off-screen.
         self._phase_lbl.set_markup(
-            '<span font_size="x-small" foreground="#9E9E9E" letter_spacing="2000">'
-            'CALIBRATION</span>')
+            '<span font="%d" foreground="#9E9E9E">CALIBRATION</span>'
+            % self._pt(0.62))
         outer.pack_start(self._phase_lbl, False, False, 0)
 
         # Prompt text — large, centered, the focal point of the panel.
@@ -84,8 +111,8 @@ class Panel(ScreenPanel):
         self._prompt_lbl.set_halign(Gtk.Align.CENTER)
         self._prompt_lbl.set_justify(Gtk.Justification.CENTER)
         self._prompt_lbl.set_markup(
-            '<span font_size="x-large" weight="bold">'
-            'Waiting for calibration…</span>')
+            '<span font="%d" weight="bold">Waiting for calibration…</span>'
+            % self._pt(1.25))
         outer.pack_start(self._prompt_lbl, False, False, 4)
 
         # Divider removed — phase label + bold prompt give enough separation
@@ -105,6 +132,7 @@ class Panel(ScreenPanel):
 
         # ABORT — always at bottom
         abort_btn = _sbs.make("\u26d4  ABORT", "sa-btn-warn")
+        abort_btn.set_size_request(-1, self._touch_h())
         abort_btn.connect("clicked", self._do_abort)
         outer.pack_start(abort_btn, False, False, 0)
 
@@ -114,8 +142,9 @@ class Panel(ScreenPanel):
         box = Gtk.Box(spacing=12, margin_top=12)
         yes = _sbs.make("\u2714  YES", "sa-btn")
         no  = _sbs.make("\u2716  NO",  "sa-btn-alt")
-        yes.set_size_request(-1, 72)
-        no.set_size_request(-1, 72)
+        for _b in (yes, no):
+            _b.set_size_request(-1, self._touch_h())
+            _b.set_vexpand(True)
         yes.connect("clicked", self._respond_fixed, "yes")
         no.connect("clicked",  self._respond_fixed, "no")
         box.pack_start(yes, True, True, 0)
@@ -126,8 +155,9 @@ class Panel(ScreenPanel):
         box = Gtk.Box(spacing=12, margin_top=12)
         rdy  = _sbs.make("\u25b6  READY",    "sa-btn")
         retry = _sbs.make("\u21ba  NOT YET", "sa-btn-alt")
-        rdy.set_size_request(-1, 72)
-        retry.set_size_request(-1, 72)
+        for _b in (rdy, retry):
+            _b.set_size_request(-1, self._touch_h())
+            _b.set_vexpand(True)
         rdy.connect("clicked",   self._respond_fixed, "yes")
         retry.connect("clicked", self._respond_fixed, "no")
         box.pack_start(rdy,   True, True, 0)
@@ -135,60 +165,73 @@ class Panel(ScreenPanel):
         return box
 
     def _build_numpad(self, with_decimal):
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        """Numpad as ONE homogeneous 3x6 grid, so it divides the space it is
+        given instead of demanding a fixed height.
 
-        # Entry display
+        Rows: display / 7 8 9 / 4 5 6 / 1 2 3 / . 0 back / SEND.
+
+        The previous version stacked fixed heights -- 48 for the display,
+        4 x 52 for the pad, 56 for SEND, plus gaps -- for a 336 px minimum.
+        That overflowed a 480x320 screen (296 px of content) by 40 px with
+        nothing above it, and left only 108 px here for the prompt text.
+        Six homogeneous rows come to 49 px each on that screen and 74 px
+        here, both above a comfortable finger target, and they follow the
+        display rather than fighting it.
+        """
+        key = "float" if with_decimal else "int"
+
+        grid = Gtk.Grid(row_spacing=4, column_spacing=4,
+                        row_homogeneous=True, column_homogeneous=True,
+                        hexpand=True, vexpand=True)
+
+        # Row 0 — entry display, full width
         disp = Gtk.Entry()
         disp.set_editable(False)
         disp.set_alignment(1.0)
-        disp.set_size_request(-1, 48)
+        disp.set_hexpand(True)
+        disp.set_vexpand(True)
         disp.get_style_context().add_class("sa-btn-alt")
-        key = "float" if with_decimal else "int"
         setattr(self, "_disp_%s" % key, disp)
-        outer.pack_start(disp, False, False, 0)
+        grid.attach(disp, 0, 0, 3, 1)
 
-        grid = Gtk.Grid(row_spacing=4, column_spacing=4, row_homogeneous=True,
-                        column_homogeneous=True)
-
+        # Rows 1-3 — digits
         digits = [
-            ('7', 0, 0), ('8', 0, 1), ('9', 0, 2),
-            ('4', 1, 0), ('5', 1, 1), ('6', 1, 2),
-            ('1', 2, 0), ('2', 2, 1), ('3', 2, 2),
+            ('7', 1, 0), ('8', 1, 1), ('9', 1, 2),
+            ('4', 2, 0), ('5', 2, 1), ('6', 2, 2),
+            ('1', 3, 0), ('2', 3, 1), ('3', 3, 2),
         ]
         for lbl, row, col in digits:
             btn = _sbs.make(lbl, "sa-btn-alt")
-            btn.set_size_request(-1, 52)
+            btn.set_vexpand(True)
             btn.connect("clicked", self._numpad_digit, key, lbl)
             grid.attach(btn, col, row, 1, 1)
 
-        # Bottom row: [. or blank] [0] [⌫]
+        # Row 4 — [. or blank] [0] [backspace]
         if with_decimal:
             dot_btn = _sbs.make(".", "sa-btn-alt")
-            dot_btn.set_size_request(-1, 52)
+            dot_btn.set_vexpand(True)
             dot_btn.connect("clicked", self._numpad_digit, key, ".")
-            grid.attach(dot_btn, 0, 3, 1, 1)
+            grid.attach(dot_btn, 0, 4, 1, 1)
         else:
-            placeholder = Gtk.Label()
-            grid.attach(placeholder, 0, 3, 1, 1)
+            grid.attach(Gtk.Label(), 0, 4, 1, 1)
 
         zero_btn = _sbs.make("0", "sa-btn-alt")
-        zero_btn.set_size_request(-1, 52)
+        zero_btn.set_vexpand(True)
         zero_btn.connect("clicked", self._numpad_digit, key, "0")
-        grid.attach(zero_btn, 1, 3, 1, 1)
+        grid.attach(zero_btn, 1, 4, 1, 1)
 
-        back_btn = _sbs.make("\u232b", "sa-btn-alt")
-        back_btn.set_size_request(-1, 52)
+        back_btn = _sbs.make("⌫", "sa-btn-alt")
+        back_btn.set_vexpand(True)
         back_btn.connect("clicked", self._numpad_backspace, key)
-        grid.attach(back_btn, 2, 3, 1, 1)
+        grid.attach(back_btn, 2, 4, 1, 1)
 
-        outer.pack_start(grid, True, True, 0)
-
-        send_btn = _sbs.make("\u2713  SEND", "sa-btn")
-        send_btn.set_size_request(-1, 56)
+        # Row 5 — SEND, full width
+        send_btn = _sbs.make("✓  SEND", "sa-btn")
+        send_btn.set_vexpand(True)
         send_btn.connect("clicked", self._numpad_send, key)
-        outer.pack_start(send_btn, False, False, 0)
+        grid.attach(send_btn, 0, 5, 3, 1)
 
-        return outer
+        return grid
 
     # ── Numpad logic ───────────────────────────────────────────────────────────
 

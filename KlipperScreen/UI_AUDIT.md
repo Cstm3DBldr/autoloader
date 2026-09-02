@@ -73,8 +73,13 @@ through `color4`, `.numpad_button`, `.numpad_key`, `.numpad_left/right/top/`
 | `sa_post_load.py` | Fixed 56 px and 38 px rows |
 
 Anything taller than `content_height` is simply cut off, with no way for the
-user to reach it. A scroll container makes overflow survivable on every
-screen instead of fatal on small ones.
+user to reach it.
+
+**The fix is not to add scroll containers.** These pages must fit — see the
+Plan. The absence of a scroll container is only worth listing because it is
+what turns an oversize layout from ugly into unusable; once nothing requests
+fixed pixels, none of these pages exceeds its budget and the question does not
+arise. `sa_settings.py` keeps its scroll, being a genuine long list.
 
 ### F2 — Screen arithmetic is guessed, and throws away real estate
 
@@ -173,25 +178,100 @@ layout must survive a further +/-10% on text without clipping.
 
 ---
 
-## Plan
+## Plan — fit every screen, no scrolling
 
-Ordered so each step is independently verifiable on hardware.
+**No panel scrolls.** These are touchscreen tool pages: each one has a purpose
+and everything for that purpose belongs on it, one fingertip away. Scrolling
+to hunt for a button is the failure, not the fix. `sa_settings.py` is the sole
+exception — it is a long list of preferences and already scrolls.
 
-1. **Scroll containers first (F1).** Wrap the four panels' content in
-   `self._gtk.ScrolledWindow()`. Cheap, low risk, and immediately converts
-   every "off the screen" bug into a scroll. Do this before any redesign so
-   the rest can be evaluated without content vanishing.
-2. **Replace guessed arithmetic with `content_height` (F2).** Delete the
-   `- 60 - 74 - 50` style constants and the caps that compensate for them.
-3. **Adopt `AutoGrid` for button groups (F3).** Removes manual row/column
-   maths in `sa_home`, `sa_macros`, `sa_load_unload` and `sa_post_load`, and
-   gives portrait for free via its `vertical` flag.
-4. **Rebuild the numpad on the stock `.numpad_*` classes (F5).**
-5. **Retire `sa_button_style.py` in favour of `self._gtk.Button` and the
-   theme classes (F4).** Largest diff, mostly deletion. Keep filament swatch
-   colours literal.
-6. **Re-verify on 480x320 and 1024x600**, not only this display —
-   KlipperScreen can be run windowed at a given resolution for this.
+### The layouts are already right. The pixels are what break them.
+
+Every existing layout fits at 480x320 — KlipperScreen's minimum — with rows
+above a finger-usable floor. Nothing needs redesigning:
+
+| Panel | Rows its layout needs |
+|---|---|
+| `sa_cal_prompt` numpad | 6 (display + 4 pad rows + send) |
+| `sa_load_unload` | 5 (status + 3 path rows + actions) |
+| `sa_macros` | 5 |
+| `sa_post_load` | 4 |
+| `sa_home` | 3 (hero counts 2, utility 1) |
+
+Against what each display can seat, using a touch floor of
+`min_touch = max(44, font_size * 2.6)`:
+
+| Display | `font_size` | `content_height` | `min_touch` | Rows that fit |
+|---|---|---|---|---|
+| 480x320 | 11.9 | 296 | 44 | **6** |
+| 800x480 | 17.8 | 444 | 46 | 9 |
+| 1024x600 | 22.2 | 556 | 58 | 9 |
+| 720x720 | 18.0 | 684 | 47 | 14 |
+
+The worst case is the numpad on the smallest screen: 296 / 6 = **49 px per
+row**, comfortably over the 44 px floor. The same numpad currently demands a
+fixed **336 px** and so overflows that screen by 40 px. The layout was never
+the problem.
+
+### The rule: request shares, not pixels
+
+`self.content` is already `Gtk.Box(VERTICAL, hexpand=True, vexpand=True)` and
+`self._gtk.content_height` is the exact budget. If children ask for no height
+and expand instead, GTK divides the real space and the page fits by
+construction at any resolution.
+
+1. **Pin the content to the framework's budget, once, in `__init__`:**
+
+   ```python
+   self.content.set_size_request(-1, self._gtk.content_height)
+   self.content.set_vexpand(False)
+   ```
+
+   In landscape the action bar is attached spanning both grid rows
+   (`base_panel.py:124`), so it negotiates height with the content row. Giving
+   content an exact request stops that fight on the first allocation pass.
+   `sa_macros.py` already does this — it is the correct pattern, not a
+   workaround, and it belongs in every panel.
+
+2. **Inside, no height `set_size_request` at all.** Use
+   `Gtk.Grid(row_homogeneous=True, column_homogeneous=True)` with children
+   set `hexpand=True, vexpand=True`, or `AutoGrid`. Rows then divide
+   `content_height` evenly.
+
+3. **Weight sections by row span, not by pixels.** A 2:1 hero-to-utility split
+   is a 3-row homogeneous grid with the hero attached `height=2` and the
+   utility `height=1`. Exact proportions, zero arithmetic, correct on every
+   display.
+
+4. **Size text and icons from `font_size`**, never in points or pixels:
+   `img_scale`, `img_width`, `button_image_scale` all track it, and it already
+   folds in the user's small-to-max preference.
+
+5. **Guard the touch floor instead of scrolling.** Compute
+   `min_touch = max(44, self._gtk.font_size * 2.6)` and
+   `seats = int(self._gtk.content_height // min_touch)`. If a page ever wants
+   more rows than `seats`, change the *arrangement* — more columns, or split
+   across a `Gtk.Notebook` page — rather than shrinking below a fingertip or
+   adding a scrollbar. On the numbers above, no current page hits this.
+
+6. **Portrait comes free** once steps 1-4 hold, because `content_height`,
+   `content_width` and `font_size` already account for it. `AutoGrid` takes a
+   `vertical` flag for column re-flow.
+
+### Order of work
+
+Each step is independently verifiable on hardware.
+
+1. `sa_cal_prompt.py` — the numpad, worst offender and self-contained. Proves
+   the technique.
+2. `sa_load_unload.py` — delete `avail = height - 60 - 74 - 50` and the 50/72
+   caps; path buttons become a homogeneous grid.
+3. `sa_home.py` — hero/utility as a 3-row span split, replacing the fixed
+   110 px utility row.
+4. `sa_macros.py` — sections as row spans; keep the fixed-pt section header.
+5. `sa_post_load.py`, `sa_main.py`, `sa_config.py`, `sa_calibration_guide.py`.
+6. Theme adoption (F4) last, as it touches every file and is mostly deletion.
+7. Re-verify at 480x320 and 1024x600, not only on this display.
 
 ### This supersedes the locked layouts in CLAUDE.md
 
