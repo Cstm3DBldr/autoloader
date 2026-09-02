@@ -197,16 +197,16 @@ class SaLedAnimator:
                      if tool_n < len(path_color_hexes)
                      else '') or ''
 
-            empty_state = state in ('empty', 'unknown')
-
-            if not empty_state:
-                # 'loaded'/'partial' — filament is physically in this
-                # path, the existing macros own the logo and paint the
-                # real filament color. Leave it alone.
+            if state == 'loaded':
+                # Fully loaded to the nozzle: the macros own the logo and
+                # paint the real filament color, solid. Only 'loaded'
+                # earns a solid logo -- a racked head that is empty OR
+                # merely parked at the entry sensor is still waiting, and
+                # every waiting slot in the rack should read the same.
                 self._current[tool_n] = 0.0
                 continue
 
-            # Empty/unknown: this slot is waiting, so it pulses. If a
+            # Waiting (empty / unknown / parked at entry): pulse. If a
             # profile has been saved for it, pulse IN that color rather
             # than white -- the slot still reads as "waiting" (which is
             # what the pulse means) while the saved color is visibly
