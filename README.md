@@ -89,8 +89,40 @@ Each of the 6 paths has a state that persists across moves:
 |---|---|
 | `unknown` | Not confirmed — state after boot or explicit reset |
 | `empty` | No filament in path |
-| `partial` | Filament in Bowden tube but not loaded to nozzle |
+| `partial` | Filament in Bowden tube but not loaded to nozzle — includes filament parked at the entry sensor |
 | `loaded` | Filament loaded all the way to nozzle tip |
+
+### How a path changes state
+
+The `[autoloader]` state monitor polls every entry sensor once per second
+and owns these transitions:
+
+- **Filament reaches the entry sensor** → the path is promoted to
+  `partial` immediately and holds there, and an auto-park is queued.
+  Only a load promotes further, to `loaded`.
+- **Entry sensor reads clear on a `loaded`/`partial` path** for
+  `runout_timeout` seconds (default 10) → the path drops to `empty` and
+  its stored filament profile is wiped, so the next load cannot inherit
+  the old brand, colour and temperatures.
+- **A profile is selected on an `empty` path** and nothing is loaded
+  within `material_select_timeout` seconds (default 60) → the profile is
+  wiped. A path whose entry sensor sees filament keeps its profile until
+  the filament is removed or the profile is changed by hand.
+
+A path with a load, unload or park in flight is skipped entirely: its
+sensor goes clear and back mid-sequence, and a load can run longer than
+`material_select_timeout`.
+
+### Auto-park
+
+Inserting filament queues `SA_PARK` for that path. Parks run one at a
+time, oldest first, and a request that arrives while another is running
+is held and run next rather than dropped. Each is re-checked against the
+sensor immediately before it runs, and skipped during a real print.
+
+This is driven by the state monitor, **not** by the entry sensors'
+`insert_gcode` — see the note in `autoloader/hardware.cfg` for why that
+hook silently loses insertions. Trigger latency is up to 1 second.
 
 ---
 
