@@ -47,6 +47,7 @@ if _extras_dir not in sys.path:
     sys.path.insert(0, _extras_dir)
 
 import logging
+import configparser
 from sa_motion      import SAMotion
 from sa_sequences   import SASequences
 from sa_calibration import SACalibration
@@ -140,6 +141,8 @@ class Autoloader:
         # spool and we want the LED to react instantly.
         self.runout_timeout_seconds  = config.getfloat('runout_timeout',           10.0,
                                                        minval=0.5, maxval=120.0)
+        self.material_select_timeout = config.getfloat('material_select_timeout', 60.0,
+                                                       minval=0.)
         self.selector_max_travel     = config.getfloat('selector_max_travel',     200.0)
         self.selector_homing_speed   = config.getfloat('selector_homing_speed',    50.0)
         self.selector_homing_backoff = config.getfloat('selector_homing_backoff',   5.0)
@@ -186,6 +189,14 @@ class Autoloader:
         self.tip_form_cooling_moves  = config.getint('tip_form_cooling_moves',        4)
         self.tip_form_cool_speed_in  = config.getfloat('tip_form_cool_speed_in',   10.0)
         self.tip_form_cool_speed_out = config.getfloat('tip_form_cool_speed_out',  50.0)
+        # Cold-shear mode. 0 disables and the normal sever/ease/cool sequence
+        # runs. Set to a temperature and the heater is switched off after the
+        # ram, the hotend is allowed to fall to it, and the filament is then
+        # drawn out slowly so it shears at a defined boundary rather than
+        # separating from a melt.
+        self.tip_form_shear_temp     = config.getfloat('tip_form_shear_temp',      0.0)
+        self.tip_form_shear_speed    = config.getfloat('tip_form_shear_speed',     3.0)
+        self.tip_form_shear_timeout  = config.getfloat('tip_form_shear_timeout', 180.0)
 
         # ── Parking sequence ──────────────────────────────────────────────────
         # Common: where the filament tip ends up + the speed of the final move.
@@ -247,6 +258,9 @@ class Autoloader:
         self._pending_response = None
         self._response_ready   = False
         self._cal_state        = None
+        # Paths with a load/unload in flight. The state monitor leaves
+        # these alone -- see SASequences.do_load.
+        self._op_paths         = set()
         self._cal_data         = {}
         self._cal_prompt       = ''
 
@@ -360,19 +374,35 @@ class Autoloader:
         # eventtime of the last "filament present" reading per path.
         # Used as the debounce reference point.
         self._sensor_last_active_time = {}
+        # path -> eventtime a profile was first seen on a sensor-clear
+        # path, i.e. when the material_select_timeout clock started.
+        self._profile_pending_since = {}
         now = self.reactor.monotonic()
+        # Seed every path, not just the ones reading present. The runout
+        # check falls back to this value, and a fallback of
+        # `eventtime - runout_timeout_seconds` is instantly satisfied on
+        # the first tick -- emptying a path that had merely not been seen
+        # yet. Starting the clock at boot gives one full debounce window
+        # before anything can be declared a runout.
         for i in range(self.num_paths):
-            try:
-                if self._entry_sensor_active(i):
-                    self._sensor_last_active_time[i] = now
-            except Exception:
-                pass
+            self._sensor_last_active_time[i] = now
         self._state_monitor_timer = self.reactor.register_timer(
             self._state_monitor_tick, now + 2.0)
 
     def _state_monitor_tick(self, eventtime):
         try:
             for i in range(self.num_paths):
+                if i in self._op_paths:
+                    # Load or unload in flight on this path. Its sensor
+                    # goes clear and back mid-sequence, and a load can
+                    # run longer than material_select_timeout, so acting
+                    # on either clock here would fight the operation --
+                    # up to wiping the profile the load is using.
+                    # Hold the debounce reference at "now" so the path
+                    # gets a full window once the operation finishes.
+                    self._sensor_last_active_time[i] = eventtime
+                    self._profile_pending_since.pop(i, None)
+                    continue
                 try:
                     active = self._entry_sensor_active(i)
                 except Exception:
@@ -385,7 +415,22 @@ class Autoloader:
                     # through the bowden to the nozzle. Only the load and unload
                     # sequences know that, so only they promote a path.
                     self._sensor_last_active_time[i] = eventtime
+                    # Filament is physically here: the profile is retained
+                    # until it is removed or manually changed, so cancel
+                    # any pending select timeout.
+                    self._profile_pending_since.pop(i, None)
                 else:
+                    # Sensor clear. Two different clocks run here:
+                    #
+                    #  * a path that BELIEVED it held filament has just
+                    #    lost it -- that is a removal, and the profile
+                    #    goes as soon as the runout debounce confirms it.
+                    #  * a path that was already empty but carries a
+                    #    profile the user selected -- they picked a
+                    #    filament and never loaded it. That gets the
+                    #    longer material_select_timeout before the slot
+                    #    is wiped, so selecting a profile and then
+                    #    walking over to fetch the spool doesn't lose it.
                     if self.path_states[i] in (self.STATE_LOADED,
                                                self.STATE_PARTIAL):
                         # Sensor inactive on a path that still believes it
@@ -408,13 +453,108 @@ class Autoloader:
                             # lets the logo fall back to the breathing white that means
                             # "nothing here", and stops the next load inheriting the old
                             # brand, colour and temperatures.
-                            self._clear_material_profile(i)
+                            self._clear_material_profile(
+                                i, "filament removed")
+                    elif self._has_material_profile(i):
+                        # Empty slot holding a profile nobody loaded.
+                        since = self._profile_pending_since.setdefault(
+                            i, eventtime)
+                        if (self.material_select_timeout > 0.
+                                and eventtime - since
+                                >= self.material_select_timeout):
+                            self._clear_material_profile(
+                                i, "selected but not loaded within %.0fs"
+                                % self.material_select_timeout)
         except Exception:
             logging.exception(
                 "Autoloader: state monitor tick failed (suppressed)")
         # 1 Hz check — runout detection latency is dominated by
         # runout_timeout_seconds anyway, so polling faster doesn't help.
         return eventtime + 1.0
+
+    def _persist_variables(self, updates):
+        """Write several save_variables entries in one file rewrite.
+
+        Mirrors save_variables.cmd_SAVE_VARIABLE, but deliberately does
+        not go through the gcode dispatcher: the state monitor runs on a
+        reactor timer and does not hold the gcode mutex, so
+        run_script_from_command is not safe to call from there. It also
+        collapses what would be a dozen separate SAVE_VARIABLE commands
+        -- each of which rewrites the entire file -- into one write.
+        """
+        sv = self.printer.lookup_object('save_variables', None)
+        if sv is None:
+            return
+        try:
+            newvars = dict(sv.allVariables)
+            newvars.update(updates)
+            varfile = configparser.ConfigParser()
+            varfile.add_section('Variables')
+            for name, val in sorted(newvars.items()):
+                varfile.set('Variables', name, repr(val))
+            with open(sv.filename, 'w') as f:
+                varfile.write(f)
+            sv.loadVariables()
+        except Exception:
+            logging.exception(
+                "Autoloader: failed to persist variables (suppressed)")
+
+    def _has_material_profile(self, path):
+        """True if path carries a user-selected filament profile.
+
+        Material, brand and colour are checked together rather than just
+        one of them: a profile picked from the touchscreen colour step
+        can set a colour with no material name yet, and one typed from
+        the console can do the reverse.
+        """
+        return bool((self.path_materials[path]   or '').strip()
+                    or (self.path_brands[path]     or '').strip()
+                    or (self.path_color_hexes[path] or '').strip())
+
+    def _clear_material_profile(self, path, reason=""):
+        """Wipe the stored filament profile for one path, and persist it.
+
+        Called when the filament a profile describes is gone, so the next
+        load cannot inherit the old brand, colour and temperatures, and
+        the logo falls back to the plain breathing pulse that means
+        "nothing here".
+        """
+        if not self._has_material_profile(path):
+            return
+        self.path_materials[path]     = ''
+        self.path_brands[path]        = ''
+        self.path_product_lines[path] = ''
+        self.path_color_names[path]   = ''
+        self.path_color_hexes[path]   = ''
+        self.path_color_types[path]   = 'single'
+        self.path_color_hex2s[path]   = ''
+        self.path_color_hex3s[path]   = ''
+        self.path_load_temps[path]    = self.load_temperature
+        self.path_unload_temps[path]  = self.load_temperature - 15.
+        self.path_purge_speeds[path]  = 5.0
+        self.path_purge_lengths[path] = self.purge_length
+
+        self._persist_variables({
+            'sa_material_%d'     % path: '',
+            'sa_brand_%d'        % path: '',
+            'sa_product_line_%d' % path: '',
+            'sa_color_name_%d'   % path: '',
+            'sa_color_hex_%d'    % path: '',
+            'sa_color_type_%d'   % path: 'single',
+            'sa_color_hex2_%d'   % path: '',
+            'sa_color_hex3_%d'   % path: '',
+            'sa_load_temp_%d'    % path: self.load_temperature,
+            'sa_unload_temp_%d'  % path: self.load_temperature - 15.,
+            'sa_purge_speed_%d'  % path: 5.0,
+            'sa_purge_length_%d' % path: self.purge_length,
+        })
+        self._profile_pending_since.pop(path, None)
+        logging.info("Autoloader: cleared filament profile on path %d (%s)",
+                     path, reason or "no reason given")
+        # No LED call needed: sa_led_animator reads path_color_hexes every
+        # tick, so the slot drops back to the plain white "nothing here"
+        # pulse on its own. Firing a macro from this reactor timer would
+        # mean blocking on the gcode mutex, which the timer must not do.
 
     def _set_state_persist(self, path, new_state, reason=""):
         """Internal helper — update path_states[path] and persist."""
@@ -1005,6 +1145,8 @@ class Autoloader:
             'COOL_MOVES' : 'cooling_moves',
             'COOL_IN'    : 'cool_speed_in',
             'COOL_OUT'   : 'cool_speed_out',
+            'SHEAR'      : 'shear_temp',
+            'SHEAR_SPEED': 'shear_speed',
         }
         ov = {}
         for arg, name in argmap.items():

@@ -412,6 +412,8 @@ All parameters are set in the `[autoloader]` section of `hardware.cfg`.
 | `sensor_polling_delay` | `0.2` | Seconds between sensor checks in feed loops |
 | `servo_move_delay` | `0.3` | Seconds to wait after servo command |
 | `stepper_timeout` | `120` | Seconds before idle steppers auto-disable |
+| `runout_timeout` | `10` | Seconds the entry sensor must read clear before a loaded path is declared empty and its filament profile wiped |
+| `material_select_timeout` | `60` | Seconds a filament profile may sit on an empty path before it is wiped (`0` disables) |
 | `selector_max_travel` | `200.0` | Max mm for selector far-end detection / cal sweep |
 | `selector_homing_speed` | `50.0` | Homing approach speed (mm/s) |
 | `selector_homing_backoff` | `5.0` | Back-off distance before slow re-approach (mm) |

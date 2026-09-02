@@ -424,6 +424,8 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `sensor_polling_delay` | 0.2 | Seconds between sensor checks in loops |
 | `servo_move_delay` | 0.3 | Seconds to wait after servo command |
 | `stepper_timeout` | 120 | Idle stepper auto-disable seconds; 0 disables auto-disable |
+| `runout_timeout` | 10 | Seconds the entry sensor must read clear before a loaded/partial path is declared empty and its filament profile wiped |
+| `material_select_timeout` | 60 | Seconds a profile may sit on an *empty* path with no filament before it is wiped; 0 disables. A path whose entry sensor sees filament keeps its profile until removal or a manual change |
 | `cooling_pad_enabled` | True | Call `PARK_ON_COOLING_PAD` after load/unload |
 | `clean_nozzle_enabled` | True | Call `SA_CLEAN_NOZZLE` before parking |
 | `selector_max_travel` | 200.0 | Max sweep distance (mm) for SA_CALIBRATE_SELECTOR auto-cal |

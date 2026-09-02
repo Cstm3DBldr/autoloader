@@ -834,6 +834,33 @@ class SASequences:
     # ═══════════════════════════════════════════════════════════════════════════
 
     def do_load(self, gcmd, path):
+        """Marks the path in-flight, then runs the load sequence.
+
+        The state monitor must not act on entry-sensor readings for a
+        path while it is being driven: mid-sequence the sensor goes
+        clear and comes back, and a load can outlast
+        material_select_timeout, which would let the monitor wipe the
+        very profile the load is using.
+        """
+        self.owner._op_paths.add(path)
+        try:
+            return self._do_load_inner(gcmd, path)
+        finally:
+            self.owner._op_paths.discard(path)
+
+    def do_unload(self, gcmd, path):
+        """Marks the path in-flight, then runs the unload sequence.
+
+        Same reasoning as do_load: transient sensor readings during the
+        sequence are not runout evidence.
+        """
+        self.owner._op_paths.add(path)
+        try:
+            return self._do_unload_inner(gcmd, path)
+        finally:
+            self.owner._op_paths.discard(path)
+
+    def _do_load_inner(self, gcmd, path):
         """Full filament load sequence for *path*.
 
         Sensor state determines which phases are skipped:
@@ -1080,6 +1107,8 @@ class SASequences:
         cooling_moves = int(cfg('cooling_moves'))
         cool_speed_in = cfg('cool_speed_in')
         cool_speed_out = cfg('cool_speed_out')
+        shear_temp     = cfg('shear_temp')
+        shear_speed    = cfg('shear_speed')
         extruder_name = owner._extruder_names[path]
         current_temp  = self._extruder_temp(path)
 
@@ -1118,7 +1147,8 @@ class SASequences:
                                  current_temp, push_length, push_speed,
                                  sever_dist, sever_speed, ease_speed,
                                  cooling_pos, cooling_len, cooling_moves,
-                                 cool_speed_in, cool_speed_out)
+                                 cool_speed_in, cool_speed_out,
+                                 shear_temp, shear_speed)
         finally:
             if saved_min is not None:
                 heater.min_extrude_temp = saved_min
@@ -1129,36 +1159,38 @@ class SASequences:
     def _form_tip_moves(self, gcmd, path, is_printing, temp, extruder_name,
                         current_temp, push_length, push_speed, sever_dist,
                         sever_speed, ease_speed, cooling_pos, cooling_len,
-                        cooling_moves, cool_speed_in, cool_speed_out):
+                        cooling_moves, cool_speed_in, cool_speed_out,
+                        shear_temp=0.0, shear_speed=3.0):
         """The moves themselves. Split out so form_tip can wrap them in the
         min_extrude_temp override without a long try block."""
         owner = self.owner
 
         # ---- temperature ------------------------------------------------
-        # Pin the target first, always. The old code only acted when the
-        # reading was outside a +/-10 band, which meant a heater that was OFF
-        # and drifting could read in range at the start and then fall below
-        # min_extrude_temp part way through the moves -- the sequence died on
-        # the ease with no cooling or heating step ever logged.
-        owner.gcode.run_script_from_command(
-            "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f" % (extruder_name, temp))
-
-        if current_temp < temp - 5:
-            gcmd.respond_info(
-                "SA: Heating %s %.0f → %.0f°C for tip forming..."
-                % (extruder_name, current_temp, temp))
-            owner.gcode.run_script_from_command(
-                "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.0f" % (extruder_name, temp - 2))
-        elif current_temp > temp + 5:
-            gcmd.respond_info(
-                "SA: Cooling %s %.0f → %.0f°C for tip forming..."
-                % (extruder_name, current_temp, temp))
-            owner.gcode.run_script_from_command(
-                "TEMPERATURE_WAIT SENSOR=%s MAXIMUM=%.0f" % (extruder_name, temp + 5))
+        # In shear mode the heater is switched off a few lines below, so
+        # driving to tip_form_temp first is a settle that buys nothing -- it
+        # cooled 205 to 165, waited, then turned off and waited again down to
+        # 150. All that is needed here is enough heat to push the ram; the
+        # shear stage does its own single wait on the way down.
+        if shear_temp > 0:
+            ram_floor = max(shear_temp, owner.TIP_FORM_TEMP_FLOOR)
+            if current_temp < ram_floor:
+                gcmd.respond_info(
+                    "SA: Heating %s %.0f → %.0f°C so the ram can move..."
+                    % (extruder_name, current_temp, temp))
+                owner.gcode.run_script_from_command(
+                    "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f"
+                    % (extruder_name, temp))
+                owner.gcode.run_script_from_command(
+                    "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.0f"
+                    % (extruder_name, ram_floor))
+            else:
+                gcmd.respond_info(
+                    "SA: %s at %.0f°C, hot enough to ram — going straight to the shear."
+                    % (extruder_name, current_temp))
         else:
-            gcmd.respond_info(
-                "SA: %s already at %.0f°C, holding for tip forming."
-                % (extruder_name, current_temp))
+            self._hold_temp_for_forming(gcmd, extruder_name, temp, current_temp)
+
+
 
         self._move_to_purge_position(gcmd, is_printing)
         owner.gcode.run_script_from_command("M83")
@@ -1168,6 +1200,61 @@ class SASequences:
             gcmd.respond_info(
                 "SA: Tip ram %.1fmm at %.0fmm/s..." % (push_length, push_speed))
             self._extrude_mm(push_length, int(push_speed * 60))
+
+        # ---- cold shear (optional) ---------------------------------------
+        # Switch the heater off and let the hotend fall, then draw the filament
+        # out slowly. It parts at the boundary between what is bonded to the
+        # bore and what is not, instead of stretching out of a melt -- so no
+        # bead forms at all. The cost is the cooldown wait, and the risk is
+        # that a fully cold pull grips harder than the extruder can pull, so
+        # step the temperature down rather than starting at the bottom.
+        if shear_temp > 0:
+            gcmd.respond_info(
+                "SA: Cold shear — heater off, waiting for %s to reach %.0f°C "
+                "(up to %.0fs)..."
+                % (extruder_name, shear_temp, owner.tip_form_shear_timeout))
+            owner.gcode.run_script_from_command(
+                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0" % extruder_name)
+
+            deadline = owner.reactor.monotonic() + owner.tip_form_shear_timeout
+            while owner.reactor.monotonic() < deadline:
+                if self._extruder_temp(path) <= shear_temp:
+                    break
+                owner.reactor.pause(owner.reactor.monotonic() + 1.0)
+
+            reached = self._extruder_temp(path)
+            gcmd.respond_info("SA: Cold shear — at %.0f°C, drawing out at %.1fmm/s..."
+                              % (reached, shear_speed))
+
+            # Nothing is being pushed into a cold nozzle here, so the extrude
+            # guard is lifted entirely rather than to the forming floor.
+            enc = owner._encoder(path)
+            try:
+                enc.set_direction(forward=False)
+                enc.reset_distance()
+            except Exception:
+                enc = None
+
+            token = self._allow_cold_extrude(path, 0.0)
+            try:
+                self._extrude_mm(-(cooling_pos + push_length),
+                                 max(1, int(shear_speed * 60)))
+            finally:
+                self._restore_extrude_floor(token)
+
+            if enc is not None:
+                moved = abs(enc.get_distance())
+                want  = cooling_pos + push_length
+                if moved < want * 0.5:
+                    gcmd.respond_info(
+                        "SA: WARNING — encoder saw %.1fmm of %.1fmm. The tip is "
+                        "probably gripping and the extruder is stripping it. "
+                        "Raise SHEAR." % (moved, want))
+                else:
+                    gcmd.respond_info("SA: Cold shear — encoder %.1fmm." % moved)
+
+            self._clear_past_gears(gcmd, path, cooling_pos, ease_speed)
+            return
 
         # ---- sever -------------------------------------------------------
         # Everything from here is measured as distance of the tip back from the
@@ -1208,23 +1295,63 @@ class SASequences:
                 self._extrude_mm(-cooling_len, max(1, int(speed * 60)))
                 speed += increment
 
-        # ---- clear the gears ---------------------------------------------
-        # The tip is solid now, so this is only about getting it past the
-        # extruder gears and the sensor before the drive motor takes over.
+        self._clear_past_gears(gcmd, path, cooling_pos, ease_speed)
+
+    def _hold_temp_for_forming(self, gcmd, extruder_name, temp, current_temp):
+        """Pin the heater at the forming temperature and wait for it.
+
+        The target is always set, not only when the reading sits outside a
+        band: a heater that is off and drifting can read in range at the start
+        and fall below min_extrude_temp part way through the moves, which
+        killed the sequence on the ease with no heating or cooling step ever
+        logged.
+        """
+        owner = self.owner
+        owner.gcode.run_script_from_command(
+            "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f" % (extruder_name, temp))
+
+        if current_temp < temp - 5:
+            gcmd.respond_info("SA: Heating %s %.0f → %.0f°C for tip forming..."
+                              % (extruder_name, current_temp, temp))
+            owner.gcode.run_script_from_command(
+                "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.0f" % (extruder_name, temp - 2))
+        elif current_temp > temp + 5:
+            gcmd.respond_info("SA: Cooling %s %.0f → %.0f°C for tip forming..."
+                              % (extruder_name, current_temp, temp))
+            owner.gcode.run_script_from_command(
+                "TEMPERATURE_WAIT SENSOR=%s MAXIMUM=%.0f" % (extruder_name, temp + 5))
+        else:
+            gcmd.respond_info("SA: %s already at %.0f°C, holding for tip forming."
+                              % (extruder_name, current_temp))
+
+    def _clear_past_gears(self, gcmd, path, cooling_pos, speed):
+        """Take the finished tip from the cooling zone out past the extruder
+        gears and the sensor, so the drive motor can take over.
+
+        Always runs with the extrude guard lifted: after a shear the hotend is
+        already well below it, and this move pulls filament outwards rather
+        than pushing it into a cold nozzle.
+        """
+        owner  = self.owner
         target = owner.nozzle_to_sensor_dist * 1.05
         clear  = target - cooling_pos
-        if clear > 0:
-            gcmd.respond_info(
-                "SA: Clear %.1fmm at %.0fmm/s (past gears, tip at %.0fmm)..."
-                % (clear, ease_speed, target))
-            self._extrude_mm(-clear, max(1, int(ease_speed * 60)))
-        else:
+        if clear <= 0:
             gcmd.respond_info(
                 "SA: Tip already past the sensor at %.0fmm — no clearing move."
                 % cooling_pos)
+            return
+
+        gcmd.respond_info(
+            "SA: Clear %.1fmm at %.0fmm/s (past gears, tip at %.0fmm)..."
+            % (clear, speed, target))
+        token = self._allow_cold_extrude(path, 0.0)
+        try:
+            self._extrude_mm(-clear, max(1, int(speed * 60)))
+        finally:
+            self._restore_extrude_floor(token)
 
 
-    def do_unload(self, gcmd, path):
+    def _do_unload_inner(self, gcmd, path):
         """Full filament unload sequence for *path*.
 
         Sensor state determines what's done:
