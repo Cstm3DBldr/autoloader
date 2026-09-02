@@ -56,6 +56,10 @@ from sa_calibration import SACalibration
 # ══════════════════════════════════════════════════════════════════════════════
 
 class Autoloader:
+    # Hard floor for SA_FORM_TIP's min_extrude_temp override. Below roughly
+    # this the extruder strips the filament rather than moving it.
+    TIP_FORM_TEMP_FLOOR = 150.0
+
 
     # ── Path states ───────────────────────────────────────────────────────────
     STATE_UNKNOWN = 'unknown'
@@ -1024,9 +1028,18 @@ class Autoloader:
         self.sequences._switch_tool(gcmd, path)
         self.sequences.form_tip(gcmd, path, is_printing, ov)
 
+        # Free the extruder so the filament can be wound out by hand. Measuring
+        # the tip means pulling it out through the entry, and the gears hold it
+        # otherwise -- without this the operator has to disable the steppers
+        # themselves between every attempt.
+        extruder_name = self._extruder_names[path]
+        self.gcode.run_script_from_command(
+            "SET_STEPPER_ENABLE STEPPER=%s ENABLE=0" % extruder_name)
+
         gcmd.respond_info(
-            "SA_FORM_TIP: done. Pull the filament from the entry side and "
-            "measure the tip — target is under 1.75mm across, no ball.")
+            "SA_FORM_TIP: done. %s is disabled — wind the filament out from the "
+            "entry side and measure the tip. Target is under 1.75mm across with "
+            "no ball and no string." % extruder_name)
 
     def _cmd_respond(self, gcmd):
         """SA_RESPOND VALUE=x — deliver a console response to a waiting calibration routine."""

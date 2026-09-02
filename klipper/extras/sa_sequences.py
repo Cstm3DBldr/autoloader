@@ -549,6 +549,43 @@ class SASequences:
             % enc.get_distance())
         return True
 
+    def _allow_cold_extrude(self, path, floor=0.0):
+        """Temporarily lower this extruder's min_extrude_temp.
+
+        Returns a token to hand back to _restore_extrude_floor, or None if the
+        heater could not be found.
+
+        The guard exists to stop cold filament being forced into a nozzle. Two
+        places here legitimately move filament colder than that: forming a tip,
+        which is the whole point of forming below the melt, and dragging an
+        already-formed tip back past the gears with the heater off. Neither is
+        pushing into a cold nozzle.
+        """
+        owner = self.owner
+        try:
+            heater = owner.printer.lookup_object(
+                owner._extruder_names[path]).get_heater()
+        except Exception:
+            return None
+
+        saved = heater.min_extrude_temp
+        if floor >= saved:
+            return None
+
+        heater.min_extrude_temp = floor
+        # can_extrude only refreshes on a temperature callback; set it directly
+        # rather than racing the next one.
+        heater.can_extrude = (heater.smoothed_temp >= floor)
+
+        return (heater, saved)
+
+    def _restore_extrude_floor(self, token):
+        if token is None:
+            return
+        heater, saved = token
+        heater.min_extrude_temp = saved
+        heater.can_extrude = (heater.smoothed_temp >= saved)
+
     def _extrude_mm(self, total_mm, speed_mmm, chunk=49.0):
         """Extrude *total_mm* in ≤49mm chunks to stay under max_extrude_only_distance.
 
@@ -1043,23 +1080,85 @@ class SASequences:
         cooling_moves = int(cfg('cooling_moves'))
         cool_speed_in = cfg('cool_speed_in')
         cool_speed_out = cfg('cool_speed_out')
-
         extruder_name = owner._extruder_names[path]
         current_temp  = self._extruder_temp(path)
 
+        # A good tip forms below klipper's min_extrude_temp, which it enforces
+        # on every E move -- and it fails part way in, once the toolhead has
+        # already parked and cooled. So lower the threshold for the duration
+        # and restore it in a finally.
+        #
+        # Dropped to a fixed floor rather than to the target: setting it equal
+        # to the target leaves no margin, and the hotend rides a degree or two
+        # either side of setpoint.
+        heater    = None
+        saved_min = None
+        try:
+            heater = owner.printer.lookup_object(extruder_name).get_heater()
+        except Exception:
+            pass
+        if heater is not None and temp < heater.min_extrude_temp:
+            if temp < owner.TIP_FORM_TEMP_FLOOR:
+                gcmd.respond_info(
+                    "SA: tip_form_temp %.0f is below the %.0f°C floor — refusing "
+                    "to form that cold." % (temp, owner.TIP_FORM_TEMP_FLOOR))
+                return
+            saved_min = heater.min_extrude_temp
+            heater.min_extrude_temp = owner.TIP_FORM_TEMP_FLOOR
+            # can_extrude only updates on a temperature callback; let one land
+            # rather than racing the first move.
+            heater.can_extrude = (heater.smoothed_temp >= owner.TIP_FORM_TEMP_FLOOR)
+            owner.reactor.pause(owner.reactor.monotonic() + 0.5)
+            gcmd.respond_info(
+                "SA: min_extrude_temp %.0f → %.0f for tip forming; restored after."
+                % (saved_min, owner.TIP_FORM_TEMP_FLOOR))
+
+        try:
+            self._form_tip_moves(gcmd, path, is_printing, temp, extruder_name,
+                                 current_temp, push_length, push_speed,
+                                 sever_dist, sever_speed, ease_speed,
+                                 cooling_pos, cooling_len, cooling_moves,
+                                 cool_speed_in, cool_speed_out)
+        finally:
+            if saved_min is not None:
+                heater.min_extrude_temp = saved_min
+                heater.can_extrude = (heater.smoothed_temp >= saved_min)
+                gcmd.respond_info(
+                    "SA: min_extrude_temp restored to %.0f." % saved_min)
+
+    def _form_tip_moves(self, gcmd, path, is_printing, temp, extruder_name,
+                        current_temp, push_length, push_speed, sever_dist,
+                        sever_speed, ease_speed, cooling_pos, cooling_len,
+                        cooling_moves, cool_speed_in, cool_speed_out):
+        """The moves themselves. Split out so form_tip can wrap them in the
+        min_extrude_temp override without a long try block."""
+        owner = self.owner
+
         # ---- temperature ------------------------------------------------
-        if current_temp < temp - 10:
+        # Pin the target first, always. The old code only acted when the
+        # reading was outside a +/-10 band, which meant a heater that was OFF
+        # and drifting could read in range at the start and then fall below
+        # min_extrude_temp part way through the moves -- the sequence died on
+        # the ease with no cooling or heating step ever logged.
+        owner.gcode.run_script_from_command(
+            "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f" % (extruder_name, temp))
+
+        if current_temp < temp - 5:
             gcmd.respond_info(
-                "SA: Heating %s to %.0f°C for tip forming..." % (extruder_name, temp))
+                "SA: Heating %s %.0f → %.0f°C for tip forming..."
+                % (extruder_name, current_temp, temp))
             owner.gcode.run_script_from_command(
-                "SET_TOOL_TEMPERATURE T=%d TARGET=%.0f WAIT=1" % (path, temp))
-        elif current_temp > temp + 10:
+                "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.0f" % (extruder_name, temp - 2))
+        elif current_temp > temp + 5:
             gcmd.respond_info(
-                "SA: Cooling %s to %.0f°C for tip forming..." % (extruder_name, temp))
-            owner.gcode.run_script_from_command(
-                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f" % (extruder_name, temp))
+                "SA: Cooling %s %.0f → %.0f°C for tip forming..."
+                % (extruder_name, current_temp, temp))
             owner.gcode.run_script_from_command(
                 "TEMPERATURE_WAIT SENSOR=%s MAXIMUM=%.0f" % (extruder_name, temp + 5))
+        else:
+            gcmd.respond_info(
+                "SA: %s already at %.0f°C, holding for tip forming."
+                % (extruder_name, current_temp))
 
         self._move_to_purge_position(gcmd, is_printing)
         owner.gcode.run_script_from_command("M83")
@@ -1123,6 +1222,7 @@ class SASequences:
             gcmd.respond_info(
                 "SA: Tip already past the sensor at %.0fmm — no clearing move."
                 % cooling_pos)
+
 
     def do_unload(self, gcmd, path):
         """Full filament unload sequence for *path*.
@@ -1214,7 +1314,15 @@ class SASequences:
                     "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 "
                     "MOVE=%.2f SPEED=%.1f SYNC=0"
                     % (dn, -max_sync, sync_spd))
-                self._extrude_mm(-max_sync, sync_f)
+                # The heater was switched off a few lines above and the tip is
+                # already past the gears, so this move is always below
+                # min_extrude_temp. It is pulling filament out, not pushing it
+                # into a cold nozzle.
+                cold = self._allow_cold_extrude(path)
+                try:
+                    self._extrude_mm(-max_sync, sync_f)
+                finally:
+                    self._restore_extrude_floor(cold)
                 motion._arm_timeout(dn)
 
                 # Encoder grip check
