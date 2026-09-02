@@ -120,65 +120,91 @@ does compression need its own signal to stop overfeeding? The per-path encoders
 already measure actual filament movement and could cross-check the feed rate
 without any new sensor.
 
-#### Three states on one wire (analog approach)
+#### Resistor ladder on one ADC pin — the chosen approach
 
-Rather than two switches per channel, one wire can carry all three states via
-a divider: a resistor to 3.3 V and one to GND hold the line at mid-rail; the
-tension switch shorts it to GND, the compression switch shorts it to 3.3 V.
+All six channels share a single analog pin. Each switch closes through its own
+distinct resistor to ground, an external pull-up sits on the line, and the
+measured resistance says which switch closed.
 
-| State | Voltage |
-|---|---|
-| Tension | 0 V |
-| Neutral | ~1.65 V |
-| Compression | 3.3 V |
-
-**This needs ADC pins, and they are scarce on this chip.** Klipper's ADC pin
-table for `CONFIG_MACH_STM32G0` (`src/stm32/stm32f0_adc.c`, *not* `adc.c` —
-that one is F1/F2/F4) is:
+**Stock Klipper already decodes this — no custom extra needed.**
+`klippy/extras/buttons.py` has `MCU_ADC_buttons`, exposed through
+`[gcode_button]`:
 
 ```
-PA0 PA1 PA2 PA3 PA4 PA5 PA6 PA7 PB0 PB1 PB2 PB10 PB11 PB12 PC4 PC5
+[gcode_button sa_tension_0]
+pin: autoloader:PA0
+analog_range: <min_ohms>, <max_ohms>
+analog_pullup_resistor: <ohms>     # default 4700
+press_gcode: ...
+release_gcode: ...
 ```
 
-`PC0`–`PC3` are ADC-capable only on STM32F0, not G0. So of the six free
-headers, **only `PA0` (MOT2) can read analog** — Sensor `PC2`, RGB `PC3` and
-the I2C `PC0`/`PC1` are digital-only here. Meanwhile 8 of the 12 pins on the
-2x7 header *are* ADC-capable and are spent on encoders and entry sensors that
-only ever need digital.
+`buttons.py` converts the raw reading to **resistance**
+(`value = pullup * adc / (1.0 - adc)`), so ranges are given in ohms rather
+than volts — which is what a ladder naturally produces, and it makes the
+design tolerant of supply variation.
 
-**Option A — analog multiplexer (no rewiring).** A 74HC4051 8:1 mux puts all
-six tension lines on one ADC pin: `PA0` for the analog input, plus three
-digital selects from `PA10` / `PD8` / `PD9`. Four pins total, nothing existing
-is displaced, and `PC0`–`PC3` stay free. Because only the active channel needs
-assist, the mux does not need fast scanning — set it when the selector parks
-at a channel and read steadily, discarding the first sample after each switch.
+**Pin cost: one.** `PA0` (MOT2 header) is free and is the one free header pin
+that is ADC-capable on this chip. Nothing existing moves, and no multiplexer
+is needed. `PA10`, `PD8`, `PD9`, `PC0`-`PC3` all stay spare.
 
-**Option B — free up ADC pins (no extra parts).** Move five digital sensors
-off ADC-capable 2x7 pins onto free digital pins (`PA10`, `PD8`, `PD9`, `PC0`,
-`PC1`, `PC2`, `PC3` — seven available, five needed). That frees five ADC pins
-which, with `PA0`, gives six direct analog channels. Costs a harness rework of
-five existing sensors.
+**The hard limit: one closure at a time.** The decoder takes the first band
+the resistance falls into:
+
+```python
+for i, (min_value, max_value, cb) in enumerate(self.buttons):
+    if min_value < value < max_value:
+        btn = i
+        break
+```
+
+Parallel closures sum conductance, so two switches give a resistance that
+either lands inside some other switch's band — misreporting the wrong channel
+— or outside every band, reading as nothing at all.
+
+For tension sensing that is acceptable: idle channels sit at neutral with no
+switch closed, so a single closure is the normal case. A stuck lever still has
+a unique resistance, so it is identifiable, and feeding or retracting that
+channel should clear it. Worth a startup self-test that walks each channel and
+confirms it reads neutral.
+
+**Do not put the entry gates on a ladder.** All six read `filament_detected`
+at the same time in normal operation — six independent booleans, which a
+first-match ladder cannot represent. Binary-weighted conductances (R, R/2,
+R/4 …) could encode all 64 combinations in principle, but the smallest
+increment must stay distinguishable against 63x that value, roughly 1.6%
+steps, against 1% resistor tolerance stacking across six parts. It would need
+0.1% parts and would still be fragile — on the sensor that drives runout
+detection and profile wiping. The entry gates are fine where they are, and
+with the ladder taking only `PA0` there is no pin pressure left to relieve.
 
 **Electrical notes:**
 
-- **Divide from 3.3 V, never 5 V.** The MOT2, Sensor and RGB headers carry
-  5 V, and a G0 pin in analog mode is not 5 V tolerant — a compression event
-  would put 5 V on the ADC input. 3.3 V is available on the STOP headers, the
-  2x7 header and the I2C headers.
-- 20 K / 20 K gives ~1.65 V idle at 82 uA per channel; a closed switch draws
-  165 uA through the opposing leg. Klipper samples for 39.5 ADC clock cycles
-  at 16 MHz (2.47 us), which supports roughly 100 kOhm source impedance, so
-  20 K (10 K Thevenin) has wide margin. Values up to ~100 K would still work
-  if lower current matters.
-- **There is no `adc_button` module in this Klipper tree** (only
-  `adc_temperature`, `adc_scaled`, `query_adc`, `buttons`, `gcode_button`), so
-  this needs a small custom extra in the shape of `sa_encoder.py`. Suggested
-  thresholds with hysteresis: `< 0.5 V` tension, `1.2-2.1 V` neutral,
-  `> 2.8 V` compression.
-- **An analog line detects its own failure**, which two switches cannot: a
-  broken or unplugged sensor reads outside every valid band instead of looking
-  like a legitimate state. Worth designing the thresholds so a disconnected
-  channel is distinguishable rather than silently reading "neutral".
+- **Use an external pull-up of a known value, not the MCU's internal one.**
+  The STM32G0 internal pull-up is roughly 30-50 kOhm with wide tolerance and
+  drifts with temperature, and `analog_pullup_resistor` has to be an accurate
+  figure for the resistance maths to land in the right band. A 1% part is
+  cheap insurance; the default the module assumes is 4700 ohm.
+- **Feed the pull-up from 3.3 V, not 5 V.** The MOT2 header carries 5 V
+  alongside `PA0`, and a G0 pin in analog mode is not 5 V tolerant. 3.3 V is
+  available on the STOP headers, the 2x7 header and the I2C headers.
+- Space the ladder values geometrically rather than linearly. The divider
+  compresses the high-resistance end, so evenly spaced resistances do not give
+  evenly spaced readings; widen the bands as resistance rises.
+- Klipper samples for 39.5 ADC clock cycles at 16 MHz (2.47 us), supporting
+  roughly 100 kOhm source impedance, so the whole ladder should stay well
+  under that. `ADC_DEBOUNCE_TIME` is 25 ms and `ADC_REPORT_TIME` 15 ms, which
+  is ample for a mechanical lever.
+- An out-of-band reading is diagnostic: a disconnected line reads open and a
+  shorted one reads zero, neither of which is a valid band, so the wiring can
+  detect its own failure. Reserve bands for those rather than letting them
+  alias onto a real channel.
+
+**Reference for the G0 ADC pin list:** Klipper builds G0 from
+`src/stm32/stm32f0_adc.c`, **not** `src/stm32/adc.c` — the latter is the
+F1/F2/F4 table and lists `PC0`-`PC3` as analog, which is wrong for this board.
+On G0 the analog pins are `PA0`-`PA7`, `PB0`, `PB1`, `PB2`, `PB10`, `PB11`,
+`PB12`, `PC4`, `PC5`. Of the free headers only `PA0` qualifies.
 
 ### 4. Full end-to-end test sweep — Mainsail panel
 
