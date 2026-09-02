@@ -162,11 +162,18 @@ Parallel closures sum conductance, so two switches give a resistance that
 either lands inside some other switch's band — misreporting the wrong channel
 — or outside every band, reading as nothing at all.
 
-For tension sensing that is acceptable: idle channels sit at neutral with no
-switch closed, so a single closure is the normal case. A stuck lever still has
-a unique resistance, so it is identifiable, and feeding or retracting that
-channel should clear it. Worth a startup self-test that walks each channel and
-confirms it reads neutral.
+For tension sensing that is acceptable, and the mechanics guarantee it rather
+than merely making it likely: **the buffer is sprung on both sides, so it
+self-centres.** Once the selector servo releases that channel the filament is
+free to release its tension and the lever returns to neutral on its own. An
+idle channel therefore closes no switch, single-closure is the normal case,
+and there is no sustained state for a ladder to misread.
+
+A lever held off-centre by a genuine jam still has its own unique resistance,
+so it remains identifiable, and feeding or retracting that channel should
+clear it. Worth a startup self-test that walks each channel and confirms it
+reads neutral, since a channel that will not centre after its servo releases
+is a real mechanical fault rather than a sensing artefact.
 
 **Do not put the entry gates on a ladder.** All six read `filament_detected`
 at the same time in normal operation — six independent booleans, which a
@@ -206,7 +213,62 @@ F1/F2/F4 table and lists `PC0`-`PC3` as analog, which is wrong for this board.
 On G0 the analog pins are `PA0`-`PA7`, `PB0`, `PB1`, `PB2`, `PB10`, `PB11`,
 `PB12`, `PC4`, `PC5`. Of the free headers only `PA0` qualifies.
 
-### 4. Full end-to-end test sweep — Mainsail panel
+### 4. Spool rewind during unload
+
+Today an unload pushes filament back out of the path and it piles up loose —
+Mike rewinds every spool by hand. Needs a way to take up that slack as it is
+produced.
+
+**Pin budget — it fits, with nothing added.** Rewind only ever runs in one
+direction, so each channel needs a single on/off output driving an external
+MOSFET or motor-driver module; the MCU pin only carries signal, never motor
+current. Free digital pins after the tension ladder claims `PA0`:
+
+`PA10` (STOP2), `PD8` (STOP4), `PD9` (STOP3), `PC0`, `PC1` (I2C),
+`PC2` (Sensor), `PC3` (RGB) — **seven free, six needed.**
+
+Wire them as `[output_pin]`s and drive them from the unload sequence. Note
+`PC2` and `PC3` sit on 5 V headers, which is fine for a signal into a driver
+module but must not be fed back into the MCU.
+
+**What will not work:**
+
+- **Six more steppers.** The MMB has only two unused stepper slots (M2, M4).
+  Six proper stepper-driven rewinders means a second controller board.
+- **An I2C GPIO expander** on `PC0`/`PC1`. Klipper has no generic I2C GPIO
+  expander output driver, so this would mean new MCU firmware rather than
+  configuration. Not worth it when six pins are already free.
+
+**Options to weigh:**
+
+1. **Six small DC gearmotors**, one per spool, low-torque and driven only
+   while the unload retracts. Uses the six free pins. Needs a slip clutch or a
+   current-limited driver so a taut spool cannot keep pulling — overwinding
+   risks snapping filament at the entry, or dragging the path backwards
+   against the drive gear.
+2. **Constant-force spring rewinders** on the spool holders. Zero pins, zero
+   code, nothing to fail electrically. The cost is permanent drag on every
+   path during printing, which works against the feed-assist system in
+   section 3 — these two features pull in opposite directions and should be
+   designed together.
+3. **One shared rewind motor** engaged per channel by a mechanism riding the
+   selector. Cheapest electrically, but the spools are remote from the
+   selector carriage, so the mechanics are the hard part.
+
+**Open questions:**
+
+- What stops the rewind? Simplest is to run it while the drive motor retracts
+  and stop shortly after the entry sensor clears. Time- or current-based, not
+  position-based, since there is no encoder on the spool.
+- The section 3 buffer sits between the drive gear and the toolhead, so it
+  cannot see slack on the spool side. If rewind needs closed-loop feedback it
+  needs its own sensor — which would eat the remaining free pins, or share the
+  tension ladder if a rewind switch per channel can be added to it (subject to
+  the same one-closure-at-a-time limit).
+- Does rewind ever need to run during a print (a retraction-heavy job slowly
+  paying out slack), or only during unload?
+
+### 5. Full end-to-end test sweep — Mainsail panel
 
 Run every command from the Mainsail panel rather than the console, and log
 both UI bugs and any hardware faults that surface:
@@ -221,7 +283,7 @@ both UI bugs and any hardware faults that surface:
 Capture: anything that misreports state, any dialog that strands the user,
 any control that fires the wrong tool number.
 
-### 5. Full end-to-end test sweep — KlipperScreen, then a design pass
+### 6. Full end-to-end test sweep — KlipperScreen, then a design pass
 
 Same sweep on the touchscreen. Expect substantially more work here. Known
 issues already logged:
@@ -238,7 +300,7 @@ canonical layouts with the reasoning recorded, including several first-render
 bugs that specific constants exist to prevent. Restore rather than redesign
 unless Mike asks for a new layout.
 
-### 6. Known open bugs
+### 7. Known open bugs
 
 | Bug | Detail |
 |---|---|
@@ -249,7 +311,7 @@ unless Mike asks for a new layout.
 | T2 logo LED | Not lighting. Hardware, not yet diagnosed. |
 | Encoder housing | Needs a reprint. |
 
-### 7. Worth doing, not yet requested
+### 8. Worth doing, not yet requested
 
 - **No automated tests exist for the Python extras.** `_clear_material_profile`
   was called but never defined anywhere, and every state-monitor tick threw
