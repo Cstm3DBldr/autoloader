@@ -1002,6 +1002,128 @@ class SASequences:
     # Unload sequence
     # ═══════════════════════════════════════════════════════════════════════════
 
+    def form_tip(self, gcmd, path, is_printing, ov=None):
+        """Shape the filament tip so it can be pulled back through the gears.
+
+        Follows the ERCF / Happy Hare sequence, which this previously did not:
+
+            ram      optional push, to pressurise the melt
+            sever    ONE fast pull, long enough to break the melt and no longer
+            ease     ramped slow pull back to the cooling zone
+            cool     oscillate in the cooling zone, speeding up as it stiffens
+            clear    past the gears once the tip is solid
+
+        The oscillation is the part that actually forms the tip. Without it a
+        hot pull just necks the melt and lets surface tension ball up whatever
+        is behind it -- which is what the old routine produced: a 2.25mm blob
+        on 1.75mm filament with a 1.4mm neck.
+
+        The previous version also ran its fast pull for 48mm rather than
+        stopping once the melt was severed, dragging the tip through the whole
+        cooling zone at 70mm/s with nothing shaping it, and its third phase was
+        unreachable (slow_dist computed negative).
+
+        `ov` is an optional dict of overrides so SA_FORM_TIP can sweep values
+        without a config edit and a restart.
+        """
+        owner = self.owner
+        ov    = ov or {}
+
+        def cfg(name):
+            return ov.get(name, getattr(owner, 'tip_form_' + name))
+
+        temp          = cfg('temp')
+        push_length   = cfg('push_length')
+        push_speed    = cfg('push_speed')
+        sever_dist    = cfg('sever_dist')
+        sever_speed   = cfg('retract_speed')
+        ease_speed    = cfg('slow_speed')
+        cooling_pos   = cfg('cooling_pos')
+        cooling_len   = cfg('cooling_len')
+        cooling_moves = int(cfg('cooling_moves'))
+        cool_speed_in = cfg('cool_speed_in')
+        cool_speed_out = cfg('cool_speed_out')
+
+        extruder_name = owner._extruder_names[path]
+        current_temp  = self._extruder_temp(path)
+
+        # ---- temperature ------------------------------------------------
+        if current_temp < temp - 10:
+            gcmd.respond_info(
+                "SA: Heating %s to %.0f°C for tip forming..." % (extruder_name, temp))
+            owner.gcode.run_script_from_command(
+                "SET_TOOL_TEMPERATURE T=%d TARGET=%.0f WAIT=1" % (path, temp))
+        elif current_temp > temp + 10:
+            gcmd.respond_info(
+                "SA: Cooling %s to %.0f°C for tip forming..." % (extruder_name, temp))
+            owner.gcode.run_script_from_command(
+                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f" % (extruder_name, temp))
+            owner.gcode.run_script_from_command(
+                "TEMPERATURE_WAIT SENSOR=%s MAXIMUM=%.0f" % (extruder_name, temp + 5))
+
+        self._move_to_purge_position(gcmd, is_printing)
+        owner.gcode.run_script_from_command("M83")
+
+        # ---- ram ---------------------------------------------------------
+        if push_length > 0:
+            gcmd.respond_info(
+                "SA: Tip ram %.1fmm at %.0fmm/s..." % (push_length, push_speed))
+            self._extrude_mm(push_length, int(push_speed * 60))
+
+        # ---- sever -------------------------------------------------------
+        # Everything from here is measured as distance of the tip back from the
+        # nozzle, so the ram has to be paid back before any of it counts.
+        to_cooling = push_length + cooling_pos
+        sever      = min(sever_dist, to_cooling)
+        gcmd.respond_info(
+            "SA: Sever %.1fmm at %.0fmm/s (break the melt)..." % (sever, sever_speed))
+        self._extrude_mm(-sever, int(sever_speed * 60))
+
+        # ---- ease back to the cooling zone -------------------------------
+        # Ramped 1.0 / 0.5 / 0.3 over 70 / 20 / 10 percent of what is left, the
+        # same taper Happy Hare uses: the tip is still soft here and pulling at
+        # one flat speed is what stretches the neck.
+        remaining = to_cooling - sever
+        if remaining > 0:
+            gcmd.respond_info(
+                "SA: Ease %.1fmm to cooling zone at %.0f/%.0f/%.0f mm/s..."
+                % (remaining, ease_speed, ease_speed * 0.5, ease_speed * 0.3))
+            for fraction, scale in ((0.7, 1.0), (0.2, 0.5), (0.1, 0.3)):
+                seg = remaining * fraction
+                if seg > 0:
+                    self._extrude_mm(-seg, max(1, int(ease_speed * scale * 60)))
+
+        # ---- cooling moves -----------------------------------------------
+        # In and out on the spot, accelerating as the plastic stiffens. Speed
+        # steps across every half-move, so a 4-move run has 8 steps.
+        if cooling_moves > 0 and cooling_len > 0:
+            steps = max(1, 2 * cooling_moves - 1)
+            increment = (cool_speed_out - cool_speed_in) / float(steps)
+            gcmd.respond_info(
+                "SA: %d cooling moves of %.1fmm, %.0f→%.0f mm/s..."
+                % (cooling_moves, cooling_len, cool_speed_in, cool_speed_out))
+            speed = cool_speed_in
+            for _ in range(cooling_moves):
+                self._extrude_mm(cooling_len, max(1, int(speed * 60)))
+                speed += increment
+                self._extrude_mm(-cooling_len, max(1, int(speed * 60)))
+                speed += increment
+
+        # ---- clear the gears ---------------------------------------------
+        # The tip is solid now, so this is only about getting it past the
+        # extruder gears and the sensor before the drive motor takes over.
+        target = owner.nozzle_to_sensor_dist * 1.05
+        clear  = target - cooling_pos
+        if clear > 0:
+            gcmd.respond_info(
+                "SA: Clear %.1fmm at %.0fmm/s (past gears, tip at %.0fmm)..."
+                % (clear, ease_speed, target))
+            self._extrude_mm(-clear, max(1, int(ease_speed * 60)))
+        else:
+            gcmd.respond_info(
+                "SA: Tip already past the sensor at %.0fmm — no clearing move."
+                % cooling_pos)
+
     def do_unload(self, gcmd, path):
         """Full filament unload sequence for *path*.
 
@@ -1050,81 +1172,7 @@ class SASequences:
         # Temp check → tip form → fast retract past gears → drive to entry
         # ══════════════════════════════════════════════════════════════════════
         if has_toolhead:
-            current_temp = self._extruder_temp(path)
-
-            # Bring to tip_form_temp if too cold or too hot
-            if current_temp < owner.tip_form_temp - 10:
-                gcmd.respond_info(
-                    "SA: Heating %s to %.0f°C for tip forming..."
-                    % (extruder_name, owner.tip_form_temp))
-                owner.gcode.run_script_from_command(
-                    "SET_TOOL_TEMPERATURE T=%d TARGET=%.0f WAIT=1"
-                    % (path, owner.tip_form_temp))
-            elif current_temp > owner.tip_form_temp + 10:
-                gcmd.respond_info(
-                    "SA: Cooling %s to %.0f°C for tip forming..."
-                    % (extruder_name, owner.tip_form_temp))
-                owner.gcode.run_script_from_command(
-                    "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f"
-                    % (extruder_name, owner.tip_form_temp))
-                owner.gcode.run_script_from_command(
-                    "TEMPERATURE_WAIT SENSOR=%s MAXIMUM=%.0f"
-                    % (extruder_name, owner.tip_form_temp + 5))
-
-            # Move away from cooling pad to purge position before tip form
-            self._move_to_purge_position(gcmd, is_printing)
-
-            # Tip form — 3-phase retract:
-            #   Phase 1 fast  : nozzle → heatbreak start (clears melt zone)
-            #   Phase 2 hb    : through heatbreak at 5mm/s (optional dwell at midpoint)
-            #   Phase 3 slow  : heatbreak end → sensor clearance+5%
-            #
-            # Total = nozzle_to_sensor_dist × 1.05
-            # Slow speed tuned so phase-3 time ≈ previous slow phase × 1.25 (25% longer)
-            owner.gcode.run_script_from_command("M83")
-            push_f = int(owner.tip_form_push_speed * 60)
-            gcmd.respond_info(
-                "SA: Tip form push %.1fmm at %dmm/min..."
-                % (owner.tip_form_push_length, push_f))
-            self._extrude_mm(owner.tip_form_push_length, push_f)
-
-            # Phase 1 — fast: nozzle to heatbreak start
-            fast_dist = owner.tip_form_heatbreak_dist + owner.tip_form_push_length
-            fast_f    = int(owner.tip_form_retract_speed * 60)
-            gcmd.respond_info(
-                "SA: Fast retract %.1fmm at %dmm/min (nozzle → heatbreak)..."
-                % (fast_dist, fast_f))
-            self._extrude_mm(-fast_dist, fast_f)
-
-            # Phase 2 — heatbreak: 5mm/s, optional dwell at midpoint (45mm from nozzle)
-            hb_half  = owner.tip_form_heatbreak_dist * 0.5
-            hb_f     = int(owner.tip_form_heatbreak_speed * 60)
-            gcmd.respond_info(
-                "SA: Heatbreak retract %.1fmm at %dmm/min (first half)..."
-                % (hb_half, hb_f))
-            self._extrude_mm(-hb_half, hb_f)
-            if owner.tip_form_dwell > 0:
-                gcmd.respond_info(
-                    "SA: Tip dwell %.1fs at heatbreak midpoint..."
-                    % owner.tip_form_dwell)
-                owner.reactor.pause(
-                    owner.reactor.monotonic() + owner.tip_form_dwell)
-            gcmd.respond_info(
-                "SA: Heatbreak retract %.1fmm at %dmm/min (second half)..."
-                % (hb_half, hb_f))
-            self._extrude_mm(-hb_half, hb_f)
-
-            # Phase 3 — slow: heatbreak exit through gears to sensor clearance+5%
-            total_target = owner.nozzle_to_sensor_dist * 1.05
-            covered      = fast_dist + owner.tip_form_heatbreak_dist
-            slow_dist    = total_target - covered
-            slow_f       = int(owner.tip_form_slow_speed * 60)
-            if slow_dist > 0:
-                gcmd.respond_info(
-                    "SA: Slow retract %.1fmm at %dmm/min "
-                    "(gears → sensor clearance %.0fmm)..."
-                    % (slow_dist, slow_f, total_target))
-                self._extrude_mm(-slow_dist, slow_f)
+            self.form_tip(gcmd, path, is_printing)
 
             owner.path_states[path] = 'partial'
 

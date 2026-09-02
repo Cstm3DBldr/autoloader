@@ -454,6 +454,7 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_ENCODER_WATCH [TOOL=N] [DURATION=30] [INTERVAL=0.5]` | Live encoder delta stream |
 | `SA_RESPOND VALUE=x` | Advance active calibration to next phase |
 | `SA_SET_STATE TOOL=N STATE=<state>` | Override path state (loaded/empty/partial/unknown) |
+| `SA_FORM_TIP TOOL=N [PUSH=] [SEVER=] [COOL_POS=] [COOL_LEN=] [COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=]` | Run only the tip-forming sequence, for tuning. Overrides are inline so no SAVE_CONFIG or restart is needed between attempts. Leaves the tip past the gears — pull from the entry side and measure |
 | `SA_SET_MATERIAL TOOL=N MATERIAL=… BRAND=… LINE=… COLOR_NAME=… COLOR_HEX=… LOAD_TEMP=… UNLOAD_TEMP=… PURGE_SPEED=… PURGE_LENGTH=…` | Store filament profile for a path; consumed by load sequence and exposed via web/touchscreen UIs |
 
 ### Load Sequence

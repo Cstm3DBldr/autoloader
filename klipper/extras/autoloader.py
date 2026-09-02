@@ -171,6 +171,18 @@ class Autoloader:
         self.tip_form_slow_speed     = config.getfloat('tip_form_slow_speed',      15.0)
         self.tip_form_dwell          = config.getfloat('tip_form_dwell',            0.5)
 
+        # Tip forming, second stage onward. Named after the Happy Hare / ERCF
+        # scheme because that is the vocabulary the technique is documented in:
+        # sever the melt with one fast pull, ease back to the cooling zone, then
+        # oscillate there while the plastic stiffens. The oscillation is what
+        # actually shapes the tip -- without it a hot pull just necks and balls.
+        self.tip_form_sever_dist     = config.getfloat('tip_form_sever_dist',      15.0)
+        self.tip_form_cooling_pos    = config.getfloat('tip_form_cooling_pos',     35.0)
+        self.tip_form_cooling_len    = config.getfloat('tip_form_cooling_len',     10.0)
+        self.tip_form_cooling_moves  = config.getint('tip_form_cooling_moves',        4)
+        self.tip_form_cool_speed_in  = config.getfloat('tip_form_cool_speed_in',   10.0)
+        self.tip_form_cool_speed_out = config.getfloat('tip_form_cool_speed_out',  50.0)
+
         # ── Parking sequence ──────────────────────────────────────────────────
         # Common: where the filament tip ends up + the speed of the final move.
         self.park_offset                 = config.getfloat('park_offset',                  5.0)
@@ -636,6 +648,11 @@ class Autoloader:
             ('SA_PARK',
              self._cmd_park,
              "Park filament at drive encoder (phases 0-2 only). TOOL=N"),
+            ('SA_FORM_TIP',
+             self._cmd_form_tip,
+             "Run only the tip-forming sequence, for tuning. TOOL=N [PUSH=] "
+             "[SEVER=] [COOL_POS=] [COOL_LEN=] [COOL_MOVES=] [COOL_IN=] "
+             "[COOL_OUT=] [TEMP=] [EASE=]"),
         ]
         for name, fn, desc in cmds:
             self.gcode.register_command(name, fn, desc=desc)
@@ -956,6 +973,61 @@ class Autoloader:
             "SA_SET_CONFIG: staged autoloader.%s = %s  "
             "(run SAVE_CONFIG to persist and restart)" % (param, value))
 
+    def _cmd_form_tip(self, gcmd):
+        """SA_FORM_TIP TOOL=N [overrides] — tip forming on its own, for tuning.
+
+        Tip shape is judged with calipers, which means a dozen runs at
+        different values. Doing that through SA_UNLOAD costs a full unload
+        each time, and every parameter change costs a SAVE_CONFIG and a
+        Klipper restart because SA_SET_CONFIG only stages values. This runs
+        the sequence and nothing else, and takes the values inline so nothing
+        has to be saved or restarted between attempts.
+
+        Leaves the tip past the extruder gears exactly as an unload would, so
+        pull the filament out from the entry side to measure it.
+        """
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+
+        # Inline name -> config name. Anything omitted falls back to config.
+        argmap = {
+            'TEMP'       : 'temp',
+            'PUSH'       : 'push_length',
+            'PUSH_SPEED' : 'push_speed',
+            'SEVER'      : 'sever_dist',
+            'SEVER_SPEED': 'retract_speed',
+            'EASE'       : 'slow_speed',
+            'COOL_POS'   : 'cooling_pos',
+            'COOL_LEN'   : 'cooling_len',
+            'COOL_MOVES' : 'cooling_moves',
+            'COOL_IN'    : 'cool_speed_in',
+            'COOL_OUT'   : 'cool_speed_out',
+        }
+        ov = {}
+        for arg, name in argmap.items():
+            val = gcmd.get_float(arg, None)
+            if val is not None:
+                ov[name] = val
+
+        if not self._toolhead_sensor_active(path):
+            gcmd.respond_info(
+                "SA_FORM_TIP: T%d has no filament at the toolhead sensor. "
+                "Load it first — there is nothing to form." % path)
+            return
+
+        if ov:
+            gcmd.respond_info(
+                "SA_FORM_TIP: overrides %s"
+                % ", ".join("%s=%g" % (k, v) for k, v in sorted(ov.items())))
+
+        is_printing = self.sequences._is_printing()
+        self.sequences._park(gcmd, is_printing)
+        self.sequences._switch_tool(gcmd, path)
+        self.sequences.form_tip(gcmd, path, is_printing, ov)
+
+        gcmd.respond_info(
+            "SA_FORM_TIP: done. Pull the filament from the entry side and "
+            "measure the tip — target is under 1.75mm across, no ball.")
+
     def _cmd_respond(self, gcmd):
         """SA_RESPOND VALUE=x — deliver a console response to a waiting calibration routine."""
         value = gcmd.get('VALUE')
@@ -1018,6 +1090,10 @@ class Autoloader:
             'servo_engaged_angle'     : self.servo_engaged_angle,
             'servo_disengaged_angle'  : self.servo_disengaged_angle,
             'tip_form_temp'           : self.tip_form_temp,
+            'tip_form_sever_dist'     : self.tip_form_sever_dist,
+            'tip_form_cooling_pos'    : self.tip_form_cooling_pos,
+            'tip_form_cooling_len'    : self.tip_form_cooling_len,
+            'tip_form_cooling_moves'  : self.tip_form_cooling_moves,
             'encoder_max_speed'       : self._get_encoder_max_speed(),
             'bowden_lengths'          : list(self._bowden_lengths),
             'selector_positions'      : list(self._selector_positions),
