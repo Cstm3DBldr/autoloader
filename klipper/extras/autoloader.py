@@ -261,6 +261,10 @@ class Autoloader:
         # Paths with a load/unload in flight. The state monitor leaves
         # these alone -- see SASequences.do_load.
         self._op_paths         = set()
+        # Paths waiting for an auto-park, and whether the drainer is
+        # already running. See _queue_park.
+        self._park_queue       = []
+        self._park_active      = False
         self._cal_data         = {}
         self._cal_prompt       = ''
 
@@ -419,6 +423,25 @@ class Autoloader:
                     # until it is removed or manually changed, so cancel
                     # any pending select timeout.
                     self._profile_pending_since.pop(i, None)
+                    # Filament reached the entry sensor, so the path holds
+                    # filament that has not been driven to the nozzle --
+                    # which is exactly what 'partial' means. Promote and
+                    # hold there. Loading is what promotes to 'loaded';
+                    # this never touches a path already in that state.
+                    #
+                    # The panels were already deriving this client-side
+                    # (their _effective_state treats an active entry
+                    # sensor as partial), so the backend disagreed with
+                    # its own UI and the LEDs, which read path_states
+                    # directly, kept showing an empty slot with filament
+                    # sitting in it.
+                    if self.path_states[i] in (self.STATE_EMPTY,
+                                               self.STATE_UNKNOWN):
+                        self._set_state_persist(
+                            i, self.STATE_PARTIAL,
+                            "entry sensor detected filament")
+                        self._queue_led_refresh(i)
+                        self._queue_park(i)
                 else:
                     # Sensor clear. Two different clocks run here:
                     #
@@ -455,6 +478,7 @@ class Autoloader:
                             # brand, colour and temperatures.
                             self._clear_material_profile(
                                 i, "filament removed")
+                            self._queue_led_refresh(i)
                     elif self._has_material_profile(i):
                         # Empty slot holding a profile nobody loaded.
                         since = self._profile_pending_since.setdefault(
@@ -471,6 +495,105 @@ class Autoloader:
         # 1 Hz check — runout detection latency is dominated by
         # runout_timeout_seconds anyway, so polling faster doesn't help.
         return eventtime + 1.0
+
+    def _queue_park(self, path):
+        """Ask for an auto-park on *path*, serialised behind any other.
+
+        This replaces the entry sensors' insert_gcode. Klipper's
+        RunoutHelper only runs insert_gcode when idle_timeout.state is
+        not "Printing", and idle_timeout flips to "Printing" on any gcode
+        activity -- so parking one path suppressed the insert event for
+        the next. It also sets filament_present before that check
+        returns, so the edge was consumed and never fired again: insert
+        two spools in quick succession and the second park was lost, not
+        merely delayed.
+
+        Polling the sensor in the state monitor detects the insertion
+        regardless of what gcode is running, and queueing here means a
+        park that arrives mid-park is held and run next rather than
+        dropped.
+        """
+        if path in self._park_queue:
+            return
+        self._park_queue.append(path)
+        if self._park_active:
+            return
+        self._park_active = True
+        try:
+            self.reactor.register_callback(self._drain_park_queue)
+        except Exception:
+            self._park_active = False
+            logging.exception("Autoloader: could not queue auto-park")
+
+    def _drain_park_queue(self, eventtime):
+        """Run queued auto-parks one at a time, oldest first.
+
+        Runs as a reactor callback rather than from the monitor timer:
+        run_script blocks on the gcode mutex, which a timer must not do.
+        New paths appended while a park is in flight are picked up by
+        this same loop, so a burst of insertions still parks every one.
+        """
+        try:
+            while self._park_queue:
+                path = self._park_queue.pop(0)
+                try:
+                    # Re-check rather than trusting the queued request:
+                    # the filament may have been pulled back out while
+                    # this sat behind another park.
+                    if not self._entry_sensor_active(path):
+                        continue
+                except Exception:
+                    continue
+                if path in self._op_paths:
+                    continue
+                if self._is_printing():
+                    # A real print owns the machine; don't inject moves.
+                    # The path keeps its 'partial' state and can be
+                    # parked by hand afterwards.
+                    continue
+                try:
+                    self.gcode.run_script("SA_PARK TOOL=%d" % path)
+                except Exception:
+                    logging.exception(
+                        "Autoloader: auto-park of path %d failed", path)
+        finally:
+            self._park_active = False
+
+    def _is_printing(self):
+        """True only during a real print job.
+
+        Deliberately not idle_timeout.state -- that reads "Printing" for
+        any gcode at all, which is the bug this whole path works around.
+        """
+        ps = self.printer.lookup_object('print_stats', None)
+        if ps is None:
+            return False
+        try:
+            return ps.get_status(
+                self.reactor.monotonic()).get('state') == 'printing'
+        except Exception:
+            return False
+
+    def _queue_led_refresh(self, path):
+        """Repaint one path's LEDs after a state change made off-gcode.
+
+        The state monitor runs on a reactor timer and holds no gcode
+        mutex, so it cannot call run_script itself. Handing the work to
+        reactor.register_callback is the same pattern Klipper's own
+        filament_switch_sensor uses to run its runout gcode, and it
+        lets the existing _SA_LED_FROM_STATE rendering stay the single
+        definition of what each state looks like.
+        """
+        def _run(eventtime, path=path):
+            try:
+                self.gcode.run_script("_SA_LED_FROM_STATE TOOL=%d" % path)
+            except Exception:
+                logging.exception(
+                    "Autoloader: LED refresh for path %d failed", path)
+        try:
+            self.reactor.register_callback(_run)
+        except Exception:
+            logging.exception("Autoloader: could not queue LED refresh")
 
     def _persist_variables(self, updates):
         """Write several save_variables entries in one file rewrite.

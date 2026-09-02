@@ -643,6 +643,14 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
 - Do not create separate `[filament_feed toolN]` sections — replaced by `[autoloader]`
 - Do not use blocking `reactor.pause()` poll loops to wait for SA_RESPOND — the GCode mutex blocks it. Use the state machine in SACalibration instead.
 - Do not add "are you ready?" confirmation prompts — user initiated the command, that is confirmation enough.
+- Do not add `insert_gcode` to the entry sensors. Auto-park is owned by the
+  `[autoloader]` state monitor's park queue. Klipper's `RunoutHelper` only
+  fires `insert_gcode` when `idle_timeout.state != "Printing"`, and
+  `idle_timeout` reads "Printing" during *any* gcode — including an
+  auto-park already running for another path. It also sets
+  `filament_present` before that check returns, so the edge is consumed
+  and never re-fires: two spools inserted in quick succession lost the
+  second park outright.
 - Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin is always `^!autoloader:SA_SELECTOR_STOP`.
 
 ## Console Output Rules

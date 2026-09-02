@@ -437,8 +437,15 @@ class SASequences:
     def park_filament(self, gcmd, path):
         """Public: park filament on *path* — selects path, parks, disengages.
 
-        Called by SA_PARK_FILAMENT and auto-insert handler.
+        Called by SA_PARK and the state monitor's auto-park queue.
         """
+        self.owner._op_paths.add(path)
+        try:
+            return self._park_filament_inner(gcmd, path)
+        finally:
+            self.owner._op_paths.discard(path)
+
+    def _park_filament_inner(self, gcmd, path):
         owner = self.owner
         motion = owner.motion
 
