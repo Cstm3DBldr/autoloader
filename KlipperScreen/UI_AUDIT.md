@@ -336,3 +336,101 @@ must survive the rewrite:
 
 Anything restored should be expressed as a ratio of `font_size` or
 `content_height` rather than the pixel value that happened to suit 800x480.
+
+---
+
+## Agreed build spec — the five unlocked panels
+
+Settled with Mike across the A/B reviews. Build to this; do not re-open the
+decisions without asking.
+
+### All pages
+
+- **Bottom padding**, `gap * 2.5` — 15 px at 800x480, 10 px at 480x320.
+  Proportional because a fixed value is free on a 4.3" panel and eats most of
+  the slack on a 3.5" one.
+- **One gap value throughout** a page. Uneven gaps were visible in review.
+- **Footers locked outside the scroll**, padding beneath them.
+
+### sa_main — status table
+
+- Columns: `# | STATE | TEMP | EN | EX | TH | ENCODER | MATERIAL | COLOUR`.
+- **No glyph before the state word.** The colour already encodes it — amber
+  partial, dim empty, blue loaded — and the width is better spent on MATERIAL
+  and COLOUR, which are the cells that run out of room.
+- **TEMP per channel**, read from that path's extruder. Amber above the 50 C
+  `heater_fan` threshold, dim below — the same signal that drives the nozzle
+  LEDs, so screen and printer agree on which heads are hot.
+- **Row height** = clamp(data_area / heads, 34, font_size * 3.4), where
+  data_area is the viewport **minus the table's own header row**. Forgetting
+  that header is what clipped the sixth row in review. Scroll past what fits:
+  5 heads on a 3.5", 9 at 800x480 and 1024x600.
+- Below 800 px wide, **drop columns rather than shrink them**: the three
+  sensor columns merge into one cell holding the same three dots, and COLOUR
+  folds into MATERIAL as a swatch. Five columns at ~86 px beats nine at 48.
+
+#### Active-tool indicator
+
+A left accent stripe and a tinted row — **no marker glyph**; the moving bar is
+unambiguous alone, survives the column drop, and costs no width.
+
+Driven entirely by `toolchanger`, which needs no gcode watching:
+
+| `toolchanger.status` | Highlight | Row |
+|---|---|---|
+| `ready` | solid | `tool_number` |
+| `changing` | pulsing | `tool_number` — moves when it flips |
+| `initializing` | pulsing | as above |
+| `uninitialized` | none | nothing marked; `tool_number` is -1 |
+| `error` | solid, amber stripe | last known |
+
+**Pulse on the same 4 s breathing period as the rack logo LEDs**
+(`sa_led_animator`: `breathing_period 4.0`, sine, `smoothing 0.22`), so the
+screen and the printer say the same thing in the same rhythm.
+
+`toolchanger.py` flips `active_tool` inside `_configure_toolhead_for_tool()`,
+after the old head is parked and before the new one is picked up — so the bar
+pulses on the outgoing head through dropoff, hops at that boundary, and
+pulses on the incoming head through pickup. The target tool is never exposed
+in `get_status()`, which is why this follows `tool_number` rather than trying
+to jump to the destination at the T command. `initializing` and `error` are
+Claude's calls, not Mike's: the first behaves like a change, and the second
+keeps a stale indicator rather than none, since losing it when something is
+wrong is worse.
+
+### sa_post_load — pick-then-confirm flow
+
+Replaces the two parallel T-rows. Nothing fires on a single tap.
+
+1. Action row: **PURGE 60mm** (after a load) or **LOAD SAME** (after an
+   unload) — already mutually exclusive by state — plus **PARK** and
+   **CLEAN NOZZLE** (`SA_CLEAN_NOZZLE`, new).
+2. **LOAD / UNLOAD toggle** deciding the verb.
+3. **One scalable grid** of heads, 3 wide, tiles showing the material and
+   colour already loaded — which the plain T-buttons never did, and which is
+   what you are deciding against when changing a colour.
+4. **EXIT + confirm**, locked at the bottom. The confirm is dead until a head
+   is picked, and then names the action and target: "LOAD T3", not "GO".
+
+Grid scales: 1 row at 3 heads, 2 at 6, 4 at 12, scrolling past 12 at 800x480.
+**Cost to accept:** the flow's furniture is 231 px of the 296 available at
+480x320, leaving one row of three, so six heads scroll there where the old
+two-row design showed all six at 38 px. That trade is deliberate — 38 px is
+below a reliable finger target, and the code comment admits it was chosen to
+make two rows fit.
+
+Nothing is dropped: PURGE, LOAD SAME, PARK, EXIT, load-any-path and
+unload-any-path all survive; CLEAN NOZZLE is added.
+
+### sa_config, sa_settings, sa_calibration_guide
+
+Approved as drawn. Config already scrolls with SAVE locked outside it — it
+gains only a taller row, a bigger pencil and the padding. Settings needs Back
+moved outside the scroll (its own comment says the buttons scroll away today)
+and the colour picker becomes a **carousel**: centre slot is the selection,
+outlined, name beneath, so palette size stops being limited by screen width.
+The guide needs the padding and its fixed 150 px Back/Next widths made
+font-derived — on a 480 px screen those two claim 300 px between them.
+
+**Still open:** whether the carousel snaps to the nearest colour on release,
+or centres a tapped neighbour.
