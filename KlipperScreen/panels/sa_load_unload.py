@@ -365,11 +365,22 @@ class Panel(ScreenPanel):
         row.set_halign(Gtk.Align.FILL)
         row.set_hexpand(True)
 
-        # Tool number — centered in the left third
-        t_lbl = Gtk.Label()
-        t_lbl.set_markup('<b><span font_size="large">T%d</span></b>' % i)
+        # Tool number — centered in the left third, under a toolhead mark.
+        # Both live in one box so the button keeps its three columns: the
+        # swatch stays in the middle third and therefore at the geometric
+        # centre of the button, which is the locked behaviour.
+        t_lbl = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
         t_lbl.set_halign(Gtk.Align.CENTER)
+        t_lbl.set_valign(Gtk.Align.CENTER)
         t_lbl.set_hexpand(True)
+        try:
+            ic = int(self._gtk.font_size * 1.5)
+            t_lbl.pack_start(self._gtk.Image("toolhead", ic, ic), False, False, 0)
+        except Exception:
+            pass
+        _num = Gtk.Label(halign=Gtk.Align.CENTER)
+        _num.set_markup('<b><span font_size="large">T%d</span></b>' % i)
+        t_lbl.pack_start(_num, False, False, 0)
 
         # Color swatch DrawingArea — centered in the middle third
         if _cs is not None:

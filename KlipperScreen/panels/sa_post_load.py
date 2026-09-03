@@ -221,6 +221,13 @@ class Panel(ScreenPanel):
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             box.set_valign(Gtk.Align.CENTER)
 
+            try:
+                ic = int(self._gtk.font_size * 1.6)
+                box.pack_start(self._gtk.Image("toolhead", ic, ic),
+                               False, False, 0)
+            except Exception:
+                pass
+
             t = Gtk.Label()
             t.set_markup('<b><span font_size="large">T%d</span></b>' % i)
             box.pack_start(t, False, False, 0)

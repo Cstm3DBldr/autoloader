@@ -107,64 +107,37 @@ the font ratio changes from `[40, 27]` to `[28, 42]`, and `AutoGrid` takes a
 `vertical` flag to re-flow columns. Every panel that subtracts its own
 constants from `_screen.height` is wrong in portrait.
 
-### F4 — A parallel palette that ignores the selected theme
+### F4 — A parallel palette that ignores the selected theme  ·  FIXED, and the count was wrong
 
-`sa_button_style.py` defines `.sa-btn`, `.sa-btn-alt`, `.sa-btn-warn`,
-`.sa-btn-nav` with hard-coded Material colours — `#37474F`, `#455A64`,
-`#263238`, `#E65100`, `#1565C0`, `#424242`, `#9E9E9E` and more. A further
-**85 hex literals** are spread across the panels:
+`sa_button_style.py` hard-coded its neutral chrome — `#37474F` surfaces,
+`#455A64` hover, `#424242`/`#9E9E9E` disabled — so the panels were
+dark-theme-only by construction: on `material-light` they drew dark slate
+buttons on light chrome.
 
-| File | Hex literals |
-|---|---|
-| `sa_settings.py` | 47 |
-| `sa_main.py` | 9 |
-| `sa_post_load.py` | 8 |
-| `sa_cal_prompt.py` | 6 |
-| `sa_load_unload.py` | 5 |
-| `sa_calibration_guide.py` | 3 |
-| `sa_home.py`, `sa_config.py` | 2 each |
-| `sa_macros.py` | 1 |
+**The "85 hex literals" figure in the original finding was misleading**, and
+counting them was the wrong measure. Classified:
 
-KlipperScreen ships `material-dark`, `material-darker`, `material-light`,
-`colorized` and `z-bolt`. Our panels are dark-theme-only by construction: on
-`material-light` they render dark buttons on a light chrome. Filament swatch
-colours are legitimately literal — they represent real filament — but chrome
-should come from `button.colorN` and the semantic classes.
-
-### F6 — A CSS `min-height` was the real floor, beating every Python change
-
-Measured on the device, not inferred. `sa_button_style.py` carried
-`min-height: 62px` on `.sa-btn`, `.sa-btn-alt` and `.sa-btn-nav`.
-
-**A CSS `min-height` cannot be undercut by `set_size_request`** — GTK takes
-the larger of the two. So every button on the macros page reported a 76 px
-minimum (62 + padding + border) no matter what the panel asked for, four
-button rows could not go below 304 px, and the page's minimum sat at 410. The
-grid then measured 494 on a 480 px screen, and because the action bar spans
-both grid rows it stretched by the 14 px difference, spreading its icons.
-
-Before and after, from the live panel:
-
-| | before | after |
+| Kind | Count | Verdict |
 |---|---|---|
-| button min | 76 | 58 |
-| page min | 410 | 356 |
-| content allocation | 458 | 444 |
-| `main_grid` | 494 (14 over) | 480 (exact) |
+| The accent palette in `sa_settings` | 47 | **Correct as literals** — it *is* a colour picker; these are its data |
+| Semantic status colours (loaded / empty / partial, sensor on-off, hot-cold, error) | ~30 | **Correct as literals** — good/warning/critical should not shift with the accent |
+| Filament colours | — | Correct; they represent real filament |
+| Neutral button chrome in `sa_button_style` | ~20 | **The actual bug** |
 
-The floor now derives from `_gtk.font_size` and is passed in by the panel:
-`sa_button_style.apply(min_height=...)`, remembered across `reapply()` so an
-accent-colour change does not silently reset it.
+Only the last group ever needed fixing. It now references the themes' own
+named colours — `@buttons` for the surface, `@text` for labels,
+`@background` for pressed states — with `alpha()` and `mix()` deriving hover
+and disabled from whatever the theme supplies. Every bundled theme defines
+those names, so a light theme now gets light neutral buttons.
 
-**The rule this establishes:** fixed pixels in the stylesheet outrank
-everything in Python, and are invisible when reading the panel code. The
-stylesheet needs auditing for *dimensions*, not only the colours in F4. Two
-places still to check: `.sa-section-header` and the `.action_bar` overrides in
-`sa_macros._install_action_bar_css`, both of which pin sizes in CSS.
+Three things stay literal deliberately: the **accent** (it is the user's own
+preference), **`.sa-btn-warn`** (destructive actions should look the same in
+every theme), and **`.path-selected`** (a selection cue has to stand clear of
+both the accent and the theme surface).
 
-**Only `sa_macros` passes a derived floor so far.** Every other panel still
-calls `_sbs.apply()` bare and keeps the 62 px default, so any panel that looks
-stretched has this same cause.
+Validated by loading the generated CSS through GTK's own parser under
+KlipperScreen's interpreter before shipping, since a CSS error there is
+silent — the rule is simply dropped.
 
 ### F5 — The numpad cannot fit a small screen
 

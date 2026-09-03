@@ -15,6 +15,25 @@ _last_min_h = None
 
 
 def _build_css(accent, hover, active, min_h=62):
+    """Build the shared button CSS.
+
+    Neutral chrome references the THEME's own named colours rather than
+    hard-coded greys: `@buttons` for the surface, `@text` for the label,
+    `@border` for edges. Every bundled theme defines them, so a light theme
+    gets light neutral buttons instead of the dark slate that was baked in --
+    which is what made these panels dark-theme-only.
+
+    Three things stay literal on purpose:
+
+      * the accent, because it is the user's own preference from sa_settings;
+      * `.sa-btn-warn`, because destructive actions should look the same
+        whatever the theme;
+      * `.path-selected`, a selection cue that has to stand clear of both the
+        accent and the theme surface.
+
+    `alpha()` and `mix()` are GTK CSS functions, so the disabled and hover
+    states are derived from whatever the theme supplies rather than guessed.
+    """
     return ("""
 .sa-btn {{
     padding: 4px 8px;
@@ -26,23 +45,23 @@ def _build_css(accent, hover, active, min_h=62):
 }}
 .sa-btn:hover          {{ background: {hover}; }}
 .sa-btn:active         {{ background: {active}; }}
-.sa-btn:disabled       {{ background: #424242; color: #9E9E9E; }}
+.sa-btn:disabled       {{ background: alpha(@buttons, 0.55); }}
 .sa-btn label          {{ color: white; }}
-.sa-btn:disabled label {{ color: #9E9E9E; }}
+.sa-btn:disabled label {{ color: alpha(@text, 0.45); }}
 
 .sa-btn-alt {{
     padding: 4px 8px;
     min-height: {min_h}px;
     min-width: 0px;
     border-radius: 6px;
-    background: #37474F;
-    color: white;
+    background: @buttons;
+    color: @text;
 }}
-.sa-btn-alt:hover          {{ background: #455A64; }}
-.sa-btn-alt:active         {{ background: #263238; }}
-.sa-btn-alt:disabled       {{ background: #424242; color: #9E9E9E; }}
-.sa-btn-alt label          {{ color: white; }}
-.sa-btn-alt:disabled label {{ color: #9E9E9E; }}
+.sa-btn-alt:hover          {{ background: mix(@buttons, @text, 0.12); }}
+.sa-btn-alt:active         {{ background: mix(@buttons, @background, 0.35); }}
+.sa-btn-alt:disabled       {{ background: alpha(@buttons, 0.55); }}
+.sa-btn-alt label          {{ color: @text; }}
+.sa-btn-alt:disabled label {{ color: alpha(@text, 0.45); }}
 
 .sa-btn-warn {{
     padding: 4px 8px;
@@ -58,20 +77,21 @@ def _build_css(accent, hover, active, min_h=62):
 
 .sa-btn-nav {{
     padding: 2px 8px;
-    min-height: 42px;
+    min-height: {nav_h}px;
     min-width: 0px;
     border-radius: 6px;
-    background: #37474F;
-    color: white;
+    background: @buttons;
+    color: @text;
 }}
-.sa-btn-nav:hover          {{ background: #455A64; }}
-.sa-btn-nav:active         {{ background: #263238; }}
-.sa-btn-nav:disabled       {{ background: #424242; color: #9E9E9E; }}
-.sa-btn-nav label          {{ color: white; }}
-.sa-btn-nav:disabled label {{ color: #9E9E9E; }}
+.sa-btn-nav:hover          {{ background: mix(@buttons, @text, 0.12); }}
+.sa-btn-nav:active         {{ background: mix(@buttons, @background, 0.35); }}
+.sa-btn-nav:disabled       {{ background: alpha(@buttons, 0.55); }}
+.sa-btn-nav label          {{ color: @text; }}
+.sa-btn-nav:disabled label {{ color: alpha(@text, 0.45); }}
 
 .path-selected {{ border: 3px solid #8BC34A; }}
-""".format(accent=accent, hover=hover, active=active, min_h=int(min_h))).encode()
+""".format(accent=accent, hover=hover, active=active,
+           min_h=int(min_h), nav_h=int(min_h * 0.68))).encode()
 
 
 def apply(min_height=None):
