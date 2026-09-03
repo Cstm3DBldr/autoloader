@@ -112,6 +112,11 @@ class Panel(ScreenPanel):
         # released so the choice is always a whole colour rather than a
         # halfway scroll position.
         outer.pack_start(self._section("BUTTON ACCENT COLOR"), False, False, 0)
+        _hint = Gtk.Label(halign=Gtk.Align.CENTER)
+        _hint.set_markup(
+            '<span font_size="small" foreground="#9E9E9E">'
+            'Reopen a panel to see the change</span>')
+        outer.pack_start(_hint, False, False, 0)
 
         self._accent_btns     = {}
         self._accent_name_lbl = Gtk.Label(halign=Gtk.Align.CENTER)
@@ -497,8 +502,11 @@ class Panel(ScreenPanel):
             self._accent_name_lbl.set_markup(
                 '<span font_size="small" foreground="#9E9E9E">%s</span>'
                 % self._color_name_for(hex_c))
-        self._screen.show_popup_message(
-            "Button color updated \u2014 reopen panels to see changes", level=1)
+        # No popup here. _set_color fires on every carousel settle, and the
+        # popup sits over the strip swallowing the next touch -- one tap to
+        # dismiss it, another to do what you meant. The colour name under the
+        # carousel already reports the selection, and a static hint by the
+        # section header carries the "reopen panels" note once.
 
     def _reset_materials(self, widget):
         sa = self._last_sa

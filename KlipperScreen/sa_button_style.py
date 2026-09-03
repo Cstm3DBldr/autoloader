@@ -41,18 +41,19 @@ def _build_css(accent, hover, active, min_h=62):
 .sa-btn, .sa-btn-alt, .sa-btn-warn, .sa-btn-nav {{
     background-image: none;
     background-color: @bg;
+    border-radius: 6px;
     padding: 0.33em;
     padding-bottom: 0.1em;
     min-width: 0px;
     min-height: {min_h}px;
 }}
 
-.sa-btn      {{ border-bottom: 0.3em solid {accent}; }}
-.sa-btn-alt  {{ border-bottom: 0.3em solid alpha(@text, 0.35); }}
-.sa-btn-warn {{ border-bottom: 0.3em solid #E8A33D; }}
+.sa-btn      {{ border-bottom: 0.4em solid {accent}; }}
+.sa-btn-alt  {{ border-bottom: 0.4em solid alpha(@text, 0.35); }}
+.sa-btn-warn {{ border-bottom: 0.4em solid #E8A33D; }}
 .sa-btn-nav  {{
     min-height: {nav_h}px;
-    border-bottom: 0.3em solid alpha(@text, 0.35);
+    border-bottom: 0.4em solid alpha(@text, 0.35);
 }}
 
 .sa-btn:disabled, .sa-btn-alt:disabled,
