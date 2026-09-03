@@ -157,22 +157,43 @@ class Panel(ScreenPanel):
 
         self.content.pack_start(self._stack, True, True, 0)
 
-        # Override screen_panel.py's default vexpand=True on self.content
-        # AND pin its size_request to KS's precomputed content_height.
-        # Together these stop self.content from competing with the
-        # action_bar's vexpand=True for leftover vertical space — the
-        # content widget is exactly content_height tall on every
-        # allocation, so the grid has no leftover to distribute and the
-        # action_bar gets exactly the screen.height it requested.
-        try:
-            ch = int(getattr(self._gtk, 'content_height', 0))
-        except Exception:
-            ch = 0
-        if ch > 0:
-            self.content.set_vexpand(False)
-            self.content.set_size_request(-1, ch)
-            self._stack.set_size_request(-1, ch)
+        # self.content is deliberately left exactly as screen_panel.py
+        # made it: hexpand/vexpand True, no size request. No stock
+        # KlipperScreen panel touches it, and pinning it here was the cause
+        # of the stretched action bar on this page.
+        #
+        # _gtk.content_height is an ESTIMATE -- `height - titlebar_height`
+        # where titlebar_height is just `font_size * 2`. The real titlebar
+        # is a Gtk.Box carrying the temperature box, the title, the clock
+        # and the battery box, and it is free to be taller than that guess.
+        # Requesting the estimated height therefore over-commits: the grid
+        # ends up taller than the screen, and because the action bar spans
+        # both grid rows it gets stretched to match, pushing its icons apart
+        # and the power button off the bottom.
+        #
+        # Nothing here asks for a fixed height any more, so the page simply
+        # takes whatever the content row is actually given and divides it.
 
+
+    # -- Sizing derived from the framework, never hard-coded ------------------
+
+    def _touch(self):
+        """Minimum comfortable finger target, in px.
+
+        Tracks the framework font size, which itself tracks resolution and
+        the user's font_size preference. The 40 px floor is a little under
+        the usual 44 because this page carries four button rows plus three
+        headers, and 44 does not fit them on a 480x320 screen.
+        """
+        return int(max(40.0, self._gtk.font_size * 2.4))
+
+    def _pt(self, mult):
+        """Pango point size as a multiple of the framework font size."""
+        return max(7, int(round(self._gtk.font_size * mult)))
+
+    def _gap(self):
+        """Spacing between rows, proportional to the font."""
+        return int(max(4.0, self._gtk.font_size * 0.34))
 
     def _set_page(self, name):
         """Notebook equivalent of Stack.set_visible_child_name."""
@@ -196,7 +217,8 @@ class Panel(ScreenPanel):
         """
         lbl = Gtk.Label(halign=Gtk.Align.START, xalign=0.0)
         lbl.set_markup(
-            '<span font="11" foreground="#9E9E9E">── %s ──</span>' % title)
+            '<span font="%d" foreground="#9E9E9E">── %s ──</span>'
+            % (self._pt(0.62), title))
         lbl.get_style_context().add_class("sa-section-header")
         return lbl
 
@@ -219,7 +241,11 @@ class Panel(ScreenPanel):
         row.set_homogeneous(True)
         for label, gcode, needs_tool in items:
             btn = _sbs.make(label)
+            # A floor, not a fixed height: the row is packed to expand, so
+            # it grows into whatever the page has spare and shrinks to this
+            # on a small screen instead of overflowing.
             btn.set_size_request(-1, btn_h)
+            btn.set_vexpand(True)
             child = btn.get_child()
             if isinstance(child, Gtk.Label):
                 child.set_line_wrap(True)
@@ -243,50 +269,43 @@ class Panel(ScreenPanel):
         # removed (its 3 buttons were duplicates of the first 3 in
         # CALIBRATION), the remaining 3 sections grow to use the freed
         # ~75 px.
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        outer.set_margin_top(10)
-        outer.set_margin_start(8)
-        outer.set_margin_end(8)
-        outer.set_margin_bottom(14)
+        gap = self._gap()
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=gap)
+        outer.set_margin_top(gap)
+        outer.set_margin_start(gap)
+        outer.set_margin_end(gap)
+        outer.set_margin_bottom(gap)
 
         # CALIBRATION renders as 3+2 rows under one section header.
         # Heights are tuned so all four button rows + 3 section headers
         # + spacing + margins still leave ~50 px for the bottom spacer
         # to absorb visibly.
-        outer.pack_start(self._section_header("DAILY"),              False, False, 0)
-        outer.pack_start(self._section_row(_DAILY,        btn_h=80), False, False, 0)
+        # Headers take their natural height; the four button rows expand and
+        # share whatever is left over. DAILY keeps a larger floor so it stays
+        # the visually dominant section -- the hierarchy is by frequency of
+        # use, and equal expansion on top of unequal floors preserves it at
+        # every resolution.
+        touch = self._touch()
 
-        outer.pack_start(self._section_header("DIAGNOSTICS"),        False, False, 0)
-        outer.pack_start(self._section_row(_DIAG,         btn_h=66), False, False, 0)
+        outer.pack_start(self._section_header("DAILY"), False, False, 0)
+        outer.pack_start(self._section_row(_DAILY, btn_h=int(touch * 1.25)),
+                         True, True, 0)
 
-        outer.pack_start(self._section_header("CALIBRATION"),        False, False, 0)
-        outer.pack_start(self._section_row(_CAL_GLOBAL,   btn_h=64), False, False, 0)
-        outer.pack_start(self._section_row(_CAL_PERTOOL,  btn_h=64), False, False, 0)
+        outer.pack_start(self._section_header("DIAGNOSTICS"), False, False, 0)
+        outer.pack_start(self._section_row(_DIAG, btn_h=touch), True, True, 0)
 
-        # vexpand spacer at the end — REQUIRED for first-render correctness.
-        #
-        # In landscape mode base_panel.py:75 sets action_bar.set_vexpand(True)
-        # and action_bar.set_size_request(action_bar_width, screen.height).
-        # The action_bar spans both grid rows in column 0, so it's competing
-        # with the content row for vertical budget.
-        #
-        # If every child of `outer` is pack_start(False, False, 0), the Box's
-        # natural height is just the sum of those children — and on first
-        # allocation, GTK's grid pass hands action_bar more height than the
-        # content row, squeezing the buttons until they overflow or stretch
-        # the rail icons. (sa_load_unload's path page doesn't have this bug
-        # because its inner _path_grid is packed with expand=True; that one
-        # expanding child is enough to make the page claim all available
-        # vertical space on every allocation pass.)
-        #
-        # A single vexpand=True spacer at the end of `outer` is the minimal
-        # equivalent — the Box now always claims its full slice of the
-        # content row, action_bar gets exactly its set_size_request budget,
-        # and the layout is identical on first open and re-open.
-        spacer = Gtk.Box()
-        spacer.set_vexpand(True)
-        outer.pack_start(spacer, True, True, 0)
+        outer.pack_start(self._section_header("CALIBRATION"), False, False, 0)
+        outer.pack_start(self._section_row(_CAL_GLOBAL, btn_h=touch),
+                         True, True, 0)
+        outer.pack_start(self._section_row(_CAL_PERTOOL, btn_h=touch),
+                         True, True, 0)
 
+        # No trailing vexpand spacer any more. It existed because every
+        # child was packed non-expanding, which left the Box's natural height
+        # as the sum of fixed children and let the action bar win the first
+        # allocation pass. The four button rows now expand themselves, which
+        # makes the page claim its full slice on every pass -- the same
+        # reasoning the tool page below already relied on.
         return outer
 
     # ── Tool picker page ──────────────────────────────────────────────────
