@@ -103,57 +103,89 @@ class Panel(ScreenPanel):
         # now unconditional default behaviour. See sa_subscription.py
         # for the matching cleanup of the _prefs lookup that gated it.
 
-        # ── Accent color (Option B: 12 color circles) ─────────────────────────
+        # -- Accent colour: a carousel, not a grid --------------------------
+        #
+        # A fixed grid can only ever show as many colours as the width allows
+        # -- three on a 3.5 inch panel -- so the palette size was limited by
+        # the screen. A carousel decouples them: the strip scrolls, the centre
+        # slot is the selection, and it snaps to the nearest chip when
+        # released so the choice is always a whole colour rather than a
+        # halfway scroll position.
         outer.pack_start(self._section("BUTTON ACCENT COLOR"), False, False, 0)
 
         self._accent_btns     = {}
-        self._accent_name_lbl = Gtk.Label(halign=Gtk.Align.END)
+        self._accent_name_lbl = Gtk.Label(halign=Gtk.Align.CENTER)
         self._selected_hex    = _prefs.get("accent_color", "#1565C0")
+        self._snap_id         = None
 
-        color_grid = Gtk.Grid(row_spacing=8, column_spacing=8,
-                              row_homogeneous=True, column_homogeneous=True,
-                              margin_top=4, margin_bottom=2)
+        chip = int(max(48.0, self._gtk.font_size * 3.1))
+        self._chip_px   = chip
+        self._chip_gap  = self._gap()
+        self._chip_step = chip + self._chip_gap
+
+        caro = Gtk.ScrolledWindow()
+        caro.set_policy(Gtk.PolicyType.EXTERNAL, Gtk.PolicyType.NEVER)
+        caro.set_size_request(-1, int(chip * 1.45))
+        self._caro = caro
+
+        strip = Gtk.Box(spacing=self._chip_gap)
+        # Half-width spacers at each end so the first and last colours can
+        # reach the centre slot; without them the palette's ends are
+        # unselectable.
+        self._caro_pad = Gtk.Box()
+        end_pad = Gtk.Box()
+        strip.pack_start(self._caro_pad, False, False, 0)
 
         for idx, (name, hex_c, hover, active) in enumerate(_COLORS):
             btn = Gtk.Button()
             css = Gtk.CssProvider()
             cls = "sa-accent-%d" % idx
-            # Circle: fully rounded (radius = half height) so it appears as
-            # a perfect dot. .path-selected adds the lime ring used
-            # elsewhere in the project for "currently selected".
             css.load_from_data((
-                ".{c} {{ background: {bg}; border-radius: 24px; "
-                "min-width: 48px; min-height: 48px; padding: 0; }}"
+                ".{c} {{ background: {bg}; border-radius: {r}px; "
+                "min-width: {w}px; min-height: {w}px; padding: 0; }}"
                 ".{c}:hover {{ background: {hv}; }}"
                 ".{c}:active {{ background: {ac}; }}"
-            ).format(c=cls, bg=hex_c, hv=hover, ac=active).encode())
+            ).format(c=cls, bg=hex_c, hv=hover, ac=active,
+                     r=chip // 2, w=chip).encode())
             Gtk.StyleContext.add_provider_for_screen(
                 Gdk.Screen.get_default(), css,
                 Gtk.STYLE_PROVIDER_PRIORITY_USER + 1)
             btn.get_style_context().add_class(cls)
-            if hex_c == self._selected_hex:
-                btn.get_style_context().add_class("path-selected")
-
-            sw = int(max(48.0, self._gtk.font_size * 3.1))
-            btn.set_size_request(sw, sw)
-            btn.connect("clicked", self._set_color, hex_c, hover, active)
+            btn.set_size_request(chip, chip)
+            btn.set_valign(Gtk.Align.CENTER)
+            # Tapping a chip centres it as well as selecting it, so the
+            # carousel is usable by tapping alone on a small panel.
+            btn.connect("clicked", self._on_chip, hex_c, hover, active, idx)
             self._accent_btns[hex_c] = btn
-            # 6 columns × 2 rows holds 12 swatches in roughly half the
-            # vertical space the old labeled-button grid took.
-            color_grid.attach(btn, idx % 6, idx // 6, 1, 1)
+            strip.pack_start(btn, False, False, 0)
 
-        outer.pack_start(color_grid, False, False, 0)
+        strip.pack_start(end_pad, False, False, 0)
+        self._caro_end_pad = end_pad
+        caro.add(strip)
 
-        # "Currently: <Color name>" hint below the grid so users know what
-        # they just picked without label-on-button real estate.
-        name_row = Gtk.Box(spacing=8)
-        name_row.set_halign(Gtk.Align.END)
-        name_row.set_margin_top(2)
+        # The centre marker: a fixed outline the strip slides beneath, so what
+        # sits inside it is the selection.
+        marker = Gtk.DrawingArea()
+        marker.set_size_request(chip + 10, chip + 10)
+        marker.set_halign(Gtk.Align.CENTER)
+        marker.set_valign(Gtk.Align.CENTER)
+        marker.connect("draw", self._draw_marker)
+
+        stack = Gtk.Overlay()
+        stack.add(caro)
+        stack.add_overlay(marker)
+        stack.set_overlay_pass_through(marker, True)
+        outer.pack_start(stack, False, False, 0)
+
+        # Snap once scrolling settles, and keep the end spacers half the
+        # visible width so the ends can still reach the middle.
+        caro.get_hadjustment().connect("value-changed", self._on_caro_scroll)
+        caro.connect("size-allocate", self._on_caro_size)
+
         self._accent_name_lbl.set_markup(
-            '<span font_size="small" foreground="#9E9E9E">Currently: %s</span>'
+            '<span font_size="small" foreground="#9E9E9E">%s</span>'
             % self._color_name_for(self._selected_hex))
-        name_row.pack_start(self._accent_name_lbl, False, False, 0)
-        outer.pack_start(name_row, False, False, 0)
+        outer.pack_start(self._accent_name_lbl, False, False, 0)
 
         # ── Configured values — scrolls with the page, uses accent color ──────
         detail_btn = _sbs.make("Autoloader Configured Values \u2192", "sa-btn")
@@ -318,21 +350,84 @@ class Panel(ScreenPanel):
                 return name
         return hex_c
 
-    def _set_color(self, widget, hex_c, hover, active):
-        for h, btn in self._accent_btns.items():
-            ctx = btn.get_style_context()
+    def _draw_marker(self, area, cr):
+        """Outline the centre slot. Nothing else marks the selection."""
+        w = area.get_allocated_width()
+        h = area.get_allocated_height()
+        r = 10.0
+        cr.set_source_rgba(1, 1, 1, 0.95)
+        cr.set_line_width(2.5)
+        cr.new_sub_path()
+        cr.arc(w - r - 1, r + 1, r, -1.5708, 0)
+        cr.arc(w - r - 1, h - r - 1, r, 0, 1.5708)
+        cr.arc(r + 1, h - r - 1, r, 1.5708, 3.1416)
+        cr.arc(r + 1, r + 1, r, 3.1416, 4.7124)
+        cr.close_path()
+        cr.stroke()
+        return False
+
+    def _on_caro_size(self, widget, alloc):
+        """Keep the end spacers at half the visible width.
+
+        Without them the first and last colours can never reach the centre
+        slot, so the ends of the palette would be unselectable.
+        """
+        pad = max(0, alloc.width // 2 - self._chip_px // 2)
+        for w in (self._caro_pad, self._caro_end_pad):
+            if w.get_size_request()[0] != pad:
+                w.set_size_request(pad, 1)
+        if not getattr(self, '_caro_centred', False) and alloc.width > 1:
+            self._caro_centred = True
+            GLib.idle_add(self._centre_on, self._selected_hex, False)
+
+    def _on_caro_scroll(self, adj):
+        """Snap to the nearest chip once scrolling stops.
+
+        Debounced rather than snapping on every value change: the adjustment
+        fires continuously through a drag, and snapping mid-drag would fight
+        the finger.
+        """
+        if self._snap_id is not None:
+            GLib.source_remove(self._snap_id)
+        self._snap_id = GLib.timeout_add(140, self._do_snap)
+
+    def _do_snap(self):
+        self._snap_id = None
+        adj = self._caro.get_hadjustment()
+        idx = int(round(adj.get_value() / float(self._chip_step)))
+        idx = max(0, min(idx, len(_COLORS) - 1))
+        target = idx * self._chip_step
+        if abs(adj.get_value() - target) > 0.5:
+            adj.set_value(target)
+        name, hex_c, hover, active = _COLORS[idx]
+        if hex_c != self._selected_hex:
+            self._set_color(None, hex_c, hover, active)
+        return False
+
+    def _centre_on(self, hex_c, animate=True):
+        """Scroll a colour into the centre slot."""
+        for idx, (name, h, hv, ac) in enumerate(_COLORS):
             if h == hex_c:
-                ctx.add_class("path-selected")
-            else:
-                ctx.remove_class("path-selected")
+                self._caro.get_hadjustment().set_value(idx * self._chip_step)
+                break
+        return False
+
+    def _on_chip(self, widget, hex_c, hover, active, idx):
+        """A tap selects and centres, so the carousel works without dragging."""
+        self._set_color(widget, hex_c, hover, active)
+        self._centre_on(hex_c)
+
+    def _set_color(self, widget, hex_c, hover, active):
+        # No per-chip ring any more: the centre marker IS the selection, and
+        # a ring as well would mark the same thing twice.
         self._selected_hex = hex_c
         _prefs.save({"accent_color": hex_c})
         _sbs.reapply(hex_c, hover, active)
         # Update the "Currently: X" hint without rebuilding the page.
         if getattr(self, "_accent_name_lbl", None) is not None:
             self._accent_name_lbl.set_markup(
-                '<span font_size="small" foreground="#9E9E9E">Currently: %s'
-                '</span>' % self._color_name_for(hex_c))
+                '<span font_size="small" foreground="#9E9E9E">%s</span>'
+                % self._color_name_for(hex_c))
         self._screen.show_popup_message(
             "Button color updated \u2014 reopen panels to see changes", level=1)
 
