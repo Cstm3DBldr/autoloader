@@ -23,11 +23,13 @@ def _build_css(accent, hover, active, min_h=62):
     restraint is what makes these buttons sit in the theme instead of beside
     it.
 
-    An earlier version set `background: @buttons` -- a colour name that does
-    not exist. Only `material-dark` defines anything close (`buttons-bg`), so
-    GTK dropped the declaration and the buttons rendered with no surface at
-    all: an underline floating on the page background. The surface is not
-    ours to set; the theme already has one.
+    The surface is named explicitly as `@bg`, which is what base.css and
+    z-bolt both give a plain `button` (#13181C). An earlier version used
+    `@buttons`, a colour name that exists nowhere but material-dark's
+    `buttons-bg` -- GTK dropped the declaration silently and the buttons
+    rendered with no surface at all. Simply omitting the property should have
+    let base.css through, and did not, so it is stated rather than inherited:
+    naming the theme's own colour keeps it theme-tracking either way.
 
     The ACCENT IS THE UNDERLINE, which keeps the accent picker meaningful
     while matching every stock panel. `.sa-btn-warn` keeps a literal amber
@@ -37,6 +39,8 @@ def _build_css(accent, hover, active, min_h=62):
     """
     return ("""
 .sa-btn, .sa-btn-alt, .sa-btn-warn, .sa-btn-nav {{
+    background-image: none;
+    background-color: @bg;
     padding: 0.33em;
     padding-bottom: 0.1em;
     min-width: 0px;

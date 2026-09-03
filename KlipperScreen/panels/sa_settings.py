@@ -146,9 +146,15 @@ class Panel(ScreenPanel):
                 if rep == 0:
                     css = Gtk.CssProvider()
                     css.load_from_data((
-                        ".{c} {{ background: {bg}; border-radius: {r}px; "
+                        # margin:0 matters as much as the colour. base.css gives
+                    # every button `margin: .2em`, so each chip was occupying
+                    # chip + 2*margin while the snap arithmetic assumed
+                    # chip + spacing -- an error of ~7 px that ACCUMULATED,
+                    # putting the snap a whole chip out by the far end of the
+                    # strip and selecting the wrong colour.
+                    ".{c} {{ background: {bg}; border-radius: {r}px; "
                         "min-width: {w}px; min-height: {w}px; padding: 0; "
-                        "border: 0; }}"
+                        "margin: 0; border: 0; }}"
                         ".{c}:hover {{ background: {hv}; }}"
                         ".{c}:active {{ background: {ac}; }}"
                     ).format(c=cls, bg=hex_c, hv=hover, ac=active,
