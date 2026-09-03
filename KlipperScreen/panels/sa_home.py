@@ -76,7 +76,9 @@ _UTIL = [
     ("CONFIG",         "sa_config",            "SA Config",         "color2", "fine_tune"),
 ]
 
-_UTIL_ROW_PX = 110   # fixed height for the utility row
+# _UTIL_ROW_PX removed: the utility row is now row 2 of a homogeneous
+# 3-row grid, so it is a third of the page at any resolution rather
+# than 110 px that happened to be a third at 800x480.
 
 
 class Panel(ScreenPanel):
@@ -90,12 +92,21 @@ class Panel(ScreenPanel):
         self._load_preview   = None
         self._last_sa        = {}
 
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL,
-                        spacing=8, margin=8)
-        outer.set_homogeneous(False)
+        gap = int(max(4.0, self._gtk.font_size * 0.45))
+        # A homogeneous 3-row grid, not a Box. Two expanding Box children split
+        # leftover space equally however they are nested -- Gtk.Box has no
+        # weight -- so a 2:1 ratio has to come from row spans: the hero row
+        # takes rows 0-1, the utility row takes row 2.
+        outer = Gtk.Grid(row_homogeneous=True, row_spacing=gap)
+        outer.set_margin_top(gap)
+        outer.set_margin_start(gap)
+        outer.set_margin_end(gap)
+        # Breathing room under the utility row, proportional so it does not
+        # eat the slack on a small screen the way a fixed value would.
+        outer.set_margin_bottom(int(gap * 2.2))
 
         # ── Hero row (vexpand absorbs leftover height) ────────────────────────
-        hero_row = Gtk.Box(spacing=8)
+        hero_row = Gtk.Box(spacing=gap)
         hero_row.set_hexpand(True)
         hero_row.set_vexpand(True)
 
@@ -106,17 +117,25 @@ class Panel(ScreenPanel):
             if   slot == "status": self._status_preview = preview
             elif slot == "load":   self._load_preview   = preview
 
-        outer.pack_start(hero_row, True, True, 0)
+        outer.attach(hero_row, 0, 0, 1, 2)
 
-        # ── Utility row (fixed height) ────────────────────────────────────────
-        util_row = Gtk.Box(spacing=8)
+        # -- Utility row -------------------------------------------------------
+        # Expands on a 1 share against the hero row's 2, giving a 2:1 split
+        # instead of a fixed 110 px.
+        #
+        # At 800x480 this changes almost nothing -- 110 px happened to land
+        # within a couple of percent of a third. It matters on a smaller
+        # screen: at 480x320 a fixed 110 px is a third of everything, which
+        # squeezes the hero row from two-thirds of the page down to half.
+        util_row = Gtk.Box(spacing=gap)
         util_row.set_hexpand(True)
-        util_row.set_size_request(-1, _UTIL_ROW_PX)
+        util_row.set_vexpand(True)
+        util_row.set_size_request(-1, int(max(44.0, self._gtk.font_size * 2.4)))
         for label, panel, ptitle, color, icon in _UTIL:
             btn = self._gtk.Button(icon, label, color)
             btn.connect("clicked", self._open_panel, panel, ptitle)
             util_row.pack_start(btn, True, True, 0)
-        outer.pack_start(util_row, False, False, 0)
+        outer.attach(util_row, 0, 2, 1, 1)
 
         self.content.add(outer)
 

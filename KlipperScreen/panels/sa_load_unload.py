@@ -81,8 +81,10 @@ class Panel(ScreenPanel):
 
     def __init__(self, screen, title):
         super().__init__(screen, title or "Load / Unload")
-        _sbs.apply()
-
+        # Derived floor rather than sa_button_style's 62 px default. A CSS
+        # min-height is a hard floor set_size_request cannot undercut, so the
+        # default silently sets this page's minimum height.
+        _sbs.apply(min_height=self._touch())
         self._op             = 'load'
         self._wz             = {}
         self._path_states      = []
@@ -115,7 +117,11 @@ class Panel(ScreenPanel):
         self.content.pack_start(self._nb, True, True, 0)
 
         # ── Nav bar ──────────────────────────────────────────────────────────
-        nav = Gtk.Box(spacing=4, margin=4)
+        nav = Gtk.Box(spacing=self._gap())
+        nav.set_margin_start(self._gap())
+        nav.set_margin_end(self._gap())
+        nav.set_margin_top(self._gap())
+        nav.set_margin_bottom(self._pad_bottom())
 
         self._back_btn = _sbs.make("\u2190 Back",    "sa-btn")
         self._save_btn = _sbs.make("SAVE ONLY",      "sa-btn-warn")
@@ -137,17 +143,22 @@ class Panel(ScreenPanel):
     # ── Page factories ────────────────────────────────────────────────────
 
     def _make_path_page(self):
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin=6)
+        gap = self._gap()
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=gap)
+        outer.set_margin_top(gap)
+        outer.set_margin_start(gap)
+        outer.set_margin_end(gap)
+        outer.set_margin_bottom(self._pad_bottom())
 
         hdr = Gtk.Label(label="Select a tool path")
         hdr.set_halign(Gtk.Align.CENTER)
         outer.pack_start(hdr, False, False, 0)
 
         self._path_grid = Gtk.Grid(row_homogeneous=True, column_homogeneous=True,
-                                   row_spacing=4, column_spacing=4)
+                                   row_spacing=gap, column_spacing=gap)
         outer.pack_start(self._path_grid, True, True, 0)
 
-        op_box = Gtk.Box(spacing=4)
+        op_box = Gtk.Box(spacing=gap)
         self._load_btn   = _sbs.make("\u25b6  LOAD",   "sa-btn")
         self._unload_btn = _sbs.make("\u25c0  UNLOAD", "sa-btn")
         self._setmat_btn = _sbs.make("\u270e  MATERIAL", "sa-btn")
@@ -162,7 +173,7 @@ class Panel(ScreenPanel):
 
         self._path_status = Gtk.Label(label="No tool selected")
         self._path_status.set_halign(Gtk.Align.CENTER)
-        self._path_status.set_size_request(-1, 28)
+        self._path_status.set_size_request(-1, int(self._gtk.font_size * 1.6))
         outer.pack_start(self._path_status, False, False, 0)
 
         return {'outer': outer}
@@ -257,13 +268,47 @@ class Panel(ScreenPanel):
 
     # ── Path page ─────────────────────────────────────────────────────────
 
+    # -- Sizing derived from the framework, never hard-coded ------------------
+
+    def _touch(self):
+        """Minimum comfortable finger target, in px."""
+        return int(max(44.0, self._gtk.font_size * 2.4))
+
+    def _pt(self, mult):
+        """Pango point size as a multiple of the framework font size."""
+        return max(7, int(round(self._gtk.font_size * mult)))
+
+    def _gap(self):
+        """Spacing between elements, proportional to the font."""
+        return int(max(4.0, self._gtk.font_size * 0.34))
+
+    def _pad_bottom(self):
+        """Breathing room under the last row, proportional like everything else.
+
+        Adds to the page MINIMUM, not its allocation, so it is free while the
+        minimum stays under the content budget. Recheck if rows are added.
+        """
+        return int(self._gap() * 2.5)
+
+    def _swatch_size(self):
+        """Colour swatch edge, in px.
+
+        Tracks the font rather than the button height, because the button no
+        longer has a fixed height to derive from -- the grid expands into
+        whatever the page has. The 36 px floor is the confirmed minimum for
+        reading a colour at arm's length.
+        """
+        return int(max(36.0, self._gtk.font_size * 3.1))
+
     def _path_btn_h(self):
-        # Available height = screen − header (60) − action-bar (74) − padding (50).
-        # Cap at 72px so 6 paths in a 2x3 grid don't push past the visible area.
-        avail = self._screen.height - 60 - 74 - 50
-        num   = len(self._path_states) or 6
-        rows  = (num + 2) // 3
-        return max(50, min(72, avail // rows))
+        """Floor for a path button. The grid expands, so this is a minimum.
+
+        This used to compute `self._screen.height - 60 - 74 - 50` and cap the
+        result at 72. On this 800x480 display that gave 296 px of believed
+        space where the framework offers 444 -- a third of the panel thrown
+        away, with the cap then compensating for the shortage it invented.
+        """
+        return self._touch()
 
     def _populate_path_page(self):
         for child in self._path_grid.get_children():
@@ -283,6 +328,7 @@ class Panel(ScreenPanel):
 
             btn = self._make_path_btn(i, state, hex_c, mat, color_type, hex_2, hex_3)
             btn.set_size_request(-1, btn_h)
+            btn.set_vexpand(True)
             if i == self._sel_path:
                 btn.get_style_context().add_class('path-selected')
                 self._sel_btn = btn
@@ -306,10 +352,7 @@ class Panel(ScreenPanel):
         btn = Gtk.Button()
         btn.get_style_context().add_class("sa-btn")
 
-        btn_h   = self._path_btn_h()
-        # Mid-size swatch — between the original (44–88) and the recent
-        # too-compact (28–36). Aimed at 36–48 px depending on button height.
-        sw_size = max(36, min(48, btn_h - 24))
+        sw_size = self._swatch_size()
 
         # 3-column equal-width grid: T# | swatch | material
         # column_homogeneous makes each column exactly 1/3 of the button
@@ -513,7 +556,8 @@ class Panel(ScreenPanel):
         btn.get_style_context().add_class("sa-btn")
         # Compact color-picker chip (was 72×82) so the FlowBox can fit more
         # colors without overflowing on small screens.
-        btn.set_size_request(60, 70)
+        btn.set_size_request(int(self._gtk.font_size * 3.4),
+                             int(self._gtk.font_size * 3.9))
 
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
@@ -522,7 +566,7 @@ class Panel(ScreenPanel):
             da = _cs.make_swatch_da(40, hex_list, color_type)
         else:
             da = Gtk.DrawingArea()
-            da.set_size_request(-1, 40)
+            da.set_size_request(-1, int(self._gtk.font_size * 2.2))
             r, g, b = _hex_to_rgb01(hex_c)
             da.connect("draw", lambda w, cr, _r=r, _g=g, _b=b: _draw_color_swatch(w, cr, _r, _g, _b))
 
@@ -563,7 +607,13 @@ class Panel(ScreenPanel):
     # ── Utilities ─────────────────────────────────────────────────────────
 
     def _list_btn_h(self):
-        return max(60, min(90, self._screen.height // 5))
+        """Row height in the brand / material / line pickers.
+
+        A floor derived from the font, not a slice of screen height clamped
+        between two literals. These pages scroll, so a taller row costs
+        nothing but a shorter list per screen.
+        """
+        return int(max(52.0, self._gtk.font_size * 3.0))
 
     def _fill_list(self, vbox, items):
         for child in vbox.get_children():

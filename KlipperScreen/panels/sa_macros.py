@@ -199,6 +199,19 @@ class Panel(ScreenPanel):
         """Spacing between rows, proportional to the font."""
         return int(max(4.0, self._gtk.font_size * 0.34))
 
+    def _pad_bottom(self):
+        """Breathing room under the last row.
+
+        Proportional, for the same reason everything else here is: a fixed
+        value that looks right at 800x480 eats most of the slack at 480x320,
+        where the page has about 25 px spare rather than 88.
+
+        This adds to the page's MINIMUM height, not its allocation, so it is
+        free as long as the minimum stays under the content budget -- 356 + 15
+        against 444 here. That is the check to redo if rows are ever added.
+        """
+        return int(self._gap() * 2.5)
+
     def _set_page(self, name):
         """Notebook equivalent of Stack.set_visible_child_name."""
         idx = self._page_index.get(name)
@@ -278,7 +291,7 @@ class Panel(ScreenPanel):
         outer.set_margin_top(gap)
         outer.set_margin_start(gap)
         outer.set_margin_end(gap)
-        outer.set_margin_bottom(gap)
+        outer.set_margin_bottom(self._pad_bottom())
 
         # CALIBRATION renders as 3+2 rows under one section header.
         # Heights are tuned so all four button rows + 3 section headers
