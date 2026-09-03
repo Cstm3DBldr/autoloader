@@ -57,9 +57,22 @@ _COLORS = [
 
 
 class Panel(ScreenPanel):
+    # -- Sizing derived from the framework, never hard-coded ------------------
+
+    def _touch(self):
+        return int(max(44.0, self._gtk.font_size * 2.4))
+
+    def _gap(self):
+        return int(max(4.0, self._gtk.font_size * 0.34))
+
+    def _pad_bottom(self):
+        """Breathing room under the locked footer, proportional so it does not
+        eat the slack on a small screen the way a fixed value would."""
+        return int(self._gap() * 2.5)
+
     def __init__(self, screen, title):
         super().__init__(screen, title or "Autoloader Settings")
-        _sbs.apply()
+        _sbs.apply(min_height=self._touch())
 
         self._last_sa = {}
 
@@ -121,7 +134,8 @@ class Panel(ScreenPanel):
             if hex_c == self._selected_hex:
                 btn.get_style_context().add_class("path-selected")
 
-            btn.set_size_request(48, 48)
+            sw = int(max(48.0, self._gtk.font_size * 3.1))
+            btn.set_size_request(sw, sw)
             btn.connect("clicked", self._set_color, hex_c, hover, active)
             self._accent_btns[hex_c] = btn
             # 6 columns × 2 rows holds 12 swatches in roughly half the
@@ -206,7 +220,7 @@ class Panel(ScreenPanel):
         back_btn = _sbs.make("\u2190  Back", "sa-btn-alt")
         back_btn.set_margin_start(10)
         back_btn.set_margin_end(10)
-        back_btn.set_margin_bottom(6)
+        back_btn.set_margin_bottom(self._pad_bottom())
         back_btn.connect("clicked", lambda w: self._stack.set_visible_child_name("main"))
         outer.pack_start(back_btn, False, False, 0)
 

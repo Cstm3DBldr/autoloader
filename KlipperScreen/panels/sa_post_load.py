@@ -31,81 +31,114 @@ class Panel(ScreenPanel):
 
     def __init__(self, screen, title):
         super().__init__(screen, title or "Autoloader Action")
-        _sbs.apply()
+        _sbs.apply(min_height=self._touch())
 
         self._active    = False
         self._cal_state = ''
         self._cal_path  = -1
         self._num_paths = 6
+        self._mode      = 'load'   # which verb the grid performs
+        self._sel_path  = None     # nothing acts until a head is picked
+        self._path_btns = {}
+        self._last_sa   = {}
 
         self._build_ui()
 
     # ── UI construction ───────────────────────────────────────────────────────
 
-    def _build_ui(self):
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, margin=6)
+    # -- Sizing derived from the framework -------------------------------------
 
-        # Status header
-        self._hdr = Gtk.Label()
-        self._hdr.set_halign(Gtk.Align.CENTER)
+    def _touch(self):
+        return int(max(44.0, self._gtk.font_size * 2.4))
+
+    def _gap(self):
+        return int(max(4.0, self._gtk.font_size * 0.34))
+
+    def _pad_bottom(self):
+        return int(self._gap() * 2.5)
+
+    # -- UI construction -------------------------------------------------------
+
+    def _build_ui(self):
+        """Pick-then-confirm flow.
+
+        Replaces the two parallel LOAD PATH / UNLOAD PATH rows. Those rows had
+        to shrink to 38 px to both fit -- below a reliable finger target, and
+        the code said so outright -- and either could be triggered by a single
+        stray tap on a panel that appears unprompted right after a load.
+
+        Now: immediate actions on top, a toggle choosing the verb, one grid of
+        heads, and a confirm that names what it is about to do. Two taps
+        minimum before anything moves.
+        """
+        gap = self._gap()
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=gap)
+        outer.set_margin_top(gap)
+        outer.set_margin_start(gap)
+        outer.set_margin_end(gap)
+        outer.set_margin_bottom(self._pad_bottom())
+
+        self._hdr = Gtk.Label(halign=Gtk.Align.CENTER)
         self._hdr.set_markup(
-            '<span font_size="large" foreground="%s"><b>SA Action</b></span>' % _GREEN)
+            '<span font_size="large" foreground="%s"><b>Autoloader Action</b></span>'
+            % _GREEN)
         outer.pack_start(self._hdr, False, False, 0)
 
-        self._sub = Gtk.Label()
-        self._sub.set_halign(Gtk.Align.CENTER)
+        self._sub = Gtk.Label(halign=Gtk.Align.CENTER)
         outer.pack_start(self._sub, False, False, 0)
 
-        # Divider below the sub-header \u2014 visual break before the action row.
-        # Kept; the SECOND divider (between action row and LOAD PATH) was
-        # removed because it pushed the UNLOAD T-row off the bottom on a
-        # 480px screen. Section grouping below relies on the colored
-        # "LOAD PATH:" / "UNLOAD PATH:" headers alone.
-        outer.pack_start(Gtk.Separator(), False, False, 4)
+        outer.pack_start(Gtk.Separator(), False, False, 0)
 
-        # Primary action buttons \u2014 single row in both states. PURGE shows
-        # in load_purge, LOAD SAME shows in unload_done; only one of those
-        # two is ever visible. PARK and EXIT are always visible. With one
-        # of the two conditional buttons hidden via set_visible(False),
-        # GTK skips its allocation and the remaining 3 buttons share the
-        # row width evenly.
-        row1 = Gtk.Box(spacing=8)
+        # -- Immediate actions. PURGE and LOAD SAME are mutually exclusive by
+        # cal_state, as they already were, so this row always shows three.
+        row1 = Gtk.Box(spacing=gap)
         self._more_btn = self._make_action_btn(
             "\u21ba  PURGE 60mm", _GREEN, self._do_more)
         self._load_same_btn = self._make_action_btn(
             "\u25b6  LOAD SAME", _GREEN, self._do_load_same)
-        self._park_btn = self._make_action_btn(
-            "Ⓟ  PARK",    None,   self._do_park)
-        self._exit_btn = self._make_action_btn(
-            "\u2715  EXIT",        _RED,   self._do_exit)
-        # set_no_show_all so the screen.attach_panel show_all() pass
-        # doesn't override our state-dependent set_visible() calls below.
+        self._park_btn = self._make_action_btn("\u24c5  PARK", None, self._do_park)
+        self._clean_btn = self._make_action_btn(
+            "\u2726  CLEAN NOZZLE", None, self._do_clean)
         self._more_btn.set_no_show_all(True)
         self._load_same_btn.set_no_show_all(True)
-        for b in (self._more_btn, self._load_same_btn, self._park_btn, self._exit_btn):
-            b.set_size_request(-1, 56)
+        for b in (self._more_btn, self._load_same_btn, self._park_btn,
+                  self._clean_btn):
+            b.set_size_request(-1, int(self._touch() * 1.5))
             row1.pack_start(b, True, True, 0)
         outer.pack_start(row1, False, False, 0)
 
-        # Load T0..T5 row
-        load_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self._load_lbl = Gtk.Label(halign=Gtk.Align.START)
-        self._load_lbl.set_markup('<span font_size="small" foreground="#90CAF9">LOAD PATH:</span>')
-        self._load_grid = Gtk.Grid(column_spacing=6, row_spacing=0,
-                                   column_homogeneous=True)
-        load_box.pack_start(self._load_lbl,  False, False, 0)
-        load_box.pack_start(self._load_grid, False, False, 0)
-        outer.pack_start(load_box, False, False, 0)
+        # -- Which verb the grid performs.
+        tog = Gtk.Box(spacing=0)
+        self._load_tog   = _sbs.make("\u25b6  LOAD",   "sa-btn")
+        self._unload_tog = _sbs.make("\u25c0  UNLOAD", "sa-btn-alt")
+        self._load_tog.connect("clicked",   self._set_mode, 'load')
+        self._unload_tog.connect("clicked", self._set_mode, 'unload')
+        for b in (self._load_tog, self._unload_tog):
+            b.set_size_request(-1, int(self._touch() * 1.2))
+            tog.pack_start(b, True, True, 0)
+        outer.pack_start(tog, False, False, 0)
 
-        # Unload T0..T5 row
-        unload_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        self._unload_lbl = Gtk.Label(halign=Gtk.Align.START)
-        self._unload_lbl.set_markup('<span font_size="small" foreground="#FFCC80">UNLOAD PATH:</span>')
-        self._unload_grid = Gtk.Grid(column_spacing=6, row_spacing=0,
-                                     column_homogeneous=True)
-        unload_box.pack_start(self._unload_lbl,  False, False, 0)
-        unload_box.pack_start(self._unload_grid, False, False, 0)
-        outer.pack_start(unload_box, False, False, 0)
+        # -- One grid of heads, three wide, scrolling past what fits.
+        scroll = self._gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self._path_grid = Gtk.Grid(row_spacing=gap, column_spacing=gap,
+                                   row_homogeneous=True,
+                                   column_homogeneous=True)
+        scroll.add(self._path_grid)
+        outer.pack_start(scroll, True, True, 0)
+
+        # -- Exit and confirm, locked at the bottom.
+        row2 = Gtk.Box(spacing=gap)
+        self._exit_btn = self._make_action_btn("\u2715  EXIT", _RED, self._do_exit)
+        self._exit_btn.set_size_request(int(self._gtk.font_size * 10),
+                                        int(self._touch() * 1.35))
+        self._confirm_btn = _sbs.make("SELECT A PATH", "sa-btn")
+        self._confirm_btn.set_size_request(-1, int(self._touch() * 1.35))
+        self._confirm_btn.set_sensitive(False)
+        self._confirm_btn.connect("clicked", self._do_confirm)
+        row2.pack_start(self._exit_btn,    False, False, 0)
+        row2.pack_start(self._confirm_btn, True,  True,  0)
+        outer.pack_start(row2, False, False, 0)
 
         self.content.pack_start(outer, True, True, 0)
 
@@ -119,19 +152,96 @@ class Panel(ScreenPanel):
         btn.connect("clicked", callback)
         return btn
 
+    # -- Mode and selection ----------------------------------------------------
+
+    def _set_mode(self, widget, mode):
+        """Switch the grid between loading and unloading."""
+        if mode == self._mode:
+            return
+        self._mode = mode
+        for btn, m in ((self._load_tog, 'load'), (self._unload_tog, 'unload')):
+            ctx = btn.get_style_context()
+            ctx.remove_class('sa-btn')
+            ctx.remove_class('sa-btn-alt')
+            ctx.add_class('sa-btn' if m == mode else 'sa-btn-alt')
+        self._update_confirm()
+
+    def _select_path(self, widget, path):
+        self._sel_path = path
+        for i, btn in self._path_btns.items():
+            ctx = btn.get_style_context()
+            if i == path:
+                ctx.add_class('path-selected')
+            else:
+                ctx.remove_class('path-selected')
+        self._update_confirm()
+
+    def _update_confirm(self):
+        """The confirm names its action and target, and is dead until picked.
+
+        Naming the target is the safety: the label says exactly what the tap
+        will do, so a mis-selected path is visible before it is acted on.
+        """
+        if self._sel_path is None:
+            self._confirm_btn.set_label("SELECT A PATH")
+            self._confirm_btn.set_sensitive(False)
+            return
+        verb = "LOAD" if self._mode == 'load' else "UNLOAD"
+        self._confirm_btn.set_label("\u2713  %s T%d" % (verb, self._sel_path))
+        self._confirm_btn.set_sensitive(True)
+
+    def _do_confirm(self, widget=None):
+        if self._sel_path is None:
+            return
+        self._do_path_action(None, self._mode, self._sel_path)
+
+    def _do_clean(self, widget=None):
+        # A direct macro, not a calibration response like the others.
+        self._gcode("SA_CLEAN_NOZZLE")
+
     def _build_path_grids(self, num):
-        for grid, action in ((self._load_grid, 'load'), (self._unload_grid, 'unload')):
-            for child in grid.get_children():
-                grid.remove(child)
-            for i in range(num):
-                btn = _sbs.make("T%d" % i, "sa-btn-alt")
-                # Compact path-row buttons so both LOAD and UNLOAD rows fit
-                # below the action buttons on a 480px screen.
-                btn.set_size_request(-1, 38)
-                btn.connect("clicked", self._do_path_action, action, i)
-                grid.attach(btn, i, 0, 1, 1)
-        self._load_grid.show_all()
-        self._unload_grid.show_all()
+        """Rebuild the head grid for *num* toolheads.
+
+        Three wide, expanding into whatever the page has left. Tiles carry the
+        material and colour already on each head -- which the plain T-buttons
+        never showed, and which is exactly what you are deciding against when
+        changing a colour.
+        """
+        for child in self._path_grid.get_children():
+            self._path_grid.remove(child)
+        self._path_btns = {}
+
+        sa        = self._last_sa or {}
+        materials = sa.get("path_materials",   [])
+        colors    = sa.get("path_color_names", [])
+
+        for i in range(num):
+            btn = Gtk.Button()
+            btn.get_style_context().add_class("sa-btn-alt")
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            box.set_valign(Gtk.Align.CENTER)
+
+            t = Gtk.Label()
+            t.set_markup('<b><span font_size="large">T%d</span></b>' % i)
+            box.pack_start(t, False, False, 0)
+
+            mat  = materials[i] if i < len(materials) and materials[i] else ''
+            name = colors[i]    if i < len(colors)    and colors[i]    else ''
+            detail = ' \u00b7 '.join([x for x in (mat, name) if x]) or 'empty'
+            d = Gtk.Label(ellipsize=3, max_width_chars=16)
+            d.set_markup('<span font_size="small" foreground="#BDBDBD">%s</span>'
+                         % GLib.markup_escape_text(detail))
+            box.pack_start(d, False, False, 0)
+
+            btn.add(box)
+            btn.set_size_request(-1, self._touch())
+            btn.set_vexpand(True)
+            btn.connect("clicked", self._select_path, i)
+            self._path_grid.attach(btn, i % 3, i // 3, 1, 1)
+            self._path_btns[i] = btn
+
+        self._path_grid.show_all()
+        self._update_confirm()
 
     # ── State update ──────────────────────────────────────────────────────────
 
@@ -160,7 +270,7 @@ class Panel(ScreenPanel):
             self._load_same_btn.set_visible(True)
         else:
             self._hdr.set_markup(
-                '<span font_size="large"><b>SA Action</b></span>')
+                '<span font_size="large"><b>Autoloader Action</b></span>')
             self._sub.set_text('')
             self._more_btn.set_visible(True)
             self._load_same_btn.set_visible(False)
@@ -196,7 +306,7 @@ class Panel(ScreenPanel):
                 s._menu_go_back()
         except Exception as e:
             logger.warning("sa_post_load: _close fallback to sa_main: %s", e)
-            s.show_panel('sa_main', 'SA Status')
+            s.show_panel('sa_main', 'Autoloader Status')
 
     def _do_more(self, widget=None):
         self._respond("more")
@@ -236,6 +346,8 @@ class Panel(ScreenPanel):
             {"objects": _sasub.build_subscription(self._screen)})
         _sasub.install_global_popup_watcher(self._screen)
         sa = self._query_sa()
+        # Held so the head tiles can show what is already on each path.
+        self._last_sa = dict(sa) if sa else {}
         self._apply_state(
             sa.get("cal_state", ""),
             sa.get("cal_path",  -1),

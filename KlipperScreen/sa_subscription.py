@@ -185,6 +185,15 @@ def build_subscription(screen, num_paths=0, include_encoders=False):
                                "live_extruder_velocity"],
         "fan":                ["speed"],
         "display_status":     ["progress", "message"],
+        # Toolchanger — sa_main marks the mounted tool from this, and pulses
+        # that marker while a change is in flight. `status` is one of
+        # uninitialized / initializing / ready / changing / error, and
+        # `tool_number` is the ACTIVE tool, which flips partway through a
+        # change (inside _configure_toolhead_for_tool, after the old head is
+        # parked and before the new one is picked up). The target tool is
+        # never exposed, which is why the marker follows tool_number.
+        "toolchanger":        ["status", "tool", "tool_number",
+                               "detected_tool_number"],
     }
     if include_encoders:
         for i in range(num_paths):

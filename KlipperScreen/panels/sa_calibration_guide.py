@@ -28,9 +28,22 @@ _STEP_TITLES = [
 class Panel(ScreenPanel):
     """Step-by-step calibration guide — one full page per step."""
 
+    # -- Sizing derived from the framework, never hard-coded ------------------
+
+    def _touch(self):
+        return int(max(44.0, self._gtk.font_size * 2.4))
+
+    def _gap(self):
+        return int(max(4.0, self._gtk.font_size * 0.34))
+
+    def _pad_bottom(self):
+        """Breathing room under the locked footer, proportional so it does not
+        eat the slack on a small screen the way a fixed value would."""
+        return int(self._gap() * 2.5)
+
     def __init__(self, screen, title):
         super().__init__(screen, title or "Autoloader Calibration")
-        _sbs.apply()
+        _sbs.apply(min_height=self._touch())
 
         self._num_paths   = 6
         self._last_sa     = {}
@@ -90,7 +103,10 @@ class Panel(ScreenPanel):
         # natural width past the screen and clipping content in the page
         # above (was happening on 800×480 displays).
         self._prev_btn = _sbs.make("◀  Back", "sa-btn")
-        self._prev_btn.set_size_request(150, -1)
+        # Font-derived, not 150 px: on a 480 px-wide screen two fixed
+        # 150 px buttons claim 300 of it, leaving under 130 for the action
+        # button between them.
+        self._prev_btn.set_size_request(int(self._gtk.font_size * 6.2), -1)
         self._prev_btn.connect("clicked", self._go_prev)
 
         self._step_lbl = Gtk.Label()
@@ -103,7 +119,7 @@ class Panel(ScreenPanel):
         self._step_lbl.set_max_width_chars(28)
 
         self._next_btn = _sbs.make("Next  ▶", "sa-btn")
-        self._next_btn.set_size_request(150, -1)
+        self._next_btn.set_size_request(int(self._gtk.font_size * 6.2), -1)
         self._next_btn.connect("clicked", self._go_next)
 
         nav.pack_start(self._prev_btn, False, False, 0)
@@ -316,7 +332,7 @@ class Panel(ScreenPanel):
             lbl  = Gtk.Label(halign=Gtk.Align.CENTER)
             lbl.set_markup('<span foreground="%s" font_size="small">T%d\n%s</span>'
                            % (fg, i, ("%.4f" % mpp) if done else "\u2715"))
-            lbl.set_size_request(-1, 34)
+            lbl.set_size_request(-1, int(self._gtk.font_size * 1.9))
             grid.attach(lbl, i % 3, i // 3 * 2,     1, 1)
             btn = _sbs.make("T%d" % i, "sa-btn")
             btn.connect("clicked", self._pick_tool, "SA_CALIBRATE_ENCODER TOOL={t}", i)
@@ -347,7 +363,7 @@ class Panel(ScreenPanel):
             lbl  = Gtk.Label(halign=Gtk.Align.CENTER)
             lbl.set_markup('<span foreground="%s" font_size="small">T%d\n%s</span>'
                            % (fg, i, ("%.0fmm" % blen) if done else "\u2715"))
-            lbl.set_size_request(-1, 34)
+            lbl.set_size_request(-1, int(self._gtk.font_size * 1.9))
             grid.attach(lbl, i % 3, i // 3 * 2,     1, 1)
             btn = _sbs.make("T%d" % i, "sa-btn")
             btn.connect("clicked", self._pick_tool, "SA_CALIBRATE_BOWDEN TOOL={t}", i)

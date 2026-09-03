@@ -27,9 +27,22 @@ _PARAMS = [
 
 
 class Panel(ScreenPanel):
+    # -- Sizing derived from the framework, never hard-coded ------------------
+
+    def _touch(self):
+        return int(max(44.0, self._gtk.font_size * 2.4))
+
+    def _gap(self):
+        return int(max(4.0, self._gtk.font_size * 0.34))
+
+    def _pad_bottom(self):
+        """Breathing room under the locked footer, proportional so it does not
+        eat the slack on a small screen the way a fixed value would."""
+        return int(self._gap() * 2.5)
+
     def __init__(self, screen, title):
         super().__init__(screen, title or "Autoloader Config")
-        _sbs.apply()
+        _sbs.apply(min_height=self._touch())
 
         self._pending    = {}   # key → new value string (staged, not yet saved)
         self._current    = {}   # key → current float value from firmware
@@ -77,7 +90,10 @@ class Panel(ScreenPanel):
         self._save_btn.set_sensitive(False)
         self._save_btn.set_margin_start(8)
         self._save_btn.set_margin_end(8)
-        self._save_btn.set_margin_top(4)
+        self._save_btn.set_margin_top(self._gap())
+        # SAVE is packed after the scroll, so it is already locked; this is
+        # the breathing room beneath it.
+        self._save_btn.set_margin_bottom(self._pad_bottom())
         self._save_btn.set_margin_bottom(6)
         self._save_btn.connect("clicked", self._do_save)
         outer.pack_start(self._save_btn, False, False, 0)
@@ -112,7 +128,8 @@ class Panel(ScreenPanel):
             self._val_labels[key] = val_lbl
 
             edit_btn = _sbs.make("\u270e", "sa-btn-nav")
-            edit_btn.set_size_request(52, 44)
+            edit_btn.set_size_request(int(self._gtk.font_size * 3.3),
+                                      int(self._gtk.font_size * 2.7))
             edit_btn.connect("clicked", self._open_edit, key, label, unit, dps)
 
             row.pack_start(name_lbl, True,  True,  0)
