@@ -376,9 +376,43 @@ class Panel(ScreenPanel):
         for w in (self._caro_pad, self._caro_end_pad):
             if w.get_size_request()[0] != pad:
                 w.set_size_request(pad, 1)
+        # Centre the stored colour once the strip has a real allocation.
+        # Doing it earlier clamps to zero, because the adjustment's upper
+        # bound is still the unpadded width -- which is what leaves the
+        # marker sitting off the selected chip on first open.
         if not getattr(self, '_caro_centred', False) and alloc.width > 1:
-            self._caro_centred = True
-            GLib.idle_add(self._centre_on, self._selected_hex, False)
+            if self._chip_centre(self._accent_btns.get(self._selected_hex)) \
+                    is not None:
+                self._caro_centred = True
+                GLib.idle_add(self._centre_on, self._selected_hex, False)
+
+    def _chip_centre(self, btn):
+        """x of a chip's centre inside the scrollable strip, or None.
+
+        Measured with translate_coordinates rather than computed from chip
+        width and spacing. The computed version was wrong by exactly one Box
+        spacing -- the strip is a Gtk.Box, so it puts a gap between the
+        leading spacer and the first chip, which the arithmetic missed. It
+        would have gone on being wrong every time the padding or spacing
+        changed; measuring cannot drift.
+        """
+        if btn is None:
+            return None
+        try:
+            inner = self._caro.get_child()
+            if isinstance(inner, Gtk.Viewport):
+                inner = inner.get_child()
+            ok, x, _y = btn.translate_coordinates(inner, 0, 0)
+            if not ok:
+                return None
+            return x + btn.get_allocated_width() / 2.0
+        except Exception:
+            return None
+
+    def _clamp_adj(self, value):
+        adj = self._caro.get_hadjustment()
+        top = max(adj.get_lower(), adj.get_upper() - adj.get_page_size())
+        return max(adj.get_lower(), min(value, top))
 
     def _on_caro_scroll(self, adj):
         """Snap to the nearest chip once scrolling stops.
@@ -392,24 +426,44 @@ class Panel(ScreenPanel):
         self._snap_id = GLib.timeout_add(140, self._do_snap)
 
     def _do_snap(self):
+        """Settle on whichever chip is nearest the centre marker."""
         self._snap_id = None
         adj = self._caro.get_hadjustment()
-        idx = int(round(adj.get_value() / float(self._chip_step)))
-        idx = max(0, min(idx, len(_COLORS) - 1))
-        target = idx * self._chip_step
+        focus = adj.get_value() + self._caro.get_allocated_width() / 2.0
+
+        best = None
+        for idx, (name, hex_c, hover, active) in enumerate(_COLORS):
+            btn = self._accent_btns.get(hex_c)
+            if btn is None:
+                continue
+            cx = self._chip_centre(btn)
+            if cx is None:
+                continue
+            d = abs(cx - focus)
+            if best is None or d < best[0]:
+                best = (d, idx, hex_c, hover, active, cx)
+        if best is None:
+            return False
+
+        _d, _idx, hex_c, hover, active, cx = best
+        target = self._clamp_adj(cx - self._caro.get_allocated_width() / 2.0)
         if abs(adj.get_value() - target) > 0.5:
             adj.set_value(target)
-        name, hex_c, hover, active = _COLORS[idx]
         if hex_c != self._selected_hex:
             self._set_color(None, hex_c, hover, active)
         return False
 
     def _centre_on(self, hex_c, animate=True):
-        """Scroll a colour into the centre slot."""
-        for idx, (name, h, hv, ac) in enumerate(_COLORS):
-            if h == hex_c:
-                self._caro.get_hadjustment().set_value(idx * self._chip_step)
-                break
+        """Scroll a colour into the centre slot, by measurement."""
+        btn = self._accent_btns.get(hex_c)
+        if btn is None:
+            return False
+        cx = self._chip_centre(btn)
+        if cx is None:
+            # Allocation is not settled yet; try again on the next idle pass.
+            return False
+        self._caro.get_hadjustment().set_value(
+            self._clamp_adj(cx - self._caro.get_allocated_width() / 2.0))
         return False
 
     def _on_chip(self, widget, hex_c, hover, active, idx):
