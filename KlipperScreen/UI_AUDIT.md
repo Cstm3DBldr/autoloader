@@ -131,6 +131,41 @@ KlipperScreen ships `material-dark`, `material-darker`, `material-light`,
 colours are legitimately literal — they represent real filament — but chrome
 should come from `button.colorN` and the semantic classes.
 
+### F6 — A CSS `min-height` was the real floor, beating every Python change
+
+Measured on the device, not inferred. `sa_button_style.py` carried
+`min-height: 62px` on `.sa-btn`, `.sa-btn-alt` and `.sa-btn-nav`.
+
+**A CSS `min-height` cannot be undercut by `set_size_request`** — GTK takes
+the larger of the two. So every button on the macros page reported a 76 px
+minimum (62 + padding + border) no matter what the panel asked for, four
+button rows could not go below 304 px, and the page's minimum sat at 410. The
+grid then measured 494 on a 480 px screen, and because the action bar spans
+both grid rows it stretched by the 14 px difference, spreading its icons.
+
+Before and after, from the live panel:
+
+| | before | after |
+|---|---|---|
+| button min | 76 | 58 |
+| page min | 410 | 356 |
+| content allocation | 458 | 444 |
+| `main_grid` | 494 (14 over) | 480 (exact) |
+
+The floor now derives from `_gtk.font_size` and is passed in by the panel:
+`sa_button_style.apply(min_height=...)`, remembered across `reapply()` so an
+accent-colour change does not silently reset it.
+
+**The rule this establishes:** fixed pixels in the stylesheet outrank
+everything in Python, and are invisible when reading the panel code. The
+stylesheet needs auditing for *dimensions*, not only the colours in F4. Two
+places still to check: `.sa-section-header` and the `.action_bar` overrides in
+`sa_macros._install_action_bar_css`, both of which pin sizes in CSS.
+
+**Only `sa_macros` passes a derived floor so far.** Every other panel still
+calls `_sbs.apply()` bare and keeps the 62 px default, so any panel that looks
+stretched has this same cause.
+
 ### F5 — The numpad cannot fit a small screen
 
 `sa_cal_prompt.py` builds its own numpad from fixed heights:

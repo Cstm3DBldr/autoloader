@@ -128,7 +128,11 @@ class Panel(ScreenPanel):
 
     def __init__(self, screen, title):
         super().__init__(screen, title or "SA Macros")
-        _sbs.apply()
+        # Pass a floor derived from the framework font rather than taking the
+        # module default. A CSS min-height cannot be undercut by
+        # set_size_request, so the default 62 px was setting this page's
+        # minimum height from a stylesheet -- see sa_button_style.apply.
+        _sbs.apply(min_height=self._touch())
         # Install CSS pinning action_bar button padding/margin to fixed
         # pixel values. Idempotent across panels and panel re-creation.
         _install_action_bar_css()
@@ -377,6 +381,7 @@ class Panel(ScreenPanel):
         sa = self._printer.data.get("autoloader", {})
         self._num_paths = sa.get("num_paths", 6)
         self._set_page("main")
+
 
     def process_update(self, action, data):
         if action != "notify_status_update":

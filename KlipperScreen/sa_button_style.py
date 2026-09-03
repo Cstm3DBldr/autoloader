@@ -9,13 +9,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sa_ui_prefs as _prefs
 
 _provider = None
+# Last min-height applied, so a later reapply() for an accent change
+# does not silently reset the floor back to the default.
+_last_min_h = None
 
 
-def _build_css(accent, hover, active):
+def _build_css(accent, hover, active, min_h=62):
     return ("""
 .sa-btn {{
     padding: 4px 8px;
-    min-height: 62px;
+    min-height: {min_h}px;
     min-width: 0px;
     border-radius: 6px;
     background: {accent};
@@ -29,7 +32,7 @@ def _build_css(accent, hover, active):
 
 .sa-btn-alt {{
     padding: 4px 8px;
-    min-height: 62px;
+    min-height: {min_h}px;
     min-width: 0px;
     border-radius: 6px;
     background: #37474F;
@@ -43,7 +46,7 @@ def _build_css(accent, hover, active):
 
 .sa-btn-warn {{
     padding: 4px 8px;
-    min-height: 62px;
+    min-height: {min_h}px;
     min-width: 0px;
     border-radius: 6px;
     background: #E65100;
@@ -68,17 +71,37 @@ def _build_css(accent, hover, active):
 .sa-btn-nav:disabled label {{ color: #9E9E9E; }}
 
 .path-selected {{ border: 3px solid #8BC34A; }}
-""".format(accent=accent, hover=hover, active=active)).encode()
+""".format(accent=accent, hover=hover, active=active, min_h=int(min_h))).encode()
 
 
-def apply():
-    global _provider
+def apply(min_height=None):
+    """Install the shared button CSS.
+
+    `min_height` is the floor every button gets, in px. Pass a value derived
+    from the framework font size -- `max(40, _gtk.font_size * 2.4)` is what
+    the panels use -- so it tracks resolution and the user's font_size
+    preference.
+
+    It matters more than it looks. A CSS min-height is a hard floor that
+    set_size_request cannot go under, so a fixed value here silently sets the
+    minimum height of every page built from these buttons. At the old 62 px
+    the macros page could not request less than 410 px of content, which
+    overflowed the grid and stretched the action bar -- and no amount of
+    sizing work in the panel could have fixed it, because the floor was here.
+
+    Defaults to 62 only so an un-updated caller keeps its old look.
+    """
+    global _provider, _last_min_h
+    if min_height is None:
+        min_height = _last_min_h if _last_min_h is not None else 62
+    _last_min_h = min_height
     p = _prefs.load()
     css = Gtk.CssProvider()
     css.load_from_data(_build_css(
         p.get("accent_color",  "#1565C0"),
         p.get("hover_color",   "#1976D2"),
         p.get("active_color",  "#0D47A1"),
+        min_h=min_height,
     ))
     screen = Gdk.Screen.get_default()
     if _provider is not None:
