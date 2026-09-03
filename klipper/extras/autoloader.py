@@ -258,6 +258,13 @@ class Autoloader:
         self._pending_response = None
         self._response_ready   = False
         self._cal_state        = None
+        # Set True by sa_motion once the selector homes. Initialised
+        # here because every calibration reads it before homing, and
+        # an unset attribute raised AttributeError out of a gcode
+        # handler -- which Klipper treats as an internal error and
+        # shuts the printer down. Running any calibration on a freshly
+        # started Klipper did exactly that.
+        self._selector_homed   = False
         # Paths with a load/unload in flight. The state monitor leaves
         # these alone -- see SASequences.do_load.
         self._op_paths         = set()

@@ -191,7 +191,7 @@ class Panel(ScreenPanel):
         s = self._screen
         try:
             s._menu_go_back()  # pop self (sa_post_load)
-            popup_panels = ('sa_load_unload', 'sa_post_load', 'sa_cal_prompt')
+            popup_panels = ('sa_load_unload', 'sa_post_load')
             while s._cur_panels and s._cur_panels[-1] in popup_panels:
                 s._menu_go_back()
         except Exception as e:

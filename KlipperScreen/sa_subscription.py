@@ -134,10 +134,12 @@ def _on_status(screen, *args):
             logging.info("sa_subscription: opening sa_post_load")
             GLib.idle_add(
                 screen.show_panel, "sa_post_load", "SA Action")
-        elif cal:
-            logging.info("sa_subscription: opening sa_cal_prompt")
-            GLib.idle_add(
-                screen.show_panel, "sa_cal_prompt", "SA Calibration")
+        # No branch for other cal_state values any more. Calibration prompts
+        # are emitted by the Klipper extra using Klipper's own action:prompt_*
+        # protocol, which KlipperScreen renders itself from any screen with no
+        # panel open. This watcher could never do that: it is installed from an
+        # sa_* panel's activate(), so a touchscreen sitting on its own main
+        # menu had nothing watching and missed every prompt.
         _last_cal_state = cal
 
     # entry-sensor rising edge → load/unload wizard popup (filament inserted)

@@ -41,8 +41,18 @@ class SACalibration:
 
         val = value.strip()
         if val.lower() in ('abort', 'cancel'):
+            self.close_ui_prompt(gcmd)
             self._abort(gcmd)
             return
+
+        # A +/- tap from the numeric prompt: adjust and re-ask, staying in the
+        # same phase rather than answering it.
+        if val.lower().startswith('adj:'):
+            self._numeric_adjust(gcmd, val[4:])
+            return
+
+        # A real answer closes the dialog; the next phase raises its own.
+        self.close_ui_prompt(gcmd)
 
         try:
             if state.startswith('sel_'):
@@ -90,8 +100,114 @@ class SACalibration:
     def _yes(self, value):
         return value.lower() in ('yes', 'y', '1', 'true', 'ok')
 
-    def _prompt(self, gcmd, message, *commands):
-        """Print a message with copy-paste commands clearly separated."""
+    # -- Prompts ---------------------------------------------------------------
+    #
+    # Every prompt goes out twice: as console text with copy-paste commands,
+    # and as Klipper's `action:prompt_*` protocol. That protocol is understood
+    # by KlipperScreen (screen.py -> ks_includes/widgets/prompts.py) and by
+    # Mainsail and Fluidd, so a single emission drives every UI and they cannot
+    # disagree about what is being asked.
+    #
+    # It also fixes a real defect. The KlipperScreen prompt panel was opened by
+    # a watcher installed from each sa_* panel's activate(), so a freshly
+    # started touchscreen -- sitting on its own main menu, having never been
+    # into the Autoloader menu -- had nothing watching cal_state and silently
+    # missed every prompt. A native prompt needs no panel to be open.
+
+    _BTN_LABEL = {'yes': 'YES', 'no': 'NO', 'abort': 'ABORT'}
+    _BTN_STYLE = {'yes': 'primary', 'no': 'secondary', 'abort': 'error'}
+
+    def _emit_ui_prompt(self, gcmd, title, text, buttons, footer=(),
+                        columns=None):
+        """Send one action:prompt_* sequence.
+
+        `buttons` and `footer` are (label, value, style) triples; each becomes a
+        button that runs `SA_RESPOND VALUE=<value>`.
+
+        Buttons go inside a group, which KlipperScreen renders as a Gtk.FlowBox
+        -- it re-flows to the screen width on its own, so this needs no sizing
+        of ours. `columns` splits them across several groups, and since each
+        group is its own FlowBox stacked under the last, that is how a fixed
+        grid is expressed in this protocol: columns=3 over six buttons gives a
+        2x3 grid rather than whatever one row happens to wrap to.
+        """
+        # Remember it so a dismissed dialog can be brought back -- closing
+        # the prompt does not answer the question, and the phase is still
+        # waiting.
+        try:
+            self.owner._cal_data['_ui_last'] = (
+                title, text, list(buttons), list(footer), columns)
+        except Exception:
+            pass
+
+        r = gcmd.respond_raw
+        try:
+            r("// action:prompt_end")
+            r("// action:prompt_begin %s" % title)
+            r("// action:prompt_text %s" % text)
+            if buttons:
+                step = columns if columns and columns > 0 else len(buttons)
+                for i in range(0, len(buttons), step):
+                    r("// action:prompt_button_group_start")
+                    for label, value, style in buttons[i:i + step]:
+                        r("// action:prompt_button %s|SA_RESPOND VALUE=%s|%s"
+                          % (label, value, style))
+                    r("// action:prompt_button_group_end")
+            for label, value, style in footer:
+                r("// action:prompt_footer_button %s|SA_RESPOND VALUE=%s|%s"
+                  % (label, value, style))
+            r("// action:prompt_show")
+        except Exception:
+            logging.exception("SA CAL: failed to emit UI prompt")
+
+    def close_ui_prompt(self, gcmd):
+        """Dismiss any open prompt on every UI."""
+        try:
+            gcmd.respond_raw("// action:prompt_end")
+        except Exception:
+            pass
+
+    def reraise_prompt(self, gcmd):
+        """Show the waiting phase's prompt again.
+
+        Closing a prompt dialog dismisses the window but does not answer the
+        question -- the phase is still waiting, and until this existed the
+        only way back was to know to type SA_RESPOND VALUE=abort at a console.
+        Asking for a calibration that is already running now simply puts the
+        question back on screen.
+        """
+        last = self.owner._cal_data.get('_ui_last')
+        if not last:
+            return False
+        title, text, buttons, footer, columns = last
+        self._emit_ui_prompt(gcmd, title, text, buttons, footer, columns)
+        return True
+
+    def _busy(self, gcmd):
+        """True if a calibration is already waiting; re-raises its prompt."""
+        owner = self.owner
+        if owner._cal_state is None:
+            return False
+        if self.reraise_prompt(gcmd):
+            gcmd.respond_info(
+                "SA CAL: Already at phase '%s' — prompt re-opened.\n"
+                "  Answer it, or SA_RESPOND VALUE=abort to cancel."
+                % owner._cal_state)
+        else:
+            gcmd.respond_info(
+                "SA CAL: Calibration already in progress (state=%s).\n"
+                "  SA_RESPOND VALUE=abort" % owner._cal_state)
+        return True
+
+    def _prompt(self, gcmd, message, *commands, **kw):
+        """Print a message with copy-paste commands, and raise the same
+        question on every UI.
+
+        Keyword options:
+          choices -- [(label, value), ...] for a fixed set of answers
+          numeric -- {'value': float, 'unit': str, 'steps': (...)} for a value
+                     the operator dials in; see _numeric_prompt
+        """
         self.owner._cal_prompt = message
         lines = [
             "",
@@ -102,6 +218,130 @@ class SACalibration:
             lines.append("  " + cmd)
         lines.append("")
         gcmd.respond_info("\n".join(lines))
+
+        numeric = kw.get('numeric')
+        if numeric is not None:
+            self._numeric_prompt(gcmd, message, **numeric)
+            return
+
+        choices = kw.get('choices')
+        if choices is None:
+            # Derive the answers from the commands already being printed, so
+            # every existing yes/no phase gets buttons with no edit at all. A
+            # command carrying a parenthetical is a fill-in-the-blank template
+            # rather than a real choice -- skip those.
+            choices = []
+            for cmd in commands:
+                m = re.match(r'^SA_RESPOND\s+VALUE=(\S+)\s*$', cmd.strip())
+                if not m:
+                    continue
+                val = m.group(1)
+                choices.append((self._BTN_LABEL.get(val.lower(), val.upper()),
+                                val))
+        if not choices:
+            return
+
+        # A choice may carry its own style as a third element; otherwise it
+        # falls back to the yes/no/abort mapping.
+        buttons = []
+        for c in choices:
+            if len(c) == 3:
+                buttons.append(tuple(c))
+            else:
+                lbl, val = c
+                buttons.append((lbl, val,
+                                self._BTN_STYLE.get(str(val).lower(),
+                                                    'default')))
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(), message, buttons,
+            footer=[("ABORT", "abort", "error")],
+            columns=kw.get('columns'))
+
+    _PATH_STYLE = {'loaded': 'primary', 'partial': 'info'}
+
+    def _path_choices(self):
+        """Path buttons for a "which path?" prompt.
+
+        Labelled T0..Tn to match every other surface, and coloured by what is
+        actually in the path -- a loaded path stands out from a staged one,
+        and both from an empty one -- so the choice carries the state the
+        operator needs rather than making them remember it.
+        """
+        owner  = self.owner
+        states = list(getattr(owner, 'path_states', []) or [])
+        out = []
+        for i in range(owner.num_paths):
+            st = states[i] if i < len(states) else 'unknown'
+            out.append(("T%d" % i, str(i),
+                        self._PATH_STYLE.get(st, 'secondary')))
+        return out
+
+    def _ui_title(self):
+        """Short heading for the prompt dialog, from the current phase."""
+        st = (self.owner._cal_state or '').lower()
+        if st.startswith('sel_'):
+            return "Selector Calibration"
+        if st.startswith('drv_'):
+            return "Drive Calibration"
+        if st.startswith('enc_'):
+            return "Encoder Calibration"
+        if st.startswith('bow_'):
+            return "Bowden Calibration"
+        return "Autoloader Calibration"
+
+    # -- Numeric entry without a numpad ----------------------------------------
+    #
+    # The prompt protocol has buttons and text but no text entry, so a measured
+    # value is dialled in with coarse-to-fine steps and confirmed. The value
+    # lives in _cal_data so it survives between taps, and the prompt is re-sent
+    # after each one with the running value in the text and baked into ACCEPT.
+    #
+    # This is why there is no numpad panel any more: a numpad needs a
+    # KlipperScreen panel to be open, which is exactly the failure above.
+
+    _NUM_STEPS = (10.0, 1.0, 0.1)
+
+    def _numeric_prompt(self, gcmd, message, value=0.0, unit='mm', steps=None):
+        d = self.owner._cal_data
+        d['_np_val']   = float(value)
+        d['_np_msg']   = message
+        d['_np_unit']  = unit
+        d['_np_steps'] = tuple(steps or self._NUM_STEPS)
+        self._numeric_render(gcmd)
+
+    def _numeric_render(self, gcmd):
+        d     = self.owner._cal_data
+        val   = float(d.get('_np_val', 0.0))
+        unit  = d.get('_np_unit', 'mm')
+        steps = d.get('_np_steps', self._NUM_STEPS)
+
+        buttons = []
+        for st in sorted(steps, reverse=True):
+            buttons.append(("-%g" % st, "adj:-%g" % st, 'secondary'))
+        for st in sorted(steps):
+            buttons.append(("+%g" % st, "adj:+%g" % st, 'primary'))
+
+        text = "%s\n\nCurrent: %.2f %s" % (d.get('_np_msg', ''), val, unit)
+        # One row of decrements above one row of increments -- the coarse step
+        # sits at the outside of each row, so the pair reads as a mirrored
+        # scale rather than an arbitrary line of buttons.
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(), text, buttons,
+            footer=[("ACCEPT  %.2f %s" % (val, unit), "%.4f" % val, 'primary'),
+                    ("ABORT", "abort", "error")],
+            columns=len(steps))
+
+    def _numeric_adjust(self, gcmd, delta):
+        """Apply one +/- tap and re-raise the prompt with the new value."""
+        d = self.owner._cal_data
+        if '_np_val' not in d:
+            gcmd.respond_info("SA: No value is being entered.")
+            return
+        try:
+            d['_np_val'] = max(0.0, float(d['_np_val']) + float(delta))
+        except ValueError:
+            return
+        self._numeric_render(gcmd)
 
     def _save_variable(self, key, value):
         """Write a calibration value to save_variables immediately — no restart needed."""
@@ -168,9 +408,8 @@ class SACalibration:
         sn     = owner._sel_name()
 
         if owner._cal_state is not None:
-            raise gcmd.error(
-                "SA CAL: Calibration already in progress (state=%s).\n"
-                "  SA_RESPOND VALUE=abort" % owner._cal_state)
+            self._busy(gcmd)
+            return
 
         gcmd.respond_info(
             "SA SELECTOR CALIBRATION\n"
@@ -308,9 +547,8 @@ class SACalibration:
         owner = self.owner
 
         if owner._cal_state is not None:
-            raise gcmd.error(
-                "SA CAL: Calibration already in progress (state=%s).\n"
-                "  SA_RESPOND VALUE=abort" % owner._cal_state)
+            self._busy(gcmd)
+            return
 
         if not owner._selector_homed:
             gcmd.respond_info("SA CAL: Selector not homed — homing now...")
@@ -331,7 +569,9 @@ class SACalibration:
             "Which path has filament loaded past the drive gear? (0-%d)"
             % (owner.num_paths - 1),
             "SA_RESPOND VALUE=0",
-            "SA_RESPOND VALUE=1  (etc.)")
+            "SA_RESPOND VALUE=1  (etc.)",
+            choices=self._path_choices(),
+            columns=3)
 
     def _drv_respond(self, gcmd, state, value):
         owner  = self.owner
@@ -386,7 +626,8 @@ class SACalibration:
             owner._cal_state = 'drv_meas'
             self._prompt(gcmd,
                 "Measure from the encoder exit back to your mark - that is how far the filament travelled (target: 100mm).",
-                "SA_RESPOND VALUE=100.0  (replace with actual mm)")
+                "SA_RESPOND VALUE=100.0  (replace with actual mm)",
+                numeric={'value': 100.0, 'unit': 'mm'})
 
         elif state == 'drv_meas':
             try:
@@ -468,9 +709,8 @@ class SACalibration:
         path  = gcmd.get_int('TOOL', minval=0, maxval=owner.num_paths - 1)
 
         if owner._cal_state is not None:
-            raise gcmd.error(
-                "SA CAL: Calibration already in progress (state=%s).\n"
-                "  SA_RESPOND VALUE=abort" % owner._cal_state)
+            self._busy(gcmd)
+            return
 
         if not owner._selector_homed:
             gcmd.respond_info("SA CAL: Selector not homed — homing now...")
@@ -571,7 +811,8 @@ class SACalibration:
                 "Servo engaged, drive holding. Measure from the encoder exit "
                 "back to your mark - that is how far the filament travelled "
                 "(target 100mm).",
-                "SA_RESPOND VALUE=100.0  (replace with actual mm)")
+                "SA_RESPOND VALUE=100.0  (replace with actual mm)",
+                numeric={'value': 100.0, 'unit': 'mm'})
 
         elif state.startswith('enc_meas_'):
             # Release motor torque but keep servo engaged —
@@ -749,9 +990,8 @@ class SACalibration:
         path  = gcmd.get_int('TOOL', minval=0, maxval=owner.num_paths - 1)
 
         if owner._cal_state is not None:
-            raise gcmd.error(
-                "SA CAL: Calibration already in progress (state=%s).\n"
-                "  SA_RESPOND VALUE=abort" % owner._cal_state)
+            self._busy(gcmd)
+            return
 
         if not owner._selector_homed:
             gcmd.respond_info("SA CAL: Selector not homed — homing now...")
@@ -778,7 +1018,11 @@ class SACalibration:
         self._prompt(gcmd,
             "Enter estimated Bowden tube length for path %d (mm). "
             "Over-estimate is safer — approach uses 90%% first." % path,
-            "SA_RESPOND VALUE=800  (replace with your estimate)")
+            "SA_RESPOND VALUE=800  (replace with your estimate)",
+            numeric={'value': float(owner._bowden_lengths[path]
+                                    if path < len(owner._bowden_lengths)
+                                    else 800.0),
+                     'unit': 'mm', 'steps': (100.0, 10.0, 1.0)})
 
     def _bow_respond(self, gcmd, state, value):
         owner  = self.owner
