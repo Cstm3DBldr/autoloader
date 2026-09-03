@@ -381,41 +381,48 @@ class Panel(ScreenPanel):
         # bound is still the unpadded width -- which is what leaves the
         # marker sitting off the selected chip on first open.
         if not getattr(self, '_caro_centred', False) and alloc.width > 1:
-            if self._chip_centre(self._accent_btns.get(self._selected_hex)) \
-                    is not None:
-                self._caro_centred = True
-                GLib.idle_add(self._centre_on, self._selected_hex, False)
+            self._caro_centred = True
+            GLib.idle_add(self._centre_on, self._selected_hex, False)
 
-    def _chip_centre(self, btn):
-        """x of a chip's centre inside the strip, or None if not yet laid out."""
-        if btn is None:
-            return None
-        try:
-            ok, x, _y = btn.translate_coordinates(self._strip, 0, 0)
-            if not ok:
-                return None
-            return x + btn.get_allocated_width() / 2.0
-        except Exception:
-            return None
+    def _chip_centre_at(self, n):
+        """Centre x of the nth chip in the strip.
+
+        Computed, not measured. translate_coordinates was returning nothing
+        usable for these buttons -- every snap logged "found no chip position"
+        and so did nothing, which is why stopping the strip neither settled
+        nor selected.
+
+        Computing is safe here precisely because the strip is now uniform:
+        a plain Gtk.Box of equal-width chips with one spacing between each and
+        no end spacers, so the nth chip starts at n * step. The earlier
+        arithmetic was wrong only because a leading spacer added a gap this
+        layout no longer has.
+        """
+        return n * self._chip_step + self._chip_px / 2.0
 
     def _copy_width(self):
-        """Width of one full copy of the palette, including its trailing gap."""
-        return len(_COLORS) * (self._chip_px + self._chip_gap)
+        """Width of one full copy of the palette."""
+        return len(_COLORS) * self._chip_step
 
     def _clamp_adj(self, value):
         adj = self._caro.get_hadjustment()
         top = max(adj.get_lower(), adj.get_upper() - adj.get_page_size())
         return max(adj.get_lower(), min(value, top))
 
+    def _scroll_to_n(self, n):
+        self._caro.get_hadjustment().set_value(
+            self._clamp_adj(self._chip_centre_at(n)
+                            - self._caro.get_allocated_width() / 2.0))
+
     def _rewrap(self):
         """Keep the scroll inside the middle copy.
 
         Jumping by exactly one copy width lands on an identical pixel, so the
-        strip appears endless in both directions. Without this the palette
-        would simply stop at its first and last colour.
+        strip reads as endless. Without it the palette stops at a first and a
+        last colour.
         """
-        adj  = self._caro.get_hadjustment()
-        cw   = self._copy_width()
+        adj = self._caro.get_hadjustment()
+        cw = self._copy_width()
         if cw <= 0:
             return
         v = adj.get_value()
@@ -432,39 +439,32 @@ class Panel(ScreenPanel):
         self._snap_id = GLib.timeout_add(160, self._do_snap)
 
     def _do_snap(self):
-        """Settle on whichever chip is nearest the centre marker, and take it."""
+        """Settle on the chip nearest the marker, and select it."""
         self._snap_id = None
+        if not self._chips:
+            return False
         adj   = self._caro.get_hadjustment()
         focus = adj.get_value() + self._caro.get_allocated_width() / 2.0
 
-        best = None
-        for btn, idx, hex_c, hover, active in self._chips:
-            cx = self._chip_centre(btn)
-            if cx is None:
-                continue
-            d = abs(cx - focus)
-            if best is None or d < best[0]:
-                best = (d, hex_c, hover, active, cx)
+        n = int(round((focus - self._chip_px / 2.0) / self._chip_step))
+        n = max(0, min(n, len(self._chips) - 1))
 
-        if best is None:
-            logging.warning("sa_settings: carousel snap found no chip position")
-            return False
-
-        _d, hex_c, hover, active, cx = best
-        target = self._clamp_adj(cx - self._caro.get_allocated_width() / 2.0)
+        target = self._clamp_adj(self._chip_centre_at(n)
+                                 - self._caro.get_allocated_width() / 2.0)
         if abs(adj.get_value() - target) > 0.5:
             adj.set_value(target)
+
+        _btn, _idx, hex_c, hover, active = self._chips[n]
         if hex_c != self._selected_hex:
             self._set_color(None, hex_c, hover, active)
         return False
 
     def _centre_on(self, hex_c, animate=True):
-        """Bring a colour to the centre slot, measured not computed."""
-        cx = self._chip_centre(self._accent_btns.get(hex_c))
-        if cx is None:
-            return False
-        self._caro.get_hadjustment().set_value(
-            self._clamp_adj(cx - self._caro.get_allocated_width() / 2.0))
+        """Bring a colour to the centre slot, using its middle-copy chip."""
+        for n, (btn, idx, h, hv, ac) in enumerate(self._chips):
+            if h == hex_c and n >= len(_COLORS):
+                self._scroll_to_n(n)
+                return False
         return False
 
     def _on_chip(self, widget, hex_c, hover, active, idx):
@@ -474,10 +474,10 @@ class Panel(ScreenPanel):
         tap near an edge does not jump the strip a whole palette sideways.
         """
         self._set_color(widget, hex_c, hover, active)
-        cx = self._chip_centre(widget)
-        if cx is not None:
-            self._caro.get_hadjustment().set_value(
-                self._clamp_adj(cx - self._caro.get_allocated_width() / 2.0))
+        for n, (btn, _i, _h, _hv, _ac) in enumerate(self._chips):
+            if btn is widget:
+                self._scroll_to_n(n)
+                break
         self._rewrap()
 
     def _set_color(self, widget, hex_c, hover, active):

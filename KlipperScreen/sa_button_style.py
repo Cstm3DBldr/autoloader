@@ -17,58 +17,42 @@ _last_min_h = None
 def _build_css(accent, hover, active, min_h=62):
     """Build the shared button CSS.
 
-    These buttons now look like KlipperScreen's own. Previously `.sa-btn`
-    painted the accent across the whole face, which is why the autoloader
-    pages read as a different application from the home screen -- the stock
-    panels use the theme's button surface with a coloured bottom border
-    (`button.color1` in base.css is literally
-    `border-bottom: .4em solid @color1`), and ours were solid slabs of green.
+    Sets as little as possible. base.css already styles every `button` with
+    `background-color: @bg` and the theme's radius, and `button.colorN` adds
+    nothing but `border-bottom: .4em solid @colorN` plus padding. Copying that
+    restraint is what makes these buttons sit in the theme instead of beside
+    it.
 
-    So: the surface and the label come from the theme (`@buttons`, `@text`),
-    and the ACCENT MOVES TO THE UNDERLINE. That keeps the accent picker in
-    settings meaningful -- it still colours every button -- while matching the
-    visual language of every other page. Padding matches base.css's
-    `button.colorN` so the two sit at the same rhythm.
+    An earlier version set `background: @buttons` -- a colour name that does
+    not exist. Only `material-dark` defines anything close (`buttons-bg`), so
+    GTK dropped the declaration and the buttons rendered with no surface at
+    all: an underline floating on the page background. The surface is not
+    ours to set; the theme already has one.
 
-    Still literal on purpose: `.sa-btn-warn`'s amber, because a destructive
-    action should look the same in every theme, and `.path-selected`, which
-    has to stand clear of both the accent and the theme surface.
+    The ACCENT IS THE UNDERLINE, which keeps the accent picker meaningful
+    while matching every stock panel. `.sa-btn-warn` keeps a literal amber
+    because a destructive action should read the same in any theme, and
+    `.path-selected` stays literal so a selection cue clears both the accent
+    and the surface.
     """
     return ("""
 .sa-btn, .sa-btn-alt, .sa-btn-warn, .sa-btn-nav {{
-    background: @buttons;
-    color: @text;
-    border-radius: 6px;
     padding: 0.33em;
     padding-bottom: 0.1em;
     min-width: 0px;
     min-height: {min_h}px;
 }}
-.sa-btn label, .sa-btn-alt label,
-.sa-btn-warn label, .sa-btn-nav label {{ color: @text; }}
 
-.sa-btn        {{ border-bottom: 0.28em solid {accent}; }}
-.sa-btn:hover  {{ background: mix(@buttons, @text, 0.10); }}
-.sa-btn:active {{ background: mix(@buttons, @background, 0.30); }}
-
-.sa-btn-alt        {{ border-bottom: 0.28em solid alpha(@text, 0.35); }}
-.sa-btn-alt:hover  {{ background: mix(@buttons, @text, 0.10); }}
-.sa-btn-alt:active {{ background: mix(@buttons, @background, 0.30); }}
-
-.sa-btn-warn        {{ border-bottom: 0.28em solid #E8A33D; }}
-.sa-btn-warn:hover  {{ background: mix(@buttons, #E8A33D, 0.18); }}
-.sa-btn-warn:active {{ background: mix(@buttons, @background, 0.30); }}
-
-.sa-btn-nav {{
+.sa-btn      {{ border-bottom: 0.3em solid {accent}; }}
+.sa-btn-alt  {{ border-bottom: 0.3em solid alpha(@text, 0.35); }}
+.sa-btn-warn {{ border-bottom: 0.3em solid #E8A33D; }}
+.sa-btn-nav  {{
     min-height: {nav_h}px;
-    border-bottom: 0.28em solid alpha(@text, 0.35);
+    border-bottom: 0.3em solid alpha(@text, 0.35);
 }}
-.sa-btn-nav:hover  {{ background: mix(@buttons, @text, 0.10); }}
-.sa-btn-nav:active {{ background: mix(@buttons, @background, 0.30); }}
 
 .sa-btn:disabled, .sa-btn-alt:disabled,
 .sa-btn-warn:disabled, .sa-btn-nav:disabled {{
-    background: alpha(@buttons, 0.55);
     border-bottom-color: alpha(@text, 0.18);
 }}
 .sa-btn:disabled label, .sa-btn-alt:disabled label,
