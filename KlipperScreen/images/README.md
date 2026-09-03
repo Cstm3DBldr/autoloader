@@ -60,6 +60,21 @@ cut-out needs the extra resolution to stay circular. `fill:#ffffff` matches the
 bundled z-bolt icons, which is the theme running here; `autoloader.svg` uses
 `#bebebe` and both read fine on the dark themes.
 
+### toolhead-b.svg — second candidate, undecided
+
+Drawn after looking at the reference properly. The head is not the pointed
+shield `toolhead.svg` makes it: it has a **flat wide top with 45-degree
+chamfered corners**, **vertical sides**, and the blower sits **low and
+centred** rather than mid-body.
+
+It also keeps the **Voron slashes**, which A drops. On the real head they are
+lit and sit high on the front face, clear of the fan, so at icon size they
+survive where A assumed they would not — A placed the fan higher, which is
+what would have made them collide.
+
+Both files are kept until Mike picks one. The winner becomes `toolhead.svg`
+and the other is deleted; nothing references either yet.
+
 **Not yet wired to anything.** Panels can use it immediately via
 `self._gtk.Button("toolhead", label, style)`. The calibration prompt cannot:
 KlipperScreen builds prompt buttons with `image_name=None` hard-coded
