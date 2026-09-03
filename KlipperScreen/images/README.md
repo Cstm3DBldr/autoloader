@@ -34,50 +34,41 @@ themes use.
 
 ## toolhead.svg
 
-A per-tool mark, for anywhere a specific toolhead is named — the path buttons
-on the calibration prompt, the Load/Unload rows, post-load. Drawn from the
-Dragon Burner this printer runs, so it reads as *the* toolhead rather than a
-generic hotend.
+A per-tool mark, for anywhere a specific toolhead is named — the Load/Unload
+rows, post-load, status. Chosen from five candidates after several rounds
+against photos of the real hardware.
 
-Three features carry the recognition, and they are the only three worth
-keeping at icon size:
+Tall and narrow with a **flat top**, a **blower fan** cut out of the body, and
+a **bottom that forks into two duct prongs** with the nozzle emerging between
+them. Those three carry the recognition; everything else was tried and cut.
 
-- the shield body with the two shoulder wings, which is the silhouette you
-  see across the gantry
-- the blower fan, cut out of the body with `fill-rule="evenodd"` rather than
-  drawn as a ring, so it stays a clean hole instead of turning into grey mush
-  when it is scaled down
-- the nozzle stepping down in two stages below the body
+Things deliberately not in it, each having been drawn and rejected:
 
-Deliberately left out: the Voron slashes on the front face, and the extruder
-motor on top. Both are real, and both collapse into noise below about 40 px —
-the slashes in particular sit right on top of the fan circle and fight it. The
-project already has a Voron identity elsewhere; this icon only needs to say
-"toolhead".
+- **Voron slashes.** They sit on the front face of the real head, but at 24 px
+  they land on top of the fan and turn it to mush.
+- **Pointed shoulder wings.** An earlier draft read as a shield rather than a
+  toolhead — the head is a squarish block, not an arrowhead.
+- **Bolt heads flanking the fan.** Two units across on a 64 grid is under a
+  pixel at menu size.
 
-On a 64-unit grid rather than the 24 used by `autoloader.svg`, because the fan
-cut-out needs the extra resolution to stay circular. `fill:#ffffff` matches the
-bundled z-bolt icons, which is the theme running here; `autoloader.svg` uses
-`#bebebe` and both read fine on the dark themes.
+The top corners are **chamfered by 3 units rather than square**. A true 90°
+corner sits directly above the round fan and reads ragged once scaled down;
+the chamfer still says "machined block" without that fight.
 
-### toolhead-b.svg — second candidate, undecided
+The fan is a **hole cut with `fill-rule="evenodd"`**, not a drawn ring. A ring
+at these sizes collapses into grey; a hole stays crisp.
 
-Drawn after looking at the reference properly. The head is not the pointed
-shield `toolhead.svg` makes it: it has a **flat wide top with 45-degree
-chamfered corners**, **vertical sides**, and the blower sits **low and
-centred** rather than mid-body.
+On a 64-unit grid rather than `autoloader.svg`'s 24, which the fan cut-out
+needs to stay circular. `fill:#ffffff` matches the bundled z-bolt icons, the
+theme running here.
 
-It also keeps the **Voron slashes**, which A drops. On the real head they are
-lit and sit high on the front face, clear of the fan, so at icon size they
-survive where A assumed they would not — A placed the fan higher, which is
-what would have made them collide.
+Verified through KlipperScreen's own stack before shipping — librsvg via
+GdkPixbuf at 24, 40, 56 and 64 px — because a file librsvg rejects renders as
+a blank tile with no error anywhere. See the warning above about comments.
 
-Both files are kept until Mike picks one. The winner becomes `toolhead.svg`
-and the other is deleted; nothing references either yet.
-
-**Not yet wired to anything.** Panels can use it immediately via
-`self._gtk.Button("toolhead", label, style)`. The calibration prompt cannot:
-KlipperScreen builds prompt buttons with `image_name=None` hard-coded
-(`ks_includes/widgets/prompts.py`), and Klipper's `prompt_button` protocol has
-no icon field, so getting it there needs a CSS `background-image` injected
-through a theme. See UI_AUDIT.md.
+**Not yet referenced by any panel.** Use it with
+`self._gtk.Button("toolhead", label, style)`. The calibration prompt cannot
+show it: KlipperScreen builds prompt buttons with `image_name=None`
+hard-coded (`ks_includes/widgets/prompts.py`), and Klipper's `prompt_button`
+protocol has no icon field, so getting it there needs a CSS
+`background-image` injected through a theme. See UI_AUDIT.md.
