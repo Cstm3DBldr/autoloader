@@ -58,7 +58,7 @@ _COLORS = [
 
 class Panel(ScreenPanel):
     def __init__(self, screen, title):
-        super().__init__(screen, title or "SA Settings")
+        super().__init__(screen, title or "Autoloader Settings")
         _sbs.apply()
 
         self._last_sa = {}

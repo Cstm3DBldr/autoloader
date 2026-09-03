@@ -30,7 +30,7 @@ class Panel(ScreenPanel):
     """
 
     def __init__(self, screen, title):
-        super().__init__(screen, title or "SA Action")
+        super().__init__(screen, title or "Autoloader Action")
         _sbs.apply()
 
         self._active    = False

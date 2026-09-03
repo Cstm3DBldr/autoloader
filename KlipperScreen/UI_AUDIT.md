@@ -432,5 +432,14 @@ outlined, name beneath, so palette size stops being limited by screen width.
 The guide needs the padding and its fixed 150 px Back/Next widths made
 font-derived — on a 480 px screen those two claim 300 px between them.
 
-**Still open:** whether the carousel snaps to the nearest colour on release,
-or centres a tapped neighbour.
+The carousel **snaps to the nearest colour on release** (decided). Standard
+touchscreen behaviour, and the selection is whatever sits under the outlined
+centre slot when it settles.
+
+### Panel titles
+
+Every panel titles itself **"Autoloader <thing>"**, not "SA <thing>" — Status,
+Macros, Calibration, Settings, Config, Action. "SA" meant nothing to anyone
+who had not read the source. The titlebar label is `ellipsize=END` and has
+roughly 240 px at 480x320, so a 22-character title fits without truncating.
+`sa_load_unload` already titled itself "Load / Unload" and is unchanged.

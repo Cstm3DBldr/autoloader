@@ -133,7 +133,7 @@ def _on_status(screen, *args):
             # well enough that gating it added complexity without value.
             logging.info("sa_subscription: opening sa_post_load")
             GLib.idle_add(
-                screen.show_panel, "sa_post_load", "SA Action")
+                screen.show_panel, "sa_post_load", "Autoloader Action")
         # No branch for other cal_state values any more. Calibration prompts
         # are emitted by the Klipper extra using Klipper's own action:prompt_*
         # protocol, which KlipperScreen renders itself from any screen with no

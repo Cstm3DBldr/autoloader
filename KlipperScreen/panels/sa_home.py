@@ -65,15 +65,15 @@ def _effective_state(i, states, entry, toolhead, extruder):
 
 _HERO = [
     # (label,           panel,                  panel_title,         color,    icon)
-    ("STATUS",         "sa_main",              "SA Status",         "color1", "autoloader"),
+    ("STATUS",         "sa_main",              "Autoloader Status",         "color1", "autoloader"),
     ("LOAD / UNLOAD",  "sa_load_unload",       "Load / Unload",     "color3", "load"),
 ]
 
 _UTIL = [
-    ("MACROS",         "sa_macros",            "SA Macros",         "color2", "move"),
-    ("CALIBRATION",    "sa_calibration_guide", "SA Calibration",    "color1", "settings"),
-    ("SETTINGS",       "sa_settings",          "SA Settings",       "color3", "settings"),
-    ("CONFIG",         "sa_config",            "SA Config",         "color2", "fine_tune"),
+    ("MACROS",         "sa_macros",            "Autoloader Macros",         "color2", "move"),
+    ("CALIBRATION",    "sa_calibration_guide", "Autoloader Calibration",    "color1", "settings"),
+    ("SETTINGS",       "sa_settings",          "Autoloader Settings",       "color3", "settings"),
+    ("CONFIG",         "sa_config",            "Autoloader Config",         "color2", "fine_tune"),
 ]
 
 # _UTIL_ROW_PX removed: the utility row is now row 2 of a homogeneous

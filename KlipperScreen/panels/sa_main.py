@@ -52,7 +52,7 @@ def _effective_state(i, states, entry, toolhead, extruder):
 
 class Panel(ScreenPanel):
     def __init__(self, screen, title):
-        super().__init__(screen, title or "SA Status")
+        super().__init__(screen, title or "Autoloader Status")
         self.labels = {}
         self._num_paths = 0
         self._entry_prev = []

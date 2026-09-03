@@ -28,7 +28,7 @@ _PARAMS = [
 
 class Panel(ScreenPanel):
     def __init__(self, screen, title):
-        super().__init__(screen, title or "SA Config")
+        super().__init__(screen, title or "Autoloader Config")
         _sbs.apply()
 
         self._pending    = {}   # key → new value string (staged, not yet saved)

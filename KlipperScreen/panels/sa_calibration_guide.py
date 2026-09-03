@@ -29,7 +29,7 @@ class Panel(ScreenPanel):
     """Step-by-step calibration guide — one full page per step."""
 
     def __init__(self, screen, title):
-        super().__init__(screen, title or "SA Calibration")
+        super().__init__(screen, title or "Autoloader Calibration")
         _sbs.apply()
 
         self._num_paths   = 6

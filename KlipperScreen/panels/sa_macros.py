@@ -127,7 +127,7 @@ class Panel(ScreenPanel):
     """
 
     def __init__(self, screen, title):
-        super().__init__(screen, title or "SA Macros")
+        super().__init__(screen, title or "Autoloader Macros")
         # Pass a floor derived from the framework font rather than taking the
         # module default. A CSS min-height cannot be undercut by
         # set_size_request, so the default 62 px was setting this page's
