@@ -137,7 +137,33 @@ echo "Building the snapshot branch..."
 git checkout -q -b "$BRANCH" || { echo "ERROR: could not create branch $BRANCH"; exit 1; }
 
 mkdir -p "$STAGING/extract"
-tar xzf "$STAGING/config.tar.gz" -C "$STAGING/extract"
+
+# tar exits non-zero when it cannot recreate a symlink whose target does not
+# exist on this machine -- printer_data/config has several pointing into other
+# projects (tapchanger, moonraker-timelapse, mainsail-config). Those are not
+# autoloader data and their absence is expected, so the exit status alone
+# cannot be trusted either way. Check the RESULT instead: a backup that
+# reports success while holding nothing is worse than no backup at all.
+tar xzf "$STAGING/config.tar.gz" -C "$STAGING/extract" 2>"$STAGING/tar.err" || true
+
+EXTRACTED=$(find "$STAGING/extract" -type f 2>/dev/null | wc -l)
+if [ ! -f "$STAGING/extract/config/printer.cfg" ] || [ "$EXTRACTED" -lt 5 ]; then
+    echo "ERROR: the snapshot did not extract properly -- $EXTRACTED file(s), and"
+    echo "       printer.cfg is $([ -f "$STAGING/extract/config/printer.cfg" ] && echo present || echo missing)."
+    echo "       Refusing to create a branch that would look like a good backup."
+    echo ""
+    echo "tar said:"
+    sed 's/^/  /' "$STAGING/tar.err" 2>/dev/null | head -20
+    exit 1
+fi
+
+if [ -s "$STAGING/tar.err" ]; then
+    SKIPPED=$(grep -c "Cannot create symlink" "$STAGING/tar.err" 2>/dev/null || echo 0)
+    if [ "$SKIPPED" -gt 0 ]; then
+        echo "  note: $SKIPPED symlink(s) to other projects were not recreated."
+        echo "        They point outside printer_data and are not autoloader data."
+    fi
+fi
 [ -f "$STAGING/ks.tar.gz" ] && tar xzf "$STAGING/ks.tar.gz" -C "$STAGING/extract" 2>/dev/null
 
 SRC="$STAGING/extract/config"
@@ -198,7 +224,15 @@ EOF
 git checkout -q "$ORIGINAL_BRANCH"
 
 echo ""
-echo "Done."
+SNAP_COUNT=$(find "$REPO/printer_snapshot" -type f 2>/dev/null | wc -l)
+echo "Done — $SNAP_COUNT file(s) captured."
+for must in autoloader/variables.cfg printer.cfg; do
+    if [ -f "$REPO/printer_snapshot/$must" ]; then
+        echo "  ✓ $must"
+    else
+        echo "  ✗ $must is NOT in the snapshot — treat this backup as incomplete." >&2
+    fi
+done
 echo ""
 echo "  Branch:  $BRANCH"
 echo "  Back on: $ORIGINAL_BRANCH"
