@@ -4,11 +4,15 @@
 # files). Use scripts/verify.sh to confirm everything is in place.
 
 set -e
-KLIPPER_PATH="${HOME}/klipper"
-MOONRAKER_PATH="${HOME}/moonraker"
-INSTALL_PATH="${HOME}/autoloader"
-CONFIG_DIR="${HOME}/printer_data/config"
-KS_PATH="${HOME}/KlipperScreen"
+# Overridable so the installer can be exercised against scratch directories.
+# This script writes to printer.cfg, symlinks into Klipper and restarts
+# services -- all of which need to be testable somewhere that is not a working
+# printer, or they only ever get tested on one.
+KLIPPER_PATH="${SA_KLIPPER_PATH:-${HOME}/klipper}"
+MOONRAKER_PATH="${SA_MOONRAKER_PATH:-${HOME}/moonraker}"
+INSTALL_PATH="${SA_INSTALL_PATH:-${HOME}/autoloader}"
+CONFIG_DIR="${SA_CONFIG_DIR:-${HOME}/printer_data/config}"
+KS_PATH="${SA_KS_PATH:-${HOME}/KlipperScreen}"
 
 # ── Uninstall ────────────────────────────────────────────────────────────────
 if [ "${1:-}" = "--uninstall" ]; then
@@ -50,8 +54,12 @@ fi
 if [ "$EUID" -eq 0 ]; then echo "[ERROR] Do not run as root."; exit 1; fi
 
 # ── Pull latest ──────────────────────────────────────────────────────────────
-echo "[INSTALL] Pulling latest from GitHub..."
-git -C "${INSTALL_PATH}" pull origin main
+if [ "${SA_SKIP_PULL:-0}" = "1" ]; then
+    echo "[INSTALL] Skipping git pull (SA_SKIP_PULL=1)."
+else
+    echo "[INSTALL] Pulling latest from GitHub..."
+    git -C "${INSTALL_PATH}" pull origin main
+fi
 
 # ── Symlink Klipper extras ───────────────────────────────────────────────────
 echo "[INSTALL] Symlinking Klipper extras..."
@@ -74,6 +82,11 @@ mkdir -p "${CONFIG_DIR}/autoloader"
 SA_RUN_MENU=1
 [ "${SA_NO_MENU:-}" = "1" ] && SA_RUN_MENU=0
 [ -t 0 ] || SA_RUN_MENU=0
+
+# Read the printer and pre-fill what can be read, so the menu is mostly
+# confirming rather than typing. Never fatal: a printer it cannot read still
+# gets a working menu, just with fewer answers filled in.
+python3 "${INSTALL_PATH}/installer/detect.py"     --config-dir "${CONFIG_DIR}" --answers "${SA_ANSWERS}" || true
 
 if [ "${SA_RUN_MENU}" = "1" ]; then
     echo ""
@@ -109,8 +122,14 @@ fi
 # Generation happens inside post_update.sh, which is also what Moonraker's
 # Update Manager runs -- so the install path and the update path build the
 # config exactly the same way, and there is only one of them to get right.
+# The stop. detect.py warns while the menu is open, but the option stays
+# selectable and the cost of selecting it is a printer that will not start.
+if ! python3 "${INSTALL_PATH}/installer/detect.py" --check         --config-dir "${CONFIG_DIR}" --answers "${SA_ANSWERS}"; then
+    exit 1
+fi
+
 echo "[INSTALL] Running post_update.sh (syncs files and builds your config)..."
-"${INSTALL_PATH}/post_update.sh"
+SA_REPO="${INSTALL_PATH}" SA_CONFIG="${CONFIG_DIR}" "${INSTALL_PATH}/post_update.sh"
 
 # ── Register with Moonraker Update Manager ───────────────────────────────────
 # The file the user edits. Not in the repo, so no update can reach it, and
@@ -237,6 +256,91 @@ else
     esac
 fi
 
+# ── LEDs ─────────────────────────────────────────────────────────────────────
+# The example is split in two on purpose. leds_core.cfg is entirely namespaced
+# and cannot collide with anything; leds_status.cfg holds the ten STATUS_*
+# macros that share names with the stock stealthburner_leds.cfg. Copying only
+# core is what makes "keep my existing LEDs" actually safe -- warning about the
+# collision but then installing the colliding macros anyway would be worse than
+# not offering the option.
+sa_answer() {
+    # grep + cut, deliberately not a sed regex. Writing a BRE that contains
+    # quotes and a capture group through this many layers of quoting lost the
+    # backreference, and a sed substitution whose replacement is empty still
+    # matches and prints -- so the failure was silent, and it blanked the very
+    # settings it was meant to fill in.
+    grep -m1 "^CONFIG_$1=" "${SA_ANSWERS}" 2>/dev/null |
+        cut -d= -f2- |
+        sed 's/^"//; s/"$//'
+}
+
+SA_LED_MODE="none"
+if grep -q '^CONFIG_LEDS_FULL=y' "${SA_ANSWERS}" 2>/dev/null; then
+    SA_LED_MODE="full"
+elif grep -q '^CONFIG_LEDS_FILAMENT_ONLY=y' "${SA_ANSWERS}" 2>/dev/null; then
+    SA_LED_MODE="core"
+fi
+
+if [ "${SA_LED_MODE}" != "none" ]; then
+    SA_LED_DIR="${CONFIG_DIR}/autoloader/leds"
+    SA_EX="${CONFIG_DIR}/autoloader/examples"
+    mkdir -p "${SA_LED_DIR}"
+
+    if [ -f "${SA_LED_DIR}/leds_core.cfg" ] || [ -f "${SA_LED_DIR}/leds.cfg" ]; then
+        echo "[INSTALL] Keeping your existing LED config in ${SA_LED_DIR}"
+    else
+        cp "${SA_EX}/leds_core.cfg" "${SA_LED_DIR}/"
+        # Fill in what detection found, so the copy matches this machine rather
+        # than the developer's.
+        for pair in             "led_prefix:LED_CHAIN_PREFIX"             "led_suffix:LED_CHAIN_SUFFIX"             "logo_idx:LED_LOGO_INDEX"             "nozzle_idx:LED_NOZZLE_INDEXES"; do
+            var="${pair%%:*}"; key="${pair##*:}"
+            val=$(sa_answer "${key}")
+            if [ -n "${val}" ]; then
+                sed -i "s|^variable_${var}:.*|variable_${var}: \"${val}\"|"                     "${SA_LED_DIR}/leds_core.cfg"
+            fi
+        done
+        echo "[INSTALL] Installed LED config: leds_core.cfg"
+    fi
+
+    if [ "${SA_LED_MODE}" = "full" ] && [ ! -f "${SA_LED_DIR}/leds_status.cfg" ]; then
+        cp "${SA_EX}/leds_status.cfg" "${SA_LED_DIR}/"
+        echo "[INSTALL] Installed LED config: leds_status.cfg (STATUS_* macros)"
+    fi
+
+    if [ -f "${USER_CFG}" ]; then
+        sed -i 's|^#\[include leds/\*\.cfg\]|[include leds/*.cfg]|' "${USER_CFG}"
+    fi
+    echo "[INSTALL] LEDs enabled. Verify the chain names and indexes with"
+    echo "          _SA_LED_TEST_T0 — see docs/LEDS.md."
+fi
+
+# ── printer.cfg include ──────────────────────────────────────────────────────
+if grep -q '^CONFIG_WRITE_PRINTER_CFG_INCLUDE=y' "${SA_ANSWERS}" 2>/dev/null; then
+    SA_PCFG="${CONFIG_DIR}/printer.cfg"
+    if [ ! -f "${SA_PCFG}" ]; then
+        echo "[INSTALL] No printer.cfg found — add this yourself:"
+        echo "            [include autoloader/autoloader.cfg]"
+    elif grep -qE '^\s*\[include autoloader/autoloader\.cfg\]' "${SA_PCFG}"; then
+        echo "[INSTALL] printer.cfg already includes the autoloader."
+    else
+        cp -a "${SA_PCFG}" "${SA_PCFG}.bak.$(date +%s)"
+        # Insert ABOVE the SAVE_CONFIG block. Klipper appends its saved state as
+        # "#*#" lines at the very end and rewrites that region wholesale, so an
+        # include appended after it would be destroyed on the next SAVE_CONFIG.
+        if grep -qn '^#\*# <---------------------- SAVE_CONFIG' "${SA_PCFG}"; then
+            ln=$(grep -n '^#\*# <---------------------- SAVE_CONFIG' "${SA_PCFG}"                  | head -1 | cut -d: -f1)
+            sed -i "${ln}i [include autoloader/autoloader.cfg]
+" "${SA_PCFG}"
+        else
+            printf '
+[include autoloader/autoloader.cfg]
+' >> "${SA_PCFG}"
+        fi
+        echo "[INSTALL] Added [include autoloader/autoloader.cfg] to printer.cfg"
+        echo "          (previous kept as printer.cfg.bak.*)"
+    fi
+fi
+
 echo "[INSTALL] Registering with Moonraker Update Manager..."
 mkdir -p "${HOME}/.moonraker/config/update_manager"
 cat > "${HOME}/.moonraker/config/update_manager/autoloader.ini" <<EOF
@@ -251,12 +355,24 @@ post_update_script: ${INSTALL_PATH}/post_update.sh
 EOF
 
 # ── Restart services ─────────────────────────────────────────────────────────
-echo "[INSTALL] Restarting klipper, moonraker, KlipperScreen..."
-sudo systemctl restart klipper
-sudo systemctl restart moonraker
-sudo systemctl restart KlipperScreen 2>/dev/null || true
+# Honour the menu answer rather than always restarting: a user who said no
+# wants to restart in their own time, and an automated run must not need sudo.
+if grep -q '^CONFIG_RESTART_SERVICES=y' "${SA_ANSWERS}" 2>/dev/null    && [ "${SA_SKIP_RESTART:-0}" != "1" ]; then
+    echo "[INSTALL] Restarting klipper, moonraker, KlipperScreen..."
+    sudo systemctl restart klipper
+    sudo systemctl restart moonraker
+    sudo systemctl restart KlipperScreen 2>/dev/null || true
+else
+    echo "[INSTALL] Not restarting services — do it when you are ready:"
+    echo "            sudo systemctl restart klipper moonraker KlipperScreen"
+fi
 
 echo
 echo "✓ Install complete."
-echo "  • Add [include autoloader/autoloader.cfg] to printer.cfg (if not already there)"
+if grep -qE '^\s*\[include autoloader/autoloader\.cfg\]' "${CONFIG_DIR}/printer.cfg" 2>/dev/null; then
+    echo "  • printer.cfg already includes the autoloader — nothing to add"
+else
+    echo "  • Add this line to printer.cfg, then restart Klipper:"
+    echo "        [include autoloader/autoloader.cfg]"
+fi
 echo "  • Run ${INSTALL_PATH}/scripts/verify.sh to confirm everything is in sync"

@@ -15,13 +15,29 @@ differences will stop Klipper from starting rather than merely look wrong.
 
 ---
 
-## Turning it on
+## The installer does this for you
 
-**1. Copy the example.** It lives at
-`~/printer_data/config/autoloader/examples/leds.cfg` and does nothing there.
+Run `install.sh`, pick an LED option in the menu, and it copies the right files,
+fills in your chain names, and switches the include on. It also **refuses** the
+option that would stop your printer from starting. The rest of this page is
+what it is doing and how to change it afterwards.
+
+## Doing it by hand
+
+There are two example files, split on purpose:
+
+| file | contains | collides with anything? |
+|---|---|---|
+| `leds_core.cfg` | filament colour on the logo, the animator, all the `_sa_`/`_SA_` macros | **no** — every name is namespaced |
+| `leds_status.cfg` | the ten `STATUS_*` macros | **yes** — same names as stock Voron |
+
+`leds_core.cfg` works on its own. Install `leds_status.cfg` **only** if you are
+not using `stealthburner_leds.cfg`.
+
+**1. Copy what you want.**
 
 ```bash
-mkdir -p ~/printer_data/config/autoloader/leds && cp ~/printer_data/config/autoloader/examples/leds.cfg ~/printer_data/config/autoloader/leds/
+mkdir -p ~/printer_data/config/autoloader/leds && cp ~/printer_data/config/autoloader/examples/leds_core.cfg ~/printer_data/config/autoloader/leds/
 ```
 
 `leds/` is yours. `post_update.sh` creates it and then never writes to it, so
@@ -106,12 +122,14 @@ If that finds anything other than your own copy, pick one:
 
 ### a) Keep your existing LEDs (recommended)
 
-Delete the ten `STATUS_*` macros from your copy — the "Stage 2" block. Your
-status system keeps the nozzle LEDs; the autoloader keeps the logo LED and
-paints it with the loaded filament's colour.
+Install `leds_core.cfg` only — do not copy `leds_status.cfg`. Your status
+system keeps the nozzle LEDs; the autoloader keeps the logo LED and paints it
+with the loaded filament's colour.
 
-Nothing else in the file can collide. Every other macro is prefixed `_sa_` or
-`_SA_`, and `[sa_led_animator]` is the autoloader's own section.
+This is what the installer's "Filament colour on the logo only" option does,
+and it is why the files are split rather than the docs simply telling you to
+delete a block: an instruction to delete something is an instruction people
+skip, and skipping it here means the printer will not boot.
 
 ### b) Replace them
 
