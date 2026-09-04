@@ -14,56 +14,37 @@ _provider = None
 _last_min_h = None
 
 
+# Every sa-* style rides on one of KlipperScreen's own button classes, so it
+# inherits whatever that theme gives a button -- surface, corner radius,
+# padding, pressed state. Themes differ enormously here: z-bolt's colorN sets
+# only a border colour, while colorized's also swaps the background to a
+# lighter base and rounds the corners to 1em. Hand-rolling a surface matched
+# one theme and clashed with the next.
+#
+# We override exactly one property: the bottom border colour, so the accent
+# picker still works.
+_KS_BASE = {
+    'sa-btn':      'color1',
+    'sa-btn-alt':  'color3',
+    'sa-btn-warn': 'color2',
+    'sa-btn-nav':  'color4',
+}
+
+
 def _build_css(accent, hover, active, min_h=62):
-    """Build the shared button CSS.
+    """Accent colour and touch height. Nothing else.
 
-    Sets as little as possible. base.css already styles every `button` with
-    `background-color: @bg` and the theme's radius, and `button.colorN` adds
-    nothing but `border-bottom: .4em solid @colorN` plus padding. Copying that
-    restraint is what makes these buttons sit in the theme instead of beside
-    it.
-
-    The surface is named explicitly as `@bg`, which is what base.css and
-    z-bolt both give a plain `button` (#13181C). An earlier version used
-    `@buttons`, a colour name that exists nowhere but material-dark's
-    `buttons-bg` -- GTK dropped the declaration silently and the buttons
-    rendered with no surface at all. Simply omitting the property should have
-    let base.css through, and did not, so it is stated rather than inherited:
-    naming the theme's own colour keeps it theme-tracking either way.
-
-    The ACCENT IS THE UNDERLINE, which keeps the accent picker meaningful
-    while matching every stock panel. `.sa-btn-warn` keeps a literal amber
-    because a destructive action should read the same in any theme, and
-    `.path-selected` stays literal so a selection cue clears both the accent
-    and the surface.
+    No background, no radius, no padding: those come from the theme's own
+    `button.colorN` rule, which is the whole point. Selectors are written as
+    `button.sa-btn.color1` so they carry more specificity than the theme's
+    `button.color1` and the accent actually lands.
     """
     return ("""
-.sa-btn, .sa-btn-alt, .sa-btn-warn, .sa-btn-nav {{
-    background-image: none;
-    background-color: @bg;
-    border-radius: 6px;
-    padding: 0.33em;
-    padding-bottom: 0.1em;
-    min-width: 0px;
-    min-height: {min_h}px;
-}}
+button.sa-btn.color1      {{ border-bottom-color: {accent}; }}
+button.sa-btn-warn.color2 {{ border-bottom-color: #E8A33D; }}
 
-.sa-btn      {{ border-bottom: 0.4em solid {accent}; }}
-.sa-btn-alt  {{ border-bottom: 0.4em solid alpha(@text, 0.35); }}
-.sa-btn-warn {{ border-bottom: 0.4em solid #E8A33D; }}
-.sa-btn-nav  {{
-    min-height: {nav_h}px;
-    border-bottom: 0.4em solid alpha(@text, 0.35);
-}}
-
-.sa-btn:disabled, .sa-btn-alt:disabled,
-.sa-btn-warn:disabled, .sa-btn-nav:disabled {{
-    border-bottom-color: alpha(@text, 0.18);
-}}
-.sa-btn:disabled label, .sa-btn-alt:disabled label,
-.sa-btn-warn:disabled label, .sa-btn-nav:disabled label {{
-    color: alpha(@text, 0.45);
-}}
+.sa-btn, .sa-btn-alt, .sa-btn-warn {{ min-height: {min_h}px; }}
+.sa-btn-nav {{ min-height: {nav_h}px; }}
 
 .path-selected {{ border: 3px solid #8BC34A; }}
 """.format(accent=accent, min_h=int(min_h), nav_h=int(min_h * 0.68))).encode()
@@ -122,8 +103,18 @@ def reapply(accent, hover=None, active=None):
 
 
 def make(label, style="sa-btn"):
+    """A button that is a KlipperScreen button first, ours second.
+
+    The KS class carries the theme's whole appearance; our class contributes
+    only the accent underline. Change theme and these follow it, because they
+    are not styled independently of it.
+    """
     btn = Gtk.Button(label=label)
-    btn.get_style_context().add_class(style)
+    ctx = btn.get_style_context()
+    base = _KS_BASE.get(style)
+    if base:
+        ctx.add_class(base)
+    ctx.add_class(style)
     return btn
 
 
