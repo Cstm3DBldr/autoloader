@@ -28,6 +28,14 @@ Working and verified on the printer (192.168.1.214):
   waiting slot in the rack pulses, tinted by its stored filament colour; only
   a fully loaded path goes solid.
 - **Mainsail panel** — ships as a runtime plugin on the Mainsail fork.
+- **KlipperScreen panels** — the design pass is done. All five panels are
+  rebuilt against KlipperScreen's own sizing (`content_width`/`content_height`,
+  `font_size`), fit one screen with no scrolling except settings and configured
+  values, scale with toolhead count, and follow the active theme. Buttons take
+  KlipperScreen's own `colorN` classes so a theme change carries; the autoloader
+  accent overrides only `border-bottom-color`. Titles read "Autoloader X".
+  Calibration prompts are native `action:prompt_*`, so one call serves both
+  Mainsail and KlipperScreen.
 
 ---
 
@@ -300,22 +308,24 @@ both UI bugs and any hardware faults that surface:
 Capture: anything that misreports state, any dialog that strands the user,
 any control that fires the wrong tool number.
 
-### 6. Full end-to-end test sweep — KlipperScreen, then a design pass
+### 6. Full end-to-end test sweep — KlipperScreen
 
-Same sweep on the touchscreen. Expect substantially more work here. Known
-issues already logged:
+The **design pass is complete** (see "Where things stand"). What is left here
+is the same functional sweep as item 5, driven from the touchscreen: every
+calibration, every self-test, a full load and a full unload, watching for
+behaviour that only shows on the small screen.
 
-- Numpad renders larger than the 480 px display
-- Extruder page sensor rows fall off-screen
-- Post-load menu gating is wrong (options offered that should not be)
-- Panels are not visually uniform — spacing, button heights, section headers
-  and colour usage differ panel to panel
+All four issues originally logged under this item are resolved: the numpad
+rendering past a 480 px display, sensor rows falling off the extruder page,
+post-load offering options it should not, and panels not being visually
+uniform.
 
 **Before changing any panel, read the locked-UI sections in `CLAUDE.md`.**
-`sa_load_unload.py`, `sa_home.py` and `sa_macros.py` all have user-confirmed
-canonical layouts with the reasoning recorded, including several first-render
-bugs that specific constants exist to prevent. Restore rather than redesign
-unless Mike asks for a new layout.
+`sa_load_unload.py`, `sa_home.py`, `sa_macros.py`, `sa_main.py`,
+`sa_post_load.py` and `sa_settings.py` all have user-confirmed canonical
+layouts with the reasoning recorded, including several first-render and
+first-allocation bugs that specific constants and retries exist to prevent.
+Restore rather than redesign unless Mike asks for a new layout.
 
 ### 7. Known open bugs
 
