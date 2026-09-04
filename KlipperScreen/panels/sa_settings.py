@@ -393,7 +393,9 @@ class Panel(ScreenPanel):
         # marker sitting off the selected chip on first open.
         if not getattr(self, '_caro_centred', False) and alloc.width > 1:
             self._caro_centred = True
-            GLib.idle_add(self._centre_on, self._selected_hex, False)
+            self._centre_tries = 0
+            self._centring = True
+            GLib.timeout_add(60, self._centre_initial_tick)
 
     def _chip_centre_at(self, n):
         """Centre x of the nth chip in the strip.
@@ -444,6 +446,11 @@ class Panel(ScreenPanel):
 
     def _on_caro_scroll(self, adj):
         """Snap once scrolling stops; debounced so it cannot fight a drag."""
+        if getattr(self, '_centring', False):
+            # The initial centring drives the adjustment itself; letting the
+            # snap timer chase those moves would have the two fighting over
+            # the same value while the allocation is still settling.
+            return
         self._rewrap()
         if self._snap_id is not None:
             GLib.source_remove(self._snap_id)
@@ -469,6 +476,47 @@ class Panel(ScreenPanel):
         if hex_c != self._selected_hex:
             self._set_color(None, hex_c, hover, active)
         return False
+
+    def _selected_index(self):
+        """Index of the selected colour's chip in the middle copy."""
+        for n, (btn, idx, h, hv, ac) in enumerate(self._chips):
+            if h == self._selected_hex and n >= len(_COLORS):
+                return n
+        return None
+
+    def _centre_initial_tick(self):
+        """Centre the stored colour, retrying until the scroll can reach it.
+
+        On first open the adjustment's upper bound is still being worked out
+        while the strip is allocated, so an early set_value clamps short and
+        the marker lands between two chips -- with the name label reading
+        correctly, because that comes from the stored preference rather than
+        the scroll position. One idle pass was not enough; this keeps asking
+        until the value it sets is the value that sticks.
+        """
+        self._centre_tries += 1
+        n  = self._selected_index()
+        vp = self._caro.get_allocated_width()
+        if n is None or vp <= 1:
+            keep = self._centre_tries < 25
+            if not keep:
+                self._centring = False
+            return keep
+
+        want = self._chip_centre_at(n) - vp / 2.0
+        adj  = self._caro.get_hadjustment()
+        adj.set_value(self._clamp_adj(want))
+
+        landed = abs(adj.get_value() - want) < 1.0
+        if landed or self._centre_tries >= 25:
+            if not landed:
+                logging.warning(
+                    "sa_settings: carousel could not centre %s (want %.1f, "
+                    "got %.1f, upper %.1f)", self._selected_hex, want,
+                    adj.get_value(), adj.get_upper())
+            self._centring = False
+            return False
+        return True
 
     def _centre_on(self, hex_c, animate=True):
         """Bring a colour to the centre slot, using its middle-copy chip."""
