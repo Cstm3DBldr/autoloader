@@ -27,6 +27,7 @@ PATTERN_RE=$(IFS='|'; echo "${PATTERNS[*]}")
 
 if [ -z "${LOCAL_ONLY:-}" ] && [ "$(hostname 2>/dev/null)" != "sc350" ]; then
     REMOTE="ssh $PRINTER"
+    IS_LOCAL=0
 else
     # `bash -c`, not empty. Every call site below is `$REMOTE '<one quoted
     # command>'`, which is the shape `ssh host '<cmd>'` takes -- so with REMOTE
@@ -34,6 +35,7 @@ else
     # sections died with "No such file or directory". `bash -c` has the same
     # shape as the ssh form, so both paths run identically.
     REMOTE="bash -c"
+    IS_LOCAL=1
 fi
 
 echo "Verify against: ${REMOTE:-(local)}"
@@ -53,7 +55,11 @@ if [ -n "$REMOTE" ]; then
     REPO_PARAMS="$REPO_ROOT/autoloader/parameters.cfg"
     if [ -f "$REPO_PARAMS" ]; then
         PRINTER_PARAMS=$(mktemp)
-        if scp -q "${PRINTER}:/home/pi/printer_data/config/autoloader/parameters.cfg" "$PRINTER_PARAMS" 2>/dev/null; then
+        # Copy locally when this IS the printer -- it used to scp from
+        # ${PRINTER}, i.e. the machine scp-ing from itself, so the drift check
+        # silently skipped on the one machine it matters most on. $HOME rather
+        # than /home/pi, because the ssh user is not `pi` on every build.
+        if { [ "${IS_LOCAL:-0}" = "1" ]                 && cp "$HOME/printer_data/config/autoloader/parameters.cfg"                       "$PRINTER_PARAMS" 2>/dev/null; }            || { [ "${IS_LOCAL:-0}" != "1" ]                 && scp -q "${PRINTER}:printer_data/config/autoloader/parameters.cfg"                           "$PRINTER_PARAMS" 2>/dev/null; }; then
             # Extract "key : value" lines (ignore comments + blanks), normalize whitespace
             awk -F: '!/^[[:space:]]*#/ && NF>=2 {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); split($2,a,"#"); gsub(/^[[:space:]]+|[[:space:]]+$/,"",a[1]); print $1"="a[1]}' "$PRINTER_PARAMS" | sort > "${PRINTER_PARAMS}.kv"
             awk -F: '!/^[[:space:]]*#/ && NF>=2 {gsub(/^[[:space:]]+|[[:space:]]+$/,"",$1); split($2,a,"#"); gsub(/^[[:space:]]+|[[:space:]]+$/,"",a[1]); print $1"="a[1]}' "$REPO_PARAMS"    | sort > "${PRINTER_PARAMS}.repo.kv"
