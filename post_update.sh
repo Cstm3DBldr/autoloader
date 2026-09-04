@@ -14,13 +14,49 @@
 # add it to this script AND to CLAUDE.md "Project Surface".
 
 set -e
-REPO="${HOME}/autoloader"
-CONFIG="${HOME}/printer_data/config"
+# Overridable so this can be pointed at a non-standard layout, and so the
+# script can be exercised against a scratch directory without touching a live
+# printer -- which is the only way to test the regeneration path safely.
+REPO="${SA_REPO:-${HOME}/autoloader}"
+CONFIG="${SA_CONFIG:-${HOME}/printer_data/config}"
 KS="${HOME}/KlipperScreen"
 
 echo "[POST-UPDATE] Syncing user-editable cfg + html to ${CONFIG}/autoloader/..."
 mkdir -p "${CONFIG}/autoloader"
-cp -f "${REPO}"/autoloader/*.cfg  "${CONFIG}/autoloader/"
+# Three of these files are GENERATED from your menuconfig answers, not
+# shipped: pin_aliases.cfg, hardware.cfg and parameters.cfg. Copying the repo
+# versions over them is what used to discard tuned values on every update.
+#
+# So when a saved answer file exists we copy everything else and regenerate
+# those three in refresh mode, which rebuilds them from the new templates and
+# then puts every value you had back. With no answer file -- a manual install
+# that never ran the installer -- we fall back to copying, which is the old
+# behaviour.
+SA_ANSWERS="${CONFIG}/autoloader/.autoloader-config"
+SA_GENERATED="pin_aliases.cfg hardware.cfg parameters.cfg"
+
+if [ -f "${SA_ANSWERS}" ] && [ -f "${REPO}/installer/generate.py" ]; then
+    for f in "${REPO}"/autoloader/*.cfg; do
+        base=$(basename "$f")
+        skip=0
+        for g in ${SA_GENERATED}; do
+            if [ "$base" = "$g" ]; then skip=1; fi
+        done
+        # `if`, not `[ ... ] && cp`. This script runs under `set -e`, and that
+        # form returns non-zero on every SKIPPED file -- so the first generated
+        # file would abort the whole update.
+        if [ "$skip" = "0" ]; then
+            cp -f "$f" "${CONFIG}/autoloader/"
+        fi
+    done
+    echo "[POST-UPDATE] Regenerating config from your saved answers..."
+    ( cd "${REPO}" && python3 installer/generate.py         --config "${SA_ANSWERS}"         --out "${CONFIG}/autoloader" ) || {
+            echo "[POST-UPDATE] ERROR: generation failed; your config was left alone." >&2
+            exit 1
+        }
+else
+    cp -f "${REPO}"/autoloader/*.cfg  "${CONFIG}/autoloader/"
+fi
 
 
 

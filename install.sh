@@ -65,7 +65,51 @@ echo "[INSTALL] Symlinking Moonraker component..."
 ln -sfn "${INSTALL_PATH}/moonraker/sa_moonraker.py" "${MOONRAKER_PATH}/moonraker/components/sa_moonraker.py"
 
 # ── Initial sync of non-symlinked files ──────────────────────────────────────
-echo "[INSTALL] Running post_update.sh for initial file sync..."
+# ── menuconfig ───────────────────────────────────────────────────────────────
+# Answers live with the user's config, not in the repo, so a re-run starts from
+# what they chose last time and an update cannot overwrite them.
+SA_ANSWERS="${CONFIG_DIR}/autoloader/.autoloader-config"
+mkdir -p "${CONFIG_DIR}/autoloader"
+
+SA_RUN_MENU=1
+[ "${SA_NO_MENU:-}" = "1" ] && SA_RUN_MENU=0
+[ -t 0 ] || SA_RUN_MENU=0
+
+if [ "${SA_RUN_MENU}" = "1" ]; then
+    echo ""
+    echo "[INSTALL] Opening setup. This is the same menu Klipper uses to build"
+    echo "          firmware, so it should look familiar."
+    echo ""
+    echo "            arrow keys  move            Enter  open a menu"
+    echo "            Y / N       turn on/off     ?      explain this setting"
+    echo "            Q           save and quit   Esc Esc  go back"
+    echo ""
+    printf "          Press Enter to start..."
+    read -r _ || true
+    srctree="${INSTALL_PATH}" KCONFIG_CONFIG="${SA_ANSWERS}" python3         "${HOME}/klipper/lib/kconfiglib/menuconfig.py"         "${INSTALL_PATH}/installer/Kconfig" || {
+            echo "[INSTALL] Setup cancelled — nothing was changed." >&2
+            exit 1
+        }
+else
+    if [ ! -f "${SA_ANSWERS}" ]; then
+        echo "[INSTALL] No terminal for the setup menu — writing defaults."
+        echo "          Re-run this from an interactive shell to change them,"
+        echo "          or edit ${SA_ANSWERS} by hand."
+        srctree="${INSTALL_PATH}" python3 -c "
+import sys; sys.path.insert(0, '${HOME}/klipper/lib/kconfiglib')
+import kconfiglib
+kc = kconfiglib.Kconfig('${INSTALL_PATH}/installer/Kconfig', warn=False)
+kc.write_config('${SA_ANSWERS}')
+"
+    else
+        echo "[INSTALL] Using your saved answers in ${SA_ANSWERS}"
+    fi
+fi
+
+# Generation happens inside post_update.sh, which is also what Moonraker's
+# Update Manager runs -- so the install path and the update path build the
+# config exactly the same way, and there is only one of them to get right.
+echo "[INSTALL] Running post_update.sh (syncs files and builds your config)..."
 "${INSTALL_PATH}/post_update.sh"
 
 # ── Register with Moonraker Update Manager ───────────────────────────────────
