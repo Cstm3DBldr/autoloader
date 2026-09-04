@@ -54,6 +54,20 @@ knows what manual hooks to reapply.
   the file above is what actually renders. Change both, or the change appears
   to do nothing.
 
+- **`~/printer_data/config/Toolchanger/Tool-Heads/T5.cfg`** — line 71's
+  commented `detection_pin` read `et4:PB6`, T4's pin. Corrected to `et5:PB6`
+  (2026-09-03). Still commented, so no functional change — but if tool
+  detection is ever enabled, the uncorrected line would have pointed T5 at
+  T4's board. Pre-edit file preserved as `T5.cfg.bak.<epoch>`.
+
+  Note the pins cannot simply be uncommented: `detection_pin` and
+  `[tool_probe TN] pin:` are both `etN:PB6`, and Tap already owns it, so
+  enabling detection needs a different free input plus a physical dock
+  switch. It is not a second Z endstop — `detection_pin` registers a button —
+  but it is a pin conflict. The software route avoids the question entirely:
+  `tool_probe_endstop` already identifies the mounted tool as the one probe
+  not triggered.
+
 - **`~/printer_data/config/Toolchanger/toolchanger.cfg`** — at the end
   of `[toolchanger] after_change_gcode:`, added:
   ```
