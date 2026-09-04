@@ -1,0 +1,72 @@
+choice
+    prompt "Autoloader control board"
+    default BOARD_MMB_2_0
+    help
+      The board driving the selector, drive motor, servo, encoders and entry
+      sensors. This is NOT your printer's main board and NOT a toolhead board.
+
+      If yours is not listed, pick "Other" and the installer will write a pin
+      file with every pin blank for you to fill in by hand.
+
+source "installer/boards/Kconfig.mmb_2_0"
+
+config BOARD_OTHER
+    bool "Other / not listed — write a blank pin map I will fill in"
+
+endchoice
+
+if BOARD_OTHER
+config BOARD_NAME
+    default "unknown board — pins need filling in"
+config BOARD_MAX_PATHS
+    default 32
+config ENTRY_SENSOR_POLARITY
+    default "^!"
+config TMC_SENSE_RESISTOR
+    default "0.075"
+endif
+
+# Every board file sets these; declared here so the generator can always read
+# them and so an unlisted board produces blanks rather than a parse error.
+config BOARD_NAME
+    string
+config PIN_DRIVE_STEP
+    string
+config PIN_DRIVE_DIR
+    string
+config PIN_DRIVE_ENABLE
+    string
+config PIN_DRIVE_CS
+    string
+config PIN_DRIVE_DIAG
+    string
+config PIN_SELECTOR_STEP
+    string
+config PIN_SELECTOR_DIR
+    string
+config PIN_SELECTOR_ENABLE
+    string
+config PIN_SELECTOR_CS
+    string
+config PIN_SELECTOR_DIAG
+    string
+config PIN_SELECTOR_STOP
+    string
+config PIN_SERVO
+    string
+config PIN_TMC_MISO
+    string
+config PIN_TMC_MOSI
+    string
+config PIN_TMC_SCK
+    string
+config TMC_SENSE_RESISTOR
+    string
+config PINS_ENCODER
+    string
+config PINS_ENTRY
+    string
+config ENTRY_SENSOR_POLARITY
+    string
+config BOARD_MAX_PATHS
+    int

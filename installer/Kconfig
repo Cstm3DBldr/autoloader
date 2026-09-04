@@ -1,0 +1,227 @@
+mainmenu "Autoloader setup"
+
+# Every prompt here is written for someone who has never seen this project.
+# Two rules for anything added later:
+#   1. If it can be detected, detect it and ask only for confirmation.
+#   2. If the answer does not change a generated file, it is not a question.
+
+comment "Arrow keys move, Enter opens, Y/N toggles, ? shows help, Q saves and quits"
+
+menu "1. Your printer"
+
+config NUM_PATHS
+    int "How many toolheads does the printer have?"
+    default 6
+    range 1 32
+    help
+      One filament path per toolhead. On a StealthChanger this is the number
+      of tool docks you have, whether or not all of them are built.
+
+      Every path gets its own entry sensor, its own encoder input and its own
+      Bowden length. Six is the usual StealthChanger build.
+
+config EXTRUDER_PREFIX
+    string "What are the extruders called in printer.cfg?"
+    default "extruder"
+    help
+      Klipper names the first extruder "extruder" and the rest "extruder1",
+      "extruder2" and so on. That is what a normal klipper-toolchanger setup
+      produces, so the default is almost certainly right.
+
+      Only change this if you renamed them yourself. Look for lines like
+      [extruder1] in your printer.cfg.
+
+endmenu
+
+menu "2. The autoloader board"
+
+source "installer/boards/Kconfig"
+
+choice
+    prompt "How is the board connected?"
+    default CONN_CAN
+config CONN_CAN
+    bool "CAN bus"
+    help
+      The usual choice for the MMB. You will need its CAN UUID -- the
+      installer runs Klipper's canbus_query.py and shows you what it finds,
+      so you do not have to go looking.
+config CONN_USB
+    bool "USB serial"
+endchoice
+
+config MCU_UUID
+    string "CAN UUID of the autoloader board"
+    depends on CONN_CAN
+    default "CHANGE_ME"
+    help
+      A 12-character hex string like 329ce333239a.
+
+      Leave it as CHANGE_ME if you do not know it yet -- the installer will
+      run the scan for you afterwards and tell you exactly what to paste in.
+      Klipper will refuse to start until it is a real UUID.
+
+config MCU_SERIAL
+    string "Serial device path"
+    depends on CONN_USB
+    default "/dev/serial/by-id/CHANGE_ME"
+
+endmenu
+
+menu "3. Sensors you actually have"
+
+comment "Entry sensors are required. The other two are optional but earn their keep."
+
+config HAS_EXTRUDER_SENSOR
+    bool "A sensor at each toolhead's extruder entry, before the gears?"
+    default y
+    help
+      On a BTT EBB36 this is the pin labelled for a filament sensor before
+      the extruder gears -- etN:PB5 on this project's build.
+
+      STRONGLY RECOMMENDED. Without it SA_CALIBRATE_BOWDEN cannot run, so
+      every Bowden length has to be measured by hand and typed in, and loading
+      cannot terminate on a sensor -- it has to trust the measured distance.
+
+config HAS_TOOLHEAD_SENSOR
+    bool "A sensor past the gears, just before the hotend?"
+    default y
+    help
+      etN:PB8 on this project's build.
+
+      This is what confirms filament actually reached the nozzle at the end of
+      a load, rather than the machine assuming it did because the motor turned.
+      Without it a load that slipped at the gears reports success.
+
+endmenu
+
+menu "4. Toolchanger"
+
+config HAS_TOOLCHANGER
+    bool "Is this a toolchanger printer (klipper-toolchanger)?"
+    default y
+    help
+      Say yes for a StealthChanger or any build using klipper-toolchanger,
+      including the klipper-toolchanger-easy fork. The autoloader uses it to
+      switch to a toolhead before loading it.
+
+      Say no only for a single fixed toolhead.
+
+config ADD_TOOLCHANGE_LED_HOOK
+    bool "Refresh the LEDs after every toolchange?"
+    depends on HAS_TOOLCHANGER && !LEDS_NONE
+    default y
+    help
+      Adds one line to your toolchanger's after_change_gcode so docked heads
+      show their filament colour and the mounted one goes solid.
+
+      The installer will NOT edit your toolchanger config itself. It prints the
+      exact line and where to put it, because on a klipper-toolchanger-easy
+      install that file is a symlink into that project's git checkout and
+      editing it would break their next update.
+
+endmenu
+
+menu "5. Toolhead status LEDs"
+
+comment "Optional. Nothing in loading, unloading or calibration needs LEDs."
+
+choice
+    prompt "How much of the LED behaviour do you want?"
+    default LEDS_NONE
+    help
+      The installer checks whether you already have stealthburner_leds.cfg and
+      will not offer an option that would stop Klipper from starting.
+
+config LEDS_NONE
+    bool "None -- leave my LEDs alone"
+    help
+      The safe default. You can turn LEDs on later by uncommenting one line in
+      user.cfg; nothing has to be reinstalled.
+
+config LEDS_FILAMENT_ONLY
+    bool "Filament colour on the logo only"
+    help
+      Your existing status LEDs keep the nozzle. The autoloader paints only
+      the Voron logo, with the colour of the filament loaded in that path.
+
+      Choose this if you already run stealthburner_leds.cfg and it works.
+      Nothing collides: everything installed is namespaced.
+
+config LEDS_FULL
+    bool "Full -- replace my existing status LEDs"
+    help
+      Installs both the filament colour and ten STATUS_* macros covering
+      ready, printing, heating, homing, levelling, meshing, cleaning,
+      calibrating and off.
+
+      These have the SAME NAMES as the ones in the stock Voron
+      stealthburner_leds.cfg. You must stop including that file, or Klipper
+      will refuse to start with "gcode command STATUS_READY already
+      registered".
+endchoice
+
+if !LEDS_NONE
+
+config LED_CHAIN_PREFIX
+    string "LED chain name, the part before the tool number"
+    default "et"
+    help
+      The autoloader looks for one LED chain per toolhead, named
+      <prefix><number><suffix>. With "et" and "_leds" that is et0_leds,
+      et1_leds and so on.
+
+      Find yours with:  grep -rn "^\[neopixel" ~/printer_data/config/
+
+      A stock StealthBurner build has ONE chain called sb_leds. If you have a
+      single shared chain rather than one per toolhead, per-toolhead filament
+      colour is not possible -- choose "None" above.
+
+config LED_CHAIN_SUFFIX
+    string "LED chain name, the part after the tool number"
+    default "_leds"
+
+config LED_LOGO_INDEX
+    string "Which LED in the chain is the Voron logo?"
+    default "3"
+    help
+      Chain-relative, counting from 1.
+
+      Stock Voron wiring puts the logo at 1 and the nozzle at 2,3. This
+      project's build is wired in reverse -- logo 3, nozzle 1,2 -- so do not
+      assume. After installing, run _SA_LED_TEST_T0 to light them one at a
+      time and see which is which.
+
+config LED_NOZZLE_INDEXES
+    string "Which LEDs are the nozzle? (comma separated)"
+    default "1,2"
+
+endif
+
+endmenu
+
+menu "6. What the installer is allowed to touch"
+
+config WRITE_PRINTER_CFG_INCLUDE
+    bool "Add the include line to printer.cfg for me?"
+    default y
+    help
+      Adds [include autoloader/autoloader.cfg] to your printer.cfg if it is
+      not already there, after taking a timestamped backup.
+
+      Say no to do it yourself; the installer will print the line.
+
+config REGISTER_UPDATE_MANAGER
+    bool "Register with Moonraker's Update Manager?"
+    default y
+    help
+      Puts an Update button in Mainsail/Fluidd for this project.
+
+config RESTART_SERVICES
+    bool "Restart Klipper, Moonraker and KlipperScreen when finished?"
+    default y
+    help
+      Needs your sudo password. Say no if you would rather restart them
+      yourself.
+
+endmenu
