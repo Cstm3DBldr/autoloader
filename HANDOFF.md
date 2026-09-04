@@ -369,80 +369,17 @@ Restore rather than redesign unless Mike asks for a new layout.
 
 ## Research brief — filament colour database refresh
 
-**Goal:** find filament colours released by brands already in the database
-that are missing from it, and return them in the exact schema below.
+Moved to **`docs/FILAMENT_REFRESH_BRIEF.md`** — a self-contained handoff a
+research agent can work from without the repo. It carries the schema, the
+sourcing rules, and a full inventory of all 893 existing colours so the agent
+can tell missing from present. Regenerate it from `filaments/brands/*.cfg` if
+the database changes; the inventory appendix is generated, not hand-written.
 
-**Repo path:** `filaments/brands/*.cfg`
+Two gaps to close, not one:
 
-**Current coverage** (product lines / colours):
-
-| File | Product lines | Colours |
-|---|---|---|
-| `polymaker_panchroma.cfg` | 23 | 210 |
-| `polymaker.cfg` | 12 | 81 |
-| `bambulabs.cfg` | 9 | 74 |
-| `esun.cfg` | 8 | 64 |
-| `inland.cfg` | 7 | 59 |
-| `creality.cfg` | 8 | 56 |
-| `overture.cfg` | 6 | 55 |
-| `zyltech.cfg` | 6 | 43 |
-| `prusament.cfg` | 6 | 40 |
-| `hatchbox.cfg` | 4 | 38 |
-| `sunlu.cfg` | 5 | 38 |
-| `colorfabb.cfg` | 8 | 36 |
-| `voxelpla.cfg` | 6 | 36 |
-| `amolen.cfg` | 6 | 34 |
-| `fiberon.cfg` | 4 | 29 |
-
-**Known gap:** Polymaker Panchroma Matte PLA has 38 colours recorded. Mike
-believes the line has released colours beyond these, and that other lines are
-likely stale too. Current Matte entries:
-
-Charcoal Black, Cotton White, Muted White, Ash Grey, Fossil Grey, Army Beige,
-Pastel Peanut, Wood Brown, Army Brown, Earth Brown, Pastel Peach, Sunrise
-Orange, Muted Red, Lava Red, Army Red, Pastel Watermelon, Lotus Pink, Sakura
-Pink, Pastel Candy, Lavender Purple, Muted Purple, Electric Indigo, Army
-Purple, Pastel Periwinkle, Sky Blue, Pastel Ice, Arctic Teal, Sapphire Blue,
-Muted Blue, Army Blue, Savannah Yellow, Pastel Banana, Army Light Green, Lime
-Green, Pastel Mint, Muted Green, Forest Green, Army Dark Green
-
-**Required output format** — one block per colour, appended under the correct
-existing `[sa_product_line]`:
-
-```
-[sa_color <product_line_key>.<color_key>]
-product_line: <product_line_key>
-color_name: <Manufacturer's exact colour name>
-color_hex: #RRGGBB
-```
-
-`<color_key>` is lowercase snake_case of the colour name. If a whole product
-line is missing, add it in the existing shape:
-
-```
-[sa_product_line <key>]
-brand: <brand key>
-display_name: <Manufacturer's exact line name>
-material: PLA | PETG | ABS | ASA | TPU | …
-description: <one line>
-load_temp: <°C>
-unload_temp: <°C>
-purge_speed: 5
-purge_length: 30
-bed_temp: <°C>
-```
-
-**Rules:**
-
-1. **Hex codes must come from the manufacturer** — their own swatch, product
-   page, or official spec sheet. Do not eyeball a hex from a product photo;
-   lighting makes those wrong, and these values drive physical LEDs.
-2. **Cite a source URL for every colour added.** No claim without a citation.
-3. Use the manufacturer's exact colour name, including accents and ™.
-4. Flag any colour you cannot find a first-party hex for, rather than guessing.
-5. Note discontinued colours separately — do not delete anything unilaterally.
-6. Temperatures should come from the manufacturer's published range; if a line
-   gives a range, take the midpoint and say so.
-
-**Deliverable:** a per-brand list of additions in the schema above, plus a
-short summary of which lines were already complete.
+1. Colours released since the database was built. Polymaker Panchroma Matte is
+   the known-stale line; assume others are too.
+2. **Multi-colour entries stored as single hexes.** The loader has supported
+   `color_type` / `color_hex_2` / `color_hex_3` all along and not one of the 893
+   entries uses them, so every dual-tone and tri-colour filament in the database
+   is currently flattened to one hex.
