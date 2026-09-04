@@ -28,7 +28,12 @@ PATTERN_RE=$(IFS='|'; echo "${PATTERNS[*]}")
 if [ -z "${LOCAL_ONLY:-}" ] && [ "$(hostname 2>/dev/null)" != "sc350" ]; then
     REMOTE="ssh $PRINTER"
 else
-    REMOTE=""
+    # `bash -c`, not empty. Every call site below is `$REMOTE '<one quoted
+    # command>'`, which is the shape `ssh host '<cmd>'` takes -- so with REMOTE
+    # empty the quoted string became the command NAME and the log-scanning
+    # sections died with "No such file or directory". `bash -c` has the same
+    # shape as the ssh form, so both paths run identically.
+    REMOTE="bash -c"
 fi
 
 echo "Verify against: ${REMOTE:-(local)}"
@@ -113,7 +118,7 @@ echo
 
 # ── Symlinks ─────────────────────────────────────────────────────────────────
 echo "── Klipper extras symlinks ──"
-$REMOTE 'for f in autoloader.py sa_motion.py sa_sequences.py sa_calibration.py sa_encoder.py; do
+$REMOTE 'for f in autoloader.py sa_motion.py sa_sequences.py sa_calibration.py sa_encoder.py sa_led_animator.py; do
     p="$HOME/klipper/klippy/extras/$f"
     if [ -L "$p" ] && [ -e "$p" ]; then
         printf "  ✓ %-22s -> %s\n" "$f" "$(readlink "$p")"
