@@ -456,7 +456,8 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_ENCODER_WATCH [TOOL=N] [DURATION=30] [INTERVAL=0.5]` | Live encoder delta stream |
 | `SA_RESPOND VALUE=x` | Advance active calibration to next phase |
 | `SA_SET_STATE TOOL=N STATE=<state>` | Override path state (loaded/empty/partial/unknown) |
-| `SA_FORM_TIP TOOL=N [PUSH=] [SEVER=] [COOL_POS=] [COOL_LEN=] [COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=]` | Run only the tip-forming sequence, for tuning. Overrides are inline so no SAVE_CONFIG or restart is needed between attempts. Leaves the tip past the gears — pull from the entry side and measure |
+| `SA_FORM_TIP TOOL=N [MATERIAL=] [PUSH=] [SEVER=] [COOL_POS=] [COOL_LEN=] [COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=]` | Run only the tip-forming sequence, for tuning. Overrides are inline so no SAVE_CONFIG or restart is needed between attempts. `MATERIAL=` applies a material's row from the per-material tip table without that spool being loaded, so a material can be tuned with whatever filament is to hand. Leaves the tip past the gears — pull from the entry side and measure |
+| `SA_RESTORE_PROFILE TOOL=N` | Put back the filament profile a wipe removed. Deliberately manual — a profile is a claim about what is physically in the path, and only the operator can confirm the same spool went back in. Refuses if the path already carries a profile |
 | `SA_SET_MATERIAL TOOL=N MATERIAL=… BRAND=… LINE=… COLOR_NAME=… COLOR_HEX=… LOAD_TEMP=… UNLOAD_TEMP=… PURGE_SPEED=… PURGE_LENGTH=…` | Store filament profile for a path; consumed by load sequence and exposed via web/touchscreen UIs |
 
 ### Load Sequence
@@ -651,6 +652,19 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   `filament_present` before that check returns, so the edge is consumed
   and never re-fires: two spools inserted in quick succession lost the
   second park outright.
+- Do not make `SA_RESTORE_PROFILE` automatic. Restoring a stashed profile on
+  re-insertion is right when the same spool goes back in and dangerous when a
+  different one does — the machine would report red PLA while holding blue PETG
+  and heat to PLA's temperatures for it. The monitor announces that a stash
+  exists; the operator confirms.
+- Do not treat the untuned rows in the per-material tip table as calibrated.
+  Only the PLA row is measured. Every other row is that material's typical
+  print temperature offset by PLA's measured deltas, which assumes the deltas
+  transfer between polymer families — they may not, since the shear temperature
+  depends on glass transition. The table is labelled accordingly; keep it so.
+- Do not run `scripts/klipper_service_restart.sh` from a dev machine without
+  `SA_HOST` set. It posts to `localhost:7125`, which is the printer only when
+  the script runs there.
 - Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin is always `^!autoloader:SA_SELECTOR_STOP`.
 
 ## Console Output Rules

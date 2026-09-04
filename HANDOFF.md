@@ -44,29 +44,25 @@ Working and verified on the printer (192.168.1.214):
 Ordered roughly by value. Items 1–3 are features; 4–5 are the test sweep;
 6 is the bug list.
 
-### 1. Tip forming should follow the loaded filament profile
+### 1. ~~Tip forming should follow the loaded filament profile~~ — BUILT
 
-Tip forming currently uses one global `tip_form_temp` (165 °C) regardless of
-what is in the path. ASA, PETG, PLA and TPU all want different shear
-temperatures, and the profile system already carries per-path data that the
-tip sequence ignores.
+Any `tip_form_<name>` can carry a per-material variant —
+`tip_form_shear_temp_asa`, `tip_form_temp_petg` — and the loaded profile's own
+`material` string selects the row. Resolution order is `SA_FORM_TIP` override →
+per-material row → the tuned globals, so a material with no row forms exactly
+as it did before. `SA_FORM_TIP MATERIAL=ASA` applies a row without that spool
+being loaded, so a material can be tuned with whatever is to hand.
 
-- Profiles already store `path_load_temps[]` and `path_unload_temps[]` per
-  path (`SA_SET_MATERIAL … LOAD_TEMP= UNLOAD_TEMP=`).
-- `form_tip()` in `klipper/extras/sa_sequences.py` reads config through an
-  override-aware `cfg()` helper — the hook for per-path values goes there.
-- Decide whether the shear temp is derived (e.g. `unload_temp − N`) or stored
-  explicitly per material. Deriving it from data already in the profile is
-  cheaper and avoids a migration; a per-material table is more honest, since
-  the offset almost certainly is not constant across PLA and ASA.
-- `TIP_FORM_TEMP_FLOOR = 150.0` in `autoloader.py` is a hard floor tuned for
-  PLA. It will be wrong for high-temp materials — make it per-material too.
-- The `filaments/brands/*.cfg` schema has no tip-forming fields yet. Adding
-  `shear_temp` / `shear_speed` to `[sa_product_line]` is the natural home.
-
-**Watch out:** `min_extrude_temp` is 180 on every toolhead and blocks all E
-moves. `_allow_cold_extrude()` / `_restore_extrude_floor()` already exist for
-this and must wrap any new cold move.
+**Only the PLA row is measured.** It repeats the tuned globals. Every other row
+is that material's typical print temperature offset by the deltas the PLA
+measurement produced (ram = print − 48, shear = print − 63), and that those
+deltas transfer between polymer families is an assumption — the temperature at
+which filament fractures rather than stretches follows glass transition, which
+PLA (~60 °C) and ASA (~105 °C) do not share. **The table needs tuning per
+material before it can be trusted.** PETG and TPU are the ones to distrust
+most: PETG is the classic stringer, and TPU may never go stiff enough to shear
+at all — if it stretches, set `tip_form_shear_temp_tpu: 0` to put it back on
+the sever/ease/cooling-move path.
 
 ### 2. Filament colour database refresh (research task)
 
@@ -334,10 +330,23 @@ Restore rather than redesign unless Mike asks for a new layout.
 | Unload retract slips | In `do_unload`, the `toolhead:N + extruder:Y` branch retracts with the drive motor only and never syncs the extruder. Measured 40 mm driven vs 5–11 mm at the encoder. |
 | `Timer too close` | 6 events, 4 on `et0`. CAN link is clean (`bytes_retransmit=0`, `srtt` 0.001–0.002, zero bus errors). All six toolheads share identical MAX31865 SPI config. Confound: nearly every test ran on T0. A clean T1 run since suggests `et0` is the marginal board, but this is not yet conclusive. |
 | Coloured pulses read dim | The logo pulse runs through the locked gamma pipeline, so a mid-tone colour peaks around 0.13 while white peaks at 0.38. Correct hue, uneven apparent brightness across the rack. Normalising is a design decision Mike has not made. |
-| Profile wipe is destructive | A 10 s entry-sensor dropout permanently wipes brand/colour/material with no undo. Observed once on T0 (cause not established — possibly a physical pull during testing). Consider a longer `runout_timeout`, or keeping the last profile recoverable. |
 | Active tool has three disagreeing sources | After a firmware restart `toolchanger.status` is `uninitialized` (`tool_number: -1`), `tool_probe_endstop.active_tool_number` reports the physically mounted tool, and `toolhead.extruder` resets to `extruder` (T0). Observed live: toolchanger uninitialized, probe says T1, toolhead says T0. **E moves in this state drive T0's extruder while T1 is on the carriage.** The Mainsail panel derives ACTIVE TOOL from `toolhead.extruder` (`AutoloaderPanel.vue:1693`) so it silently shows T0; the LED animator uses `tool_probe_endstop` so it shows T1. Fix has two parts: show the physically mounted tool, and surface `toolchanger.status == uninitialized` as a warning rather than guessing. Remedy for the operator is `INITIALIZE_TOOLCHANGER`, which nothing currently prompts for. |
 | T2 logo LED | Not lighting. Hardware, not yet diagnosed. |
 | Encoder housing | Needs a reprint. |
+
+### 7a. Fixed since this list was written
+
+- **Profile wipe is no longer destructive.** A wipe now stashes the profile
+  first, to `sa_lastprofile_<N>` in the variables file, so it survives a
+  restart. `SA_RESTORE_PROFILE TOOL=N` puts it back and refuses to overwrite a
+  path that already carries one. When a path with no profile sees filament
+  again, the monitor says once that a stash exists and why it was cleared.
+  Restoring is deliberately manual: automatic restore is right when the same
+  spool goes back in and actively dangerous when a different one does — the
+  machine would claim red PLA while holding blue PETG and heat for PLA.
+  Verified end to end on the printer through the real `material_select_timeout`
+  path. The underlying 10 s `runout_timeout` is unchanged — this makes the wipe
+  recoverable rather than making it rarer.
 
 ### 8. Worth doing, not yet requested
 

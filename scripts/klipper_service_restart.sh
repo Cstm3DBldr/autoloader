@@ -3,7 +3,8 @@
 # extras (FIRMWARE_RESTART does not — it only re-parses cfg).
 #
 # Usage:
-#   bash ~/autoloader/scripts/klipper_service_restart.sh
+#   bash ~/autoloader/scripts/klipper_service_restart.sh        # on the printer
+#   SA_HOST=192.168.1.214 bash scripts/klipper_service_restart.sh   # from a dev box
 #
 # Why this exists:
 #   FIRMWARE_RESTART is the Klipper-internal restart command. It re-reads

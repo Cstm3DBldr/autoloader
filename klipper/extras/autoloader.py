@@ -47,6 +47,7 @@ if _extras_dir not in sys.path:
     sys.path.insert(0, _extras_dir)
 
 import logging
+import re
 import configparser
 from sa_motion      import SAMotion
 from sa_sequences   import SASequences
@@ -60,6 +61,18 @@ class Autoloader:
     # Hard floor for SA_FORM_TIP's min_extrude_temp override. Below roughly
     # this the extruder strips the filament rather than moving it.
     TIP_FORM_TEMP_FLOOR = 150.0
+
+    # Every tip_form_* value that may carry a per-material variant, longest
+    # name first. The order matters: matched shortest-first,
+    # tip_form_shear_temp_asa would resolve against 'temp' with a material of
+    # 'shear', which is silently wrong rather than an error.
+    TIP_FORM_BASES = tuple(sorted((
+        'temp', 'push_length', 'push_speed', 'heatbreak_dist',
+        'heatbreak_speed', 'retract_speed', 'slow_speed', 'dwell',
+        'sever_dist', 'cooling_pos', 'cooling_len', 'cooling_moves',
+        'cool_speed_in', 'cool_speed_out', 'shear_temp', 'shear_speed',
+        'shear_timeout',
+    ), key=len, reverse=True))
 
 
     # ── Path states ───────────────────────────────────────────────────────────
@@ -198,6 +211,16 @@ class Autoloader:
         self.tip_form_shear_speed    = config.getfloat('tip_form_shear_speed',     3.0)
         self.tip_form_shear_timeout  = config.getfloat('tip_form_shear_timeout', 180.0)
 
+        # Per-material tip forming. Any tip_form_<name> may be given a
+        # <MATERIAL> variant -- tip_form_shear_temp_asa, tip_form_temp_petg --
+        # and the loaded profile's own material string selects it. Values above
+        # stay the fallback, so a printer that configures nothing per material
+        # behaves exactly as before.
+        self.tip_form_by_material = self._parse_tip_form_materials(config)
+        if self.tip_form_by_material:
+            logging.info("Autoloader: per-material tip values for %s",
+                         ", ".join(sorted(self.tip_form_by_material)))
+
         # ── Parking sequence ──────────────────────────────────────────────────
         # Common: where the filament tip ends up + the speed of the final move.
         self.park_offset                 = config.getfloat('park_offset',                  5.0)
@@ -253,6 +276,10 @@ class Autoloader:
         self.path_unload_temps  = [self.load_temperature - 15.] * self.num_paths
         self.path_purge_speeds  = [5.0]                         * self.num_paths
         self.path_purge_lengths = [self.purge_length]           * self.num_paths
+
+        # Profiles a wipe removed, kept so the removal is recoverable.
+        self._stashed_profiles = {}
+        self._stash_announced  = set()
 
         # SA_RESPOND mailbox (used by calibration routines)
         self._pending_response = None
@@ -449,6 +476,12 @@ class Autoloader:
                             "entry sensor detected filament")
                         self._queue_led_refresh(i)
                         self._queue_park(i)
+
+                    # Filament is here but the slot has no profile. If a wipe
+                    # took one, say so once -- the operator is standing at the
+                    # machine with the spool in hand, which is the only moment
+                    # they can confirm whether it is the same one.
+                    self._announce_stash(i)
                 else:
                     # Sensor clear. Two different clocks run here:
                     #
@@ -629,6 +662,56 @@ class Autoloader:
             logging.exception(
                 "Autoloader: failed to persist variables (suppressed)")
 
+    @staticmethod
+    def _material_key(material):
+        """Normalise a material name into a config-option key.
+
+        The filament database carries names like 'PA-CF' and 'coPETG', while
+        configparser lowercases option names and a hyphen reads badly in one.
+        Both sides collapse to lowercase with runs of non-alphanumerics as
+        single underscores, so 'PA-CF', 'pa_cf' and 'Pa Cf' all name the same
+        material and the config file can be written the obvious way.
+        """
+        return re.sub(r'[^a-z0-9]+', '_',
+                      (material or '').strip().lower()).strip('_')
+
+    def _parse_tip_form_materials(self, config):
+        """Collect tip_form_<name>_<MATERIAL> options into {material: {name: v}}."""
+        table = {}
+        for opt in config.get_prefix_options('tip_form_'):
+            rest = opt[len('tip_form_'):]
+            for base in self.TIP_FORM_BASES:
+                if not rest.startswith(base + '_'):
+                    continue
+                mat = self._material_key(rest[len(base) + 1:])
+                if mat:
+                    table.setdefault(mat, {})[base] = config.getfloat(opt)
+                break
+        return table
+
+    def tip_form_overrides(self, path, material=None):
+        """Tip-form values for a path's material, and a line saying where from.
+
+        Returns (dict, note). The dict is empty whenever nothing material
+        specific applies, which leaves the tuned globals in force -- an
+        unrecognised material forms the same tip it always did rather than
+        being refused or guessed at.
+        """
+        if material is None:
+            material = self.path_materials[path] or ''
+        material = (material or '').strip()
+        key = self._material_key(material)
+        if not key:
+            return {}, ("T%d has no filament profile — forming with the "
+                        "global tip values." % path)
+        vals = self.tip_form_by_material.get(key)
+        if not vals:
+            return {}, ("no tip values configured for %s — forming with the "
+                        "global tip values." % material)
+        return dict(vals), ("%s tip values — %s" % (
+            material,
+            ", ".join("%s=%g" % (k, v) for k, v in sorted(vals.items()))))
+
     def _has_material_profile(self, path):
         """True if path carries a user-selected filament profile.
 
@@ -641,6 +724,115 @@ class Autoloader:
                     or (self.path_brands[path]     or '').strip()
                     or (self.path_color_hexes[path] or '').strip())
 
+    def _profile_dict(self, path):
+        """The stored profile for one path, as a plain dict."""
+        return {
+            'material':     self.path_materials[path],
+            'brand':        self.path_brands[path],
+            'product_line': self.path_product_lines[path],
+            'color_name':   self.path_color_names[path],
+            'color_hex':    self.path_color_hexes[path],
+            'color_type':   self.path_color_types[path],
+            'color_hex2':   self.path_color_hex2s[path],
+            'color_hex3':   self.path_color_hex3s[path],
+            'load_temp':    float(self.path_load_temps[path]),
+            'unload_temp':  float(self.path_unload_temps[path]),
+            'purge_speed':  float(self.path_purge_speeds[path]),
+            'purge_length': float(self.path_purge_lengths[path]),
+        }
+
+    def _profile_label(self, prof):
+        """A human-readable one-liner for a stashed profile."""
+        # Brand, line and material overlap constantly -- "Polymaker" +
+        # "PolyLite ASA" + "ASA" reads as "Polymaker PolyLite ASA ASA". Keep
+        # each part only when it is not already spelled out by another, in
+        # either direction, so the longer name wins and the redundant one goes.
+        bits = []
+        for b in (prof.get('brand'), prof.get('product_line'),
+                  prof.get('material')):
+            b = (b or '').strip()
+            if not b or any(b.lower() in k.lower() for k in bits):
+                continue
+            bits = [k for k in bits if k.lower() not in b.lower()]
+            bits.append(b)
+        name = " ".join(bits) or "unnamed profile"
+        colour = (prof.get('color_name') or '').strip()
+        return "%s%s" % (name, (" — %s" % colour) if colour else "")
+
+    def _stash_profile(self, path, reason=""):
+        """Keep one path's profile aside so a wipe is recoverable.
+
+        Stored as a single dict rather than twelve more variables: the
+        variables file holds repr() of each value, and one dict of strings and
+        floats round-trips through that safely while keeping the file readable.
+        """
+        prof = self._profile_dict(path)
+        prof['cleared_because'] = reason or "no reason given"
+        self._stashed_profiles[path] = prof
+        self._stash_announced.discard(path)
+        self._persist_variables({'sa_lastprofile_%d' % path: prof})
+        logging.info("Autoloader: stashed profile on path %d (%s)",
+                     path, self._profile_label(prof))
+
+    def _cmd_restore_profile(self, gcmd):
+        """SA_RESTORE_PROFILE TOOL=N — put back the profile a wipe removed.
+
+        Deliberately not automatic. Restoring on its own would be right when
+        the same spool goes back in and actively dangerous when a different one
+        does: the machine would report red PLA while holding blue PETG and heat
+        to PLA temperatures for it. A profile is a claim about what is
+        physically in the path, and only the operator can confirm that claim,
+        so this asks rather than assumes.
+        """
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        prof = self._stashed_profiles.get(path)
+        if not prof:
+            gcmd.respond_info(
+                "SA: T%d has no stashed profile to restore." % path)
+            return
+        if self._has_material_profile(path):
+            gcmd.respond_info(
+                "SA: T%d already carries a profile (%s). Refusing to overwrite "
+                "it — clear it first if the stashed %s is the right one."
+                % (path, self._profile_label(self._profile_dict(path)),
+                   self._profile_label(prof)))
+            return
+
+        self.gcode.run_script_from_command(
+            "SA_SET_MATERIAL TOOL=%d MATERIAL=\"%s\" BRAND=\"%s\" LINE=\"%s\" "
+            "COLOR_NAME=\"%s\" COLOR_HEX=\"%s\" COLOR_TYPE=\"%s\" "
+            "COLOR_HEX_2=\"%s\" COLOR_HEX_3=\"%s\" LOAD_TEMP=%.1f "
+            "UNLOAD_TEMP=%.1f PURGE_SPEED=%.1f PURGE_LENGTH=%.1f"
+            % (path, prof.get('material', ''), prof.get('brand', ''),
+               prof.get('product_line', ''), prof.get('color_name', ''),
+               prof.get('color_hex', ''), prof.get('color_type', 'single'),
+               prof.get('color_hex2', ''), prof.get('color_hex3', ''),
+               float(prof.get('load_temp', self.load_temperature)),
+               float(prof.get('unload_temp', self.load_temperature - 15.)),
+               float(prof.get('purge_speed', 5.0)),
+               float(prof.get('purge_length', self.purge_length))))
+        gcmd.respond_info("SA: T%d profile restored — %s"
+                          % (path, self._profile_label(prof)))
+
+    def _announce_stash(self, path):
+        """Tell the operator a wiped profile is still recoverable.
+
+        Fired when a path with no profile sees filament again. Said once per
+        stash, because the alternative is a line on every sensor bounce.
+        """
+        prof = self._stashed_profiles.get(path)
+        if not prof or self._has_material_profile(path):
+            return
+        if path in self._stash_announced:
+            return
+        self._stash_announced.add(path)
+        self.gcode.respond_info(
+            "SA: T%d has filament but no profile. The last one (%s) was cleared "
+            "because %s — SA_RESTORE_PROFILE TOOL=%d puts it back, if that is "
+            "the same spool."
+            % (path, self._profile_label(prof),
+               prof.get('cleared_because', 'no reason given'), path))
+
     def _clear_material_profile(self, path, reason=""):
         """Wipe the stored filament profile for one path, and persist it.
 
@@ -651,6 +843,15 @@ class Autoloader:
         """
         if not self._has_material_profile(path):
             return
+
+        # Stash before wiping. A 10 s sensor dropout is enough to trigger this,
+        # and it used to take brand, colour, material and tuned temperatures
+        # with it permanently -- a mis-seated switch or a hand on the filament
+        # during testing cost work that only the operator could reconstruct.
+        # The stash survives a restart and is restored only on request: see
+        # _cmd_restore_profile for why this does not restore itself.
+        self._stash_profile(path, reason)
+
         self.path_materials[path]     = ''
         self.path_brands[path]        = ''
         self.path_product_lines[path] = ''
@@ -732,6 +933,9 @@ class Autoloader:
                 'sa_purge_speed_%d' % i, 5.0))
             self.path_purge_lengths[i] = float(svars.get(
                 'sa_purge_length_%d' % i, self.purge_length))
+            stashed = svars.get('sa_lastprofile_%d' % i, None)
+            if isinstance(stashed, dict):
+                self._stashed_profiles[i] = stashed
             # Restore path state as well if saved
             saved_state = svars.get('sa_state_%d' % i, None)
             if saved_state in (self.STATE_UNKNOWN, self.STATE_EMPTY,
@@ -922,11 +1126,14 @@ class Autoloader:
             ('SA_PARK',
              self._cmd_park,
              "Park filament at drive encoder (phases 0-2 only). TOOL=N"),
+            ('SA_RESTORE_PROFILE',
+             self._cmd_restore_profile,
+             "Put back the filament profile a wipe removed. TOOL=N"),
             ('SA_FORM_TIP',
              self._cmd_form_tip,
-             "Run only the tip-forming sequence, for tuning. TOOL=N [PUSH=] "
-             "[SEVER=] [COOL_POS=] [COOL_LEN=] [COOL_MOVES=] [COOL_IN=] "
-             "[COOL_OUT=] [TEMP=] [EASE=]"),
+             "Run only the tip-forming sequence, for tuning. TOOL=N "
+             "[MATERIAL=] [PUSH=] [SEVER=] [COOL_POS=] [COOL_LEN=] "
+             "[COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=]"),
         ]
         for name, fn, desc in cmds:
             self.gcode.register_command(name, fn, desc=desc)
@@ -1284,6 +1491,11 @@ class Autoloader:
             if val is not None:
                 ov[name] = val
 
+        # Tuning a material means a dozen runs, and loading its spool for each
+        # one costs more than the run does. MATERIAL= picks the per-material
+        # values without touching what is actually in the path.
+        material = gcmd.get('MATERIAL', None)
+
         if not self._toolhead_sensor_active(path):
             gcmd.respond_info(
                 "SA_FORM_TIP: T%d has no filament at the toolhead sensor. "
@@ -1298,7 +1510,7 @@ class Autoloader:
         is_printing = self.sequences._is_printing()
         self.sequences._park(gcmd, is_printing)
         self.sequences._switch_tool(gcmd, path)
-        self.sequences.form_tip(gcmd, path, is_printing, ov)
+        self.sequences.form_tip(gcmd, path, is_printing, ov, material)
 
         # Free the extruder so the filament can be wound out by hand. Measuring
         # the tip means pulling it out through the entry, and the gears hold it

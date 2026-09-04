@@ -1073,7 +1073,7 @@ class SASequences:
     # Unload sequence
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def form_tip(self, gcmd, path, is_printing, ov=None):
+    def form_tip(self, gcmd, path, is_printing, ov=None, material=None):
         """Shape the filament tip so it can be pulled back through the gears.
 
         Follows the ERCF / Happy Hare sequence, which this previously did not:
@@ -1095,10 +1095,23 @@ class SASequences:
         unreachable (slow_dist computed negative).
 
         `ov` is an optional dict of overrides so SA_FORM_TIP can sweep values
-        without a config edit and a restart.
+        without a config edit and a restart. `material` forces a particular
+        material's values instead of the loaded profile's, so one can be tuned
+        without its spool in the machine.
         """
         owner = self.owner
-        ov    = ov or {}
+        ov    = dict(ov or {})
+
+        # A tip forms at a temperature the polymer chooses, not one the
+        # machine does: what shears cleanly for PLA merely stretches ASA. So
+        # the loaded profile's material selects its own values, layered under
+        # any explicit SA_FORM_TIP override -- a tuning sweep still wins -- and
+        # over the tuned globals, which stay the fallback for a material with
+        # nothing configured.
+        mat_ov, mat_note = owner.tip_form_overrides(path, material)
+        for k, v in mat_ov.items():
+            ov.setdefault(k, v)
+        gcmd.respond_info("SA: %s" % mat_note)
 
         def cfg(name):
             return ov.get(name, getattr(owner, 'tip_form_' + name))
