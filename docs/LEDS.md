@@ -28,14 +28,15 @@ mkdir -p ~/printer_data/config/autoloader/leds && cp ~/printer_data/config/autol
 your edits survive every update — which is exactly why the example does not
 live there. Edit the copy, never the example.
 
-**2. Uncomment the include** in `~/printer_data/config/autoloader/autoloader.cfg`:
+**2. Uncomment the include** in `~/printer_data/config/autoloader/user.cfg`:
 
 ```
 #[include leds/*.cfg]      ->      [include leds/*.cfg]
 ```
 
-That file *is* overwritten on update, so `post_update.sh` reads whether you
-uncommented it and puts it back the way you had it.
+`user.cfg` is written once by `install.sh` and is not in the repository, so no
+update can reach it. Re-running the installer asks before touching it, and
+defaults to keeping it when there is no terminal to ask at.
 
 **3. Adapt the copy to your hardware** — the next section. Then restart Klipper.
 
@@ -161,6 +162,6 @@ verification tools — keep their hardcoded values in step.
 
 ## Turning it back off
 
-Re-comment the include in `autoloader/autoloader.cfg` and restart. Your copy
+Re-comment the include in `autoloader/user.cfg` and restart. Your copy
 under `leds/` is left alone, so turning it on again is one edit. If you added
 the toolchange hook, remove that line too.

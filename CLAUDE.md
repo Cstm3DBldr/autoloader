@@ -576,6 +576,8 @@ If you add a new file to the project, add its destination here AND update
 | `autoloader/*.cfg` | `~/printer_data/config/autoloader/` | direct copy (post_update.sh) |
 | `autoloader/examples/*.cfg` | `~/printer_data/config/autoloader/examples/` | direct copy (post_update.sh) |
 | — (user-owned) | `~/printer_data/config/autoloader/leds/` | **created empty, never written.** The user's adapted LED config lives here so updates cannot discard it. `post_update.sh` must never copy into or delete from this directory |
+| — (user-owned, untracked) | `~/printer_data/config/autoloader/user.cfg` | Written **once** by `install.sh`, never by `post_update.sh`. `autoloader.cfg` includes it **last**, and Klipper parses with `strict=False`, so any value here overrides `parameters.cfg` without editing a tracked file. Carries the `#[include leds/*.cfg]` opt-in switch. Re-running `install.sh` prompts keep / upgrade / overwrite; `SA_USER_CFG=keep\|upgrade\|overwrite` answers it unattended, and no terminal means keep |
+| — (user-owned, untracked) | `~/printer_data/config/autoloader/variables.cfg` | `[save_variables]` — every calibrated bowden length, encoder mm/pulse and selector position. Not in the repo, so nothing else holds a copy |
 | `autoloader/*.html` | `~/printer_data/config/autoloader/` | direct copy (post_update.sh) |
 | `KlipperScreen/panels/sa_*.py` | `~/KlipperScreen/panels/` | direct copy (post_update.sh) |
 | `KlipperScreen/sa_*.py` | `~/KlipperScreen/` | direct copy (post_update.sh) |
@@ -684,6 +686,12 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
 - Do not run `scripts/klipper_service_restart.sh` from a dev machine without
   `SA_HOST` set. It posts to `localhost:7125`, which is the printer only when
   the script runs there.
+- Do not put the LED switch, or any user-editable setting, in a tracked file.
+  `post_update.sh` overwrites everything it copies. The switch lives in
+  `user.cfg`, which only `install.sh` writes and only after asking.
+- Do not `rm -rf` `~/printer_data/config/autoloader/` in `install.sh --uninstall`.
+  It holds `variables.cfg` — hours of calibration that exists nowhere else —
+  plus `user.cfg` and any adapted `leds/`. Uninstall copies those aside first.
 - Do not re-enable LEDs by default, and do not move the example into
   `autoloader/leds/`. That directory is the user's; `post_update.sh` overwrites
   everything it copies, so anything shipped there would discard their tuning on
