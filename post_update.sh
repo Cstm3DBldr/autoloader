@@ -20,7 +20,31 @@ KS="${HOME}/KlipperScreen"
 
 echo "[POST-UPDATE] Syncing user-editable cfg + html to ${CONFIG}/autoloader/..."
 mkdir -p "${CONFIG}/autoloader"
+# autoloader.cfg ships with the LED include commented out, and this script
+# overwrites it -- so a user who opted in would be silently opted back out on
+# every update. Read their choice first, restore it after the copy.
+LEDS_ON=0
+if [ -f "${CONFIG}/autoloader/autoloader.cfg" ] &&    grep -qE '^[[:space:]]*\[include leds/\*\.cfg\]'         "${CONFIG}/autoloader/autoloader.cfg"; then
+    LEDS_ON=1
+fi
+
 cp -f "${REPO}"/autoloader/*.cfg  "${CONFIG}/autoloader/"
+
+if [ "${LEDS_ON}" = "1" ]; then
+    sed -i 's|^#\[include leds/\*\.cfg\]|[include leds/*.cfg]|'         "${CONFIG}/autoloader/autoloader.cfg"
+    echo "[POST-UPDATE]   LED include was enabled — kept enabled."
+fi
+
+# Worked examples the user copies and adapts. Always refreshed, because
+# nobody edits these in place -- the copy they edit lives in leds/.
+mkdir -p "${CONFIG}/autoloader/examples"
+cp -f "${REPO}"/autoloader/examples/*.cfg "${CONFIG}/autoloader/examples/" 2>/dev/null || true
+
+# Created empty and then left alone. autoloader.cfg includes leds/*.cfg,
+# which is inert while the directory is empty, and anything the user puts
+# here is theirs: NOTHING in this script may write to or delete from it, or
+# an update would silently discard their LED tuning.
+mkdir -p "${CONFIG}/autoloader/leds"
 cp -f "${REPO}"/autoloader/*.html "${CONFIG}/autoloader/" 2>/dev/null || true
 
 echo "[POST-UPDATE] Syncing KlipperScreen panels..."

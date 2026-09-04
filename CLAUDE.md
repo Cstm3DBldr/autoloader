@@ -74,7 +74,9 @@ knows what manual hooks to reapply.
   _SA_LEDS_INIT_ALL ACTIVE={tool.tool_number}
   ```
   This refreshes every toolhead's status LEDs after each toolchange.
-  The macro is defined in `autoloader/leds.cfg`. The pre-edit file
+  The macro is defined in the LED config, which is **opt-in** — only add
+  this hook on a printer that enabled LEDs, or every toolchange errors on
+  an unknown command. The pre-edit file
   is preserved on the printer as `toolchanger.cfg.bak.<epoch>`.
 
 ## Operational Permissions (set by user)
@@ -285,7 +287,8 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `autoloader/hardware.cfg` | ONLY hardware sections: [mcu], [tmc5160], [manual_stepper], [servo], [sa_encoder], [filament_switch_sensor], [gcode_button selector_stall] |
 | `autoloader/parameters.cfg` | The single `[autoloader]` section — all user-tunable values (servo angles, speeds, tip-form, park, selector cal, bowden lengths, sensor/encoder/extruder/stepper references). Klipper requires the section in one file |
 | `autoloader/macros.cfg` | Thin gcode wrappers around Python backend commands |
-| `autoloader/leds.cfg` | Toolhead Voron logo + nozzle LED status macros. State-driven (PARKED / UNLOADED / ACTIVE / LOADING / ERROR), reads filament color from `printer["autoloader"].path_color_hexes`. Triggered from toolchanger hooks and autoloader load/unload completion. **Locked filament-color rendering pipeline in `_sa_set_logo_filament` (2026-05-06):** WS2812B/SK6812 strip — the green LED is ~1.5-2x brighter than red/blue, and human vision is roughly gamma-2.2. Pipeline: (1) parse hex → r/g/b raw 0–1; (2) if `max_ch == 0` stay off (no gamma); (3) if `max_ch < 0.15` rescale brightest channel to 0.0075 with NO gamma — at this brightness we're at the LED's quantization noise floor, gamma would crush it to zero; (4) else apply `g × 0.85` when green is not dominant, then sRGB gamma 2.2 (`channel ** 2.2`) on all three channels. The 0.85 figure was tuned with gamma in the loop — the pre-gamma 0.55 used in v5 was over-attenuating once gamma 2.2 was added, producing orange-cast browns. The test macros `_SA_LED_TEST_CASELIGHT_MAX` (full-saturation rainbow), `_SA_LED_TEST_CASELIGHT_BROWNS` (filament-hex progression), and `_SA_LED_TEST_CASELIGHT_GRAYSCALE` (perceptually-uniform ramp) are the verification tools — keep their hardcoded values in sync if the pipeline changes. The v5 17-hue reference palette in the file header is anchor data, NOT live correction values. |
+| `autoloader/examples/leds.cfg` | **OPT-IN, not included by default.** Worked example for toolhead Voron logo + nozzle LED status. The user copies it to `~/printer_data/config/autoloader/leds/` and uncomments `#[include leds/*.cfg]` in `autoloader.cfg`. See `docs/LEDS.md`. It is off by default because LED hardware is the least portable part of a build: chain names and wiring order differ per machine, and its ten `STATUS_*` macros collide with the stock Voron `stealthburner_leds.cfg` — Klipper uppercases macro aliases, so lowercase `status_ready` and `STATUS_READY` register the same command and the printer refuses to boot. State-driven (PARKED / UNLOADED / ACTIVE / LOADING / ERROR), reads filament colour from `printer["autoloader"].path_color_hexes`. **Locked filament-colour rendering pipeline in `_sa_set_logo_filament` (2026-05-06):** WS2812B/SK6812 strip — the green LED is ~1.5-2x brighter than red/blue, and human vision is roughly gamma-2.2. Pipeline: (1) parse hex → r/g/b raw 0–1; (2) if `max_ch == 0` stay off (no gamma); (3) if `max_ch < 0.15` rescale brightest channel to 0.0075 with NO gamma — at this brightness we're at the LED's quantization noise floor, gamma would crush it to zero; (4) else apply `g × 0.85` when green is not dominant, then sRGB gamma 2.2 (`channel ** 2.2`) on all three channels. The 0.85 figure was tuned with gamma in the loop — the pre-gamma 0.55 used in v5 was over-attenuating once gamma 2.2 was added, producing orange-cast browns. The test macros `_SA_LED_TEST_CASELIGHT_MAX`, `_SA_LED_TEST_CASELIGHT_BROWNS`, and `_SA_LED_TEST_CASELIGHT_GRAYSCALE` are the verification tools — keep their hardcoded values in sync if the pipeline changes. The v5 17-hue reference palette in the file header is anchor data, NOT live correction values. |
+| `docs/LEDS.md` | How to turn LEDs on, what to change for your hardware, and the `STATUS_*` collision |
 | `klipper/extras/autoloader.py` | Main controller — config parsing, GCode registration, status object |
 | `klipper/extras/sa_motion.py` | Motion primitives (servo, selector, drive, idle timeouts) |
 | `klipper/extras/sa_sequences.py` | Load and unload sequences |
@@ -571,6 +574,8 @@ If you add a new file to the project, add its destination here AND update
 | `klipper/extras/autoloader.py` + 4 `sa_*.py` | `~/klipper/klippy/extras/` | symlink (install.sh) |
 | `moonraker/sa_moonraker.py` | `~/moonraker/moonraker/components/sa_moonraker.py` | symlink (install.sh) |
 | `autoloader/*.cfg` | `~/printer_data/config/autoloader/` | direct copy (post_update.sh) |
+| `autoloader/examples/*.cfg` | `~/printer_data/config/autoloader/examples/` | direct copy (post_update.sh) |
+| — (user-owned) | `~/printer_data/config/autoloader/leds/` | **created empty, never written.** The user's adapted LED config lives here so updates cannot discard it. `post_update.sh` must never copy into or delete from this directory |
 | `autoloader/*.html` | `~/printer_data/config/autoloader/` | direct copy (post_update.sh) |
 | `KlipperScreen/panels/sa_*.py` | `~/KlipperScreen/panels/` | direct copy (post_update.sh) |
 | `KlipperScreen/sa_*.py` | `~/KlipperScreen/` | direct copy (post_update.sh) |
@@ -679,6 +684,10 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
 - Do not run `scripts/klipper_service_restart.sh` from a dev machine without
   `SA_HOST` set. It posts to `localhost:7125`, which is the printer only when
   the script runs there.
+- Do not re-enable LEDs by default, and do not move the example into
+  `autoloader/leds/`. That directory is the user's; `post_update.sh` overwrites
+  everything it copies, so anything shipped there would discard their tuning on
+  the next update.
 - Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin is always `^!autoloader:SA_SELECTOR_STOP`.
 
 ## Console Output Rules
