@@ -348,6 +348,53 @@ Restore rather than redesign unless Mike asks for a new layout.
   path. The underlying 10 s `runout_timeout` is unchanged — this makes the wipe
   recoverable rather than making it rarer.
 
+### 7b. Portability — running on other StealthChanger builds
+
+**Requirement (Mike, 2026-09-03): the autoloader should work with multiple
+StealthChanger systems, not just this printer's.**
+
+Surveyed 2026-09-03:
+
+| Project | What it is | Verdict |
+|---|---|---|
+| `viesturz/klipper-toolchanger` | what this printer runs | baseline |
+| `jwellman80/klipper-toolchanger-easy` | packaging fork of the above | **Python interface is clean — no code change needed** |
+| `DraftShift/StealthChanger` | the hardware project: CAD, STLs, manual | not a software variant; its reference configs use the same `[tool TN]` / `[tool_probe TN]` sections and it points at viesturz |
+
+Our entire dependency surface on the toolchanger is five things: the
+`toolchanger` object's `get_status` fields (`status`, `tool`, `tool_number`,
+`detected_tool_number`), the `T<n>` gcode, `tool_probe_endstop`'s
+`active_tool_number`, the `after_change_gcode` hook, and core Klipper extruder
+naming. Checked against the fork: `get_status` does not appear in the diff at
+all, the config-option set is identical, all six gcode hooks keep their names,
+and `T%d` registration is unchanged. The fork's 252 changed lines are all in
+motion and gcode-offset internals (`_set_toolchange_transform`,
+`_position_with_tool_offset`, `_save_state`, `_restore_axis`, `get_position`,
+`move`) — nothing we read.
+
+**The one real gap is the LED hook, and it is an install problem, not a code
+problem.** CLAUDE.md tells the operator to hand-edit `after_change_gcode` in
+`~/printer_data/config/Toolchanger/toolchanger.cfg`. On an easy-install that
+file is at `~/printer_data/config/toolchanger/readonly-configs/toolchanger.cfg`
+(lowercase directory) and is **a symlink into the user's git checkout**
+(`install.sh:87`), so editing it modifies their repo and conflicts on update.
+Their supported route is `toolchanger/toolchanger-config.cfg`, copied with
+`cp -n` and included last — but overriding `after_change_gcode` there *replaces*
+the block, so we would have to reproduce theirs plus our one line, which then
+goes stale when they change theirs.
+
+Worth building if portability is pursued:
+
+1. Make the LED refresh self-installing rather than a documented hand edit —
+   e.g. have `[autoloader]` subscribe to the toolchanger's change event, or
+   register a `_SA_AFTER_TOOLCHANGE` wrapper, so no foreign file is touched.
+2. `install.sh` should detect which layout is present rather than assuming this
+   printer's paths.
+3. `sa_sequences._current_tool()` returns -1 when no `toolchanger` object
+   exists and `_switch_tool` then issues `T<n>` regardless, which errors on a
+   single-head machine. Fine on all three targets above; only matters if
+   single-toolhead support is ever wanted.
+
 ### 8. Worth doing, not yet requested
 
 - **No automated tests exist for the Python extras.** `_clear_material_profile`
