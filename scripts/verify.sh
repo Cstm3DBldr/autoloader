@@ -122,6 +122,50 @@ else
 fi
 echo
 
+
+# ── generated config drift ───────────────────────────────────────────────────
+# pin_aliases.cfg, hardware.cfg and parameters.cfg are generated from the
+# menuconfig answers. Comparing them to the repo copies (what the old check
+# below does) is meaningless for a generated install: the repo copies are
+# template SOURCES, not the expected output. This asks the generator instead --
+# "would regenerating change anything?" -- which catches a hand edit to a
+# generated file, or an update whose templates moved on and never got applied.
+#
+# Tuned values are NOT drift. Refresh mode carries them forward, so a changed
+# feed_speed or bowden length reports clean; only structure differs.
+GEN_DRIFT=0
+echo
+echo "── generated config drift (answers + templates vs on-disk) ──"
+GEN_OUT=$($REMOTE 'A="$HOME/printer_data/config/autoloader/.autoloader-config"
+if [ ! -f "$A" ]; then
+    echo "SKIP: no saved answers — this install predates the menuconfig installer"
+elif [ ! -f "$HOME/autoloader/installer/generate.py" ]; then
+    echo "SKIP: installer/generate.py not present"
+else
+    cd "$HOME/autoloader" && python3 installer/generate.py \
+        --config "$A" --out "$HOME/printer_data/config/autoloader" --dry-run 2>&1 \
+        | grep -E "WOULD CHANGE|no longer used|ERROR" || echo "OK"
+fi' 2>/dev/null)
+
+case "$GEN_OUT" in
+    OK*)
+        echo "  ✓ in sync with your saved answers"
+        ;;
+    SKIP*)
+        echo "  – ${GEN_OUT#SKIP: }"
+        ;;
+    "")
+        echo "  ✓ in sync with your saved answers"
+        ;;
+    *)
+        echo "  ✗ regenerating would change these:"
+        printf '%s\n' "$GEN_OUT" | sed 's/^/      /'
+        echo "    -> run ~/autoloader/post_update.sh to bring them back in step."
+        echo "       Your tuned values are carried forward; this is structure only."
+        GEN_DRIFT=1
+        ;;
+esac
+
 # ── Symlinks ─────────────────────────────────────────────────────────────────
 echo "── Klipper extras symlinks ──"
 $REMOTE 'for f in autoloader.py sa_motion.py sa_sequences.py sa_calibration.py sa_encoder.py sa_led_animator.py; do
@@ -209,4 +253,4 @@ $REMOTE 'awk "/Starting Moonraker on/{out=\"\"} {out=out\$0\"\\n\"} END{print ou
 
 echo
 # Combined exit: any forbidden pattern OR any parameters drift fails the check.
-[ $HITS_EXIT -ne 0 ] || [ $PARAM_DRIFT -ne 0 ] && exit 1 || exit 0
+[ $HITS_EXIT -ne 0 ] || [ $PARAM_DRIFT -ne 0 ] || [ $GEN_DRIFT -ne 0 ] && exit 1 || exit 0

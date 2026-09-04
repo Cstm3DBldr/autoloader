@@ -292,6 +292,7 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `installer/detect.py` | Reads the printer and pre-fills the menu (toolhead count, extruder names, CAN UUID, LED chain family, `STATUS_*` collisions). `--check` is the hard guard that refuses an unbootable combination after the menu |
 | `installer/generate.py` | `.config` + templates → `pin_aliases.cfg`, `hardware.cfg`, `parameters.cfg`. Refresh mode puts existing values back and reports dropped ones |
 | `installer/templates/` | The three generated cfgs, with `{{VAR}}` / `{% for path %}` / `{% if %}` |
+| `docs/INSTALL.md` | The user-facing install guide — plain language, for someone who has never seen the project. Includes the prompt flow and what is safe from updates |
 | `docs/LEDS.md` | How to turn LEDs on, what to change for your hardware, and the `STATUS_*` collision |
 | `klipper/extras/autoloader.py` | Main controller — config parsing, GCode registration, status object |
 | `klipper/extras/sa_motion.py` | Motion primitives (servo, selector, drive, idle timeouts) |

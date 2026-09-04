@@ -6,6 +6,11 @@ Supports up to 32 filament paths with a single shared drive motor, a carriage-st
 
 ---
 
+
+> **Installing for the first time?** Read **[docs/INSTALL.md](docs/INSTALL.md)**.
+> It is written for someone who has not seen this project before: what it is,
+> what it changes on your printer, what the setup menu asks, and how to undo it.
+
 ## Installation
 
 ```bash

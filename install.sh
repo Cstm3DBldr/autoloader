@@ -36,7 +36,10 @@ if [ "${1:-}" = "--uninstall" ]; then
     if [ -d "${KEEP_DIR}" ]; then
         KEEP_BAK="${HOME}/autoloader-config-backup-$(date +%s)"
         mkdir -p "${KEEP_BAK}"
-        for keep in variables.cfg user.cfg; do
+        # .autoloader-config is every menuconfig answer. Losing it means the
+        # next install starts from defaults and silently regenerates a config
+        # for a machine it no longer knows the shape of.
+        for keep in variables.cfg user.cfg .autoloader-config; do
             [ -f "${KEEP_DIR}/${keep}" ] && cp -a "${KEEP_DIR}/${keep}" "${KEEP_BAK}/"
         done
         [ -d "${KEEP_DIR}/leds" ] && cp -a "${KEEP_DIR}/leds" "${KEEP_BAK}/"

@@ -81,7 +81,6 @@ def build_context(k):
 
     ctx = dict(k)
     ctx["NUM_PATHS"] = str(n)
-    ctx["GENERATED_ON"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     # Klipper names the first extruder "extruder", not "extruder0".
     def extruder(i):
@@ -186,6 +185,25 @@ def fix_alias_commas(text):
 _SECTION = re.compile(r"^\[([^\]]+)\]\s*$")
 # A setting, not a continuation: no leading whitespace, and a value on the line.
 _SETTING = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*?)\s*$")
+# Klipper parses with inline_comment_prefixes=(';', '#'), so a value ends at
+# whitespace followed by one of those.
+_INLINE_COMMENT = re.compile(r"\s+[#;].*$")
+
+
+def value_only(v):
+    """The value with any inline comment removed.
+
+    Without this the captured "value" of
+
+        feed_speed     : 50    # mm/s -- drive motor speed
+
+    is "50    # mm/s -- drive motor speed", and re-applying it appends the
+    template's own comment on top, producing a line with the comment twice.
+    Most of parameters.cfg carries inline comments, so this corrupted almost
+    every tuned value -- it stayed hidden because the values tested first
+    (bowden lengths, selector positions) happen to have none.
+    """
+    return _INLINE_COMMENT.sub("", v).strip()
 
 
 def parse_settings(path):
@@ -212,8 +230,8 @@ def parse_settings(path):
                 continue
             m = _SETTING.match(line.rstrip("\n"))
             if m and section:
-                key, val = m.group(1), m.group(2)
-                if val == "":  # start of a multi-line block
+                key, val = m.group(1), value_only(m.group(2))
+                if val == "":  # start of a multi-line block, or comment-only
                     continue
                 out[(section, key)] = val
     return out
@@ -244,7 +262,7 @@ def reapply(rendered, existing):
             continue
         m = _SETTING.match(line)
         if m and section:
-            key, new_val = m.group(1), m.group(2)
+            key, new_val = m.group(1), value_only(m.group(2))
             seen.add((section, key))
             old_val = existing.get((section, key))
             if old_val is not None and old_val != new_val and new_val != "":
@@ -296,6 +314,7 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     total_changed = 0
+    would_change = []
 
     for tpl_name, out_name in TEMPLATES:
         tpl_path = os.path.join(args.templates, tpl_name)
@@ -324,31 +343,44 @@ def main():
             for sec, key, val in dropped:
                 print("      [%s] %s: %s" % (sec, key, val))
 
-        if args.dry_run:
-            print("  (dry run) would write %s" % dest)
-            continue
-
         # Identical output is not worth a backup or a write. Updates run this
         # every time and most change nothing; backing up regardless would bury
         # the config directory in .bak files and make the one backup that
         # matters impossible to find.
+        current = None
         if os.path.exists(dest):
             with open(dest, "r", encoding="utf-8", errors="replace") as f:
-                if f.read() == text:
-                    print("  %s unchanged" % out_name)
-                    continue
+                current = f.read()
+
+        if current == text:
+            print("  %s unchanged" % out_name)
+            continue
+
+        would_change.append(out_name)
+        if args.dry_run:
+            print("  %s WOULD CHANGE" % out_name)
+            continue
+
+        if current is not None:
             bak = "%s.bak.%d" % (dest, int(time.time()))
             os.replace(dest, bak)
             print("  wrote %s  (previous kept as %s)"
                   % (dest, os.path.basename(bak)))
         else:
             print("  wrote %s" % dest)
-        with open(dest, "w", encoding="utf-8", newline="\n") as f:
+        with open(dest, "w", encoding="utf-8", newline=NL) as f:
             f.write(text)
 
     if args.mode == "refresh" and total_changed == 0:
         print("  (no existing values to carry forward)")
 
+    # Non-zero when the on-disk config no longer matches what the answers and
+    # templates say it should be -- a hand edit to a generated file, or an
+    # update whose templates moved on and was never applied. verify.sh uses it.
+    if args.dry_run and would_change:
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
