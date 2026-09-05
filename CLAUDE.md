@@ -712,17 +712,16 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   `autoloader/leds/`. That directory is the user's; `post_update.sh` overwrites
   everything it copies, so anything shipped there would discard their tuning on
   the next update.
-- Do not send a subscription smaller than KlipperScreen's own. Moonraker
-  replaces a connection's ENTIRE subscription on every
-  `printer.objects.subscribe`, and KlipperScreen subscribes to every extruder,
-  heater, temperature sensor, fan, filament sensor, output pin and LED it
-  found. `install_subscription_merge` wraps `MoonrakerApi.object_subscription`
-  on the class so every call sends the accumulated union instead — which also
-  keeps `autoloader` alive when KlipperScreen re-subscribes after a Klippy
-  restart. `host_objects()` reconstructs the host's list and is the fallback
-  for when that wrap cannot be installed; prefer never to rely on it, since a
-  reconstructed list goes stale the day KlipperScreen watches something new.
-  The failure in every case is silent: temperatures simply stop changing.
+- Do not replace KlipperScreen's subscription. Moonraker keeps one per
+  connection, unions them when asking Klipper, and filters delivery back per
+  connection — so a client that subscribes again with a smaller set silently
+  loses everything it left out, and the symptom is the host's temperatures
+  quietly ceasing to change. `install_subscription_merge` wraps
+  `MoonrakerApi.object_subscription` on the class so every call sends the
+  accumulated union, which also keeps `autoloader` alive when KlipperScreen
+  re-subscribes after a Klippy restart. If that wrap cannot be installed we
+  poll instead and never touch the subscription: our data a second late beats
+  the host's data not arriving.
 - Do not assume a subscription delivers a value. Moonraker sends CHANGED
   fields only, so a field that never changes again is never delivered: the
   KlipperScreen guide read a status object containing one key and silently

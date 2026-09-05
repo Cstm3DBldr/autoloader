@@ -122,6 +122,33 @@ def install_subscription_merge():
     return True
 
 
+def _poll_once(screen):
+    """Read the autoloader object and hand it to KlipperScreen's store."""
+    try:
+        resp = screen.apiclient.send_request("printer/objects/query?autoloader")
+        sa = (resp or {}).get("status", {}).get("autoloader")
+        if isinstance(sa, dict) and sa:
+            screen.printer.process_update({"autoloader": sa})
+            screen.process_update("notify_status_update", {"autoloader": sa})
+    except Exception:
+        logging.exception("sa_subscription: poll failed")
+    return True
+
+
+def _start_polling(screen, interval_ms=1000):
+    """Fallback for a KlipperScreen whose subscription call we cannot wrap.
+
+    Deliberately not a subscription. Sending one would replace the host's and
+    silently stop its temperatures; a poll costs one cached read a second and
+    cannot affect anything else.
+    """
+    from gi.repository import GLib
+    GLib.timeout_add(interval_ms, _poll_once, screen)
+    logging.info("sa_subscription: cannot add to the subscription safely - "
+                 "polling the autoloader object every %dms instead",
+                 interval_ms)
+
+
 def _ensure_subscription(screen):
     """Ask Moonraker for the autoloader object, once.
 
@@ -137,6 +164,13 @@ def _ensure_subscription(screen):
     """
     global _subscribed
     if _subscribed:
+        return
+    if not _additive:
+        # Replacing the host's subscription with ours would take its heaters,
+        # temperature sensors, fans, filament sensors and LEDs off the wire.
+        # Poll instead: slower for us, harmless to everything else.
+        _start_polling(screen)
+        _subscribed = True
         return
     try:
         screen._ws.klippy.object_subscription(
@@ -289,50 +323,6 @@ def _on_status(screen, *args):
         _last_entry = list(entry)
 
 
-def host_objects(screen):
-    """The objects KlipperScreen itself subscribes to.
-
-    Rebuilt here from the same printer helpers screen.py uses, because our
-    subscription REPLACES the host's and therefore has to contain it. The
-    duplication is unwanted: if KlipperScreen starts watching a new class of
-    object, this list goes stale and that object stops updating with no error
-    anywhere. It is the price of there being no way to add to a subscription.
-
-    Every lookup is guarded -- a KlipperScreen without one of these helpers
-    should cost us that one object, not the whole subscription.
-    """
-    objs = {
-        "firmware_retraction": ["retract_length", "retract_speed",
-                                "unretract_extra_length", "unretract_speed"],
-        "exclude_object": ["current_object", "objects", "excluded_objects"],
-        "manual_probe": ["is_active"],
-        "screws_tilt_adjust": ["results", "error"],
-    }
-    groups = (
-        ("get_tools", ["target", "temperature", "pressure_advance",
-                       "smooth_time", "power"]),
-        ("get_heaters", ["target", "temperature", "power"]),
-        ("get_temp_sensors", ["temperature"]),
-        ("get_temp_fans", ["target", "temperature"]),
-        ("get_fans", ["speed"]),
-        ("get_filament_sensors", ["enabled", "filament_detected"]),
-        ("get_pwm_tools", ["value"]),
-        ("get_output_pins", ["value"]),
-        ("get_leds", ["color_data"]),
-    )
-    printer = getattr(screen, "printer", None)
-    for getter, fields in groups:
-        fn = getattr(printer, getter, None)
-        if not callable(fn):
-            continue
-        try:
-            for name in fn() or []:
-                objs[name] = list(fields)
-        except Exception:
-            logging.exception("sa_subscription: %s failed", getter)
-    return objs
-
-
 def merge_objects(a, b):
     """Union of two subscription dicts. None means "every field"."""
     out = dict(a or {})
@@ -408,11 +398,6 @@ def build_subscription(screen, num_paths=0, include_encoders=False):
     except Exception:
         # If printer object isn't fully initialized yet, return what we have.
         pass
-    # With the additive wrap in place the host's own call already carries its
-    # objects, so this only has to name ours. Without it, a subscription
-    # REPLACES the connection's previous one and anything missing here stops
-    # being delivered to the whole application -- hence the reconstruction,
-    # kept strictly as the fallback it is.
-    if _additive:
-        return objs
-    return merge_objects(host_objects(screen), objs)
+    # Only our own objects. The additive wrap unions this with whatever
+    # KlipperScreen asked for, so nothing of the host's is ever dropped.
+    return objs
