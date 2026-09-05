@@ -356,19 +356,35 @@ class SASequences:
                 if abs(enc.get_distance()) >= mpp:
                     found = True
                     break
-            if not found:
-                gcmd.respond_info(
-                    "SA: WARNING — Pass 2 fed %.0fmm without encoder detection "
-                    "on path %d. Parking anyway." % (owner.park_load_find_max, path))
-
-            # Step 6 — final retract to park_offset (always runs).
+            # Step 6 — retract to park_offset. Runs either way: leaving the
+            # filament wherever the failed search left it is worse than backing
+            # it off to a known offset.
             motion.drive_move(-owner.park_offset, speed=owner.park_offset_speed)
             owner.reactor.pause(owner.reactor.monotonic() + 0.2)
+
+            if not found:
+                # Do NOT claim success. This used to print "Filament parked"
+                # straight after admitting the encoder never saw the filament,
+                # so a park that fed 100mm into thin air reported exactly the
+                # same line as one that worked -- which is why it went
+                # unnoticed until someone checked the encoder by hand.
+                gcmd.respond_info(
+                    ("SA: PARK FAILED on path %d — fed %.0fmm twice and the "
+                     "encoder never moved, so the filament was never gripped."
+                     % (path, owner.park_load_find_max)))
+                gcmd.respond_info(
+                    "SA: The path is NOT parked. Usual causes: filament not "
+                    "pushed in far enough to reach the drive gear, the drive "
+                    "gear not gripping, or a dead encoder on this channel.")
+                gcmd.respond_info(
+                    "SA: Push the filament in until it stops, then run: "
+                    "SA_PARK TOOL=%d" % path)
+                return False
 
             gcmd.respond_info(
                 "SA: Filament parked %.1fmm before encoder (path %d)."
                 % (owner.park_offset, path))
-            return
+            return True
 
         # ── Unload-path park (3 phases; see PARKING SEQUENCE in parameters.cfg) ─
 
@@ -433,6 +449,10 @@ class SASequences:
         gcmd.respond_info(
             "SA: Filament parked %.1fmm before encoder (path %d)."
             % (owner.park_offset, path))
+        # The unload park always retracts to a known offset, so it is a real
+        # park either way -- but report whether the encoder actually confirmed
+        # the filament, so the caller is not told "parked" on faith alone.
+        return found
 
     def park_filament(self, gcmd, path):
         """Public: park filament on *path* — selects path, parks, disengages.
@@ -456,13 +476,23 @@ class SASequences:
 
         self._ensure_selector(gcmd, path)
         motion.servo_engage()
-        self._park_filament_at_encoder(gcmd, path)
+        ok = self._park_filament_at_encoder(gcmd, path)
         motion.servo_disengage()
-        owner.path_states[path] = 'partial'
         motion.save_position()
+
+        # Only claim the path is parked if it is. This used to set 'partial'
+        # and print "Filament parked" unconditionally, so a park that never
+        # gripped the filament still wrote a state a later SA_LOAD would act
+        # on -- the machine believing filament sat at the drive gear while it
+        # was still at the entry sensor.
+        if not ok:
+            return False
+
+        owner.path_states[path] = 'partial'
         gcmd.respond_info(
             "SA: Filament parked on path %d. "
             "Run SA_LOAD TOOL=%d to load." % (path, path))
+        return True
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Drive phases (shared helpers to avoid duplication)

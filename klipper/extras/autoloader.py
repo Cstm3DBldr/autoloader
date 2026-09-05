@@ -277,6 +277,11 @@ class Autoloader:
         self.path_purge_speeds  = [5.0]                         * self.num_paths
         self.path_purge_lengths = [self.purge_length]           * self.num_paths
 
+        # Previous entry-sensor reading per path, for edge detection.
+        # None means "no baseline yet" -- the next reading establishes one
+        # without being treated as an event.
+        self._entry_prev = [None] * self.num_paths
+
         # Profiles a wipe removed, kept so the removal is recoverable.
         self._stashed_profiles = {}
         self._stash_announced  = set()
@@ -440,6 +445,11 @@ class Autoloader:
                     # gets a full window once the operation finishes.
                     self._sensor_last_active_time[i] = eventtime
                     self._profile_pending_since.pop(i, None)
+                    # Drop the baseline: a load or unload drives the sensor
+                    # clear and back on purpose, and comparing against a
+                    # reading from before the operation would read as a
+                    # removal the moment it finishes.
+                    self._entry_prev[i] = None
                     continue
                 try:
                     active = self._entry_sensor_active(i)
@@ -469,12 +479,29 @@ class Autoloader:
                     # its own UI and the LEDs, which read path_states
                     # directly, kept showing an empty slot with filament
                     # sitting in it.
+                    was = self._entry_prev[i]
+                    self._entry_prev[i] = True
+
                     if self.path_states[i] in (self.STATE_EMPTY,
                                                self.STATE_UNKNOWN):
                         self._set_state_persist(
                             i, self.STATE_PARTIAL,
                             "entry sensor detected filament")
                         self._queue_led_refresh(i)
+                        self._queue_park(i)
+                    elif was is False:
+                        # Filament left and came back inside the runout
+                        # debounce, so the state never reached 'empty' and the
+                        # branch above never fired: nothing moved, and the path
+                        # went on claiming filament was parked at the drive
+                        # gear while it sat at the entry sensor.
+                        #
+                        # The sensor EDGE is the real event. Whatever the
+                        # stored state says, filament that has just arrived has
+                        # not been parked yet.
+                        logging.info(
+                            "Autoloader: path %d filament returned before the "
+                            "runout debounce expired — re-parking", i)
                         self._queue_park(i)
 
                     # Filament is here but the slot has no profile. If a wipe
@@ -483,6 +510,7 @@ class Autoloader:
                     # they can confirm whether it is the same one.
                     self._announce_stash(i)
                 else:
+                    self._entry_prev[i] = False
                     # Sensor clear. Two different clocks run here:
                     #
                     #  * a path that BELIEVED it held filament has just
