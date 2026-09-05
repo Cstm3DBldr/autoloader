@@ -69,6 +69,7 @@ def install_global_popup_watcher(screen):
     if _watcher_installed:
         return
     _watcher_installed = True
+    install_subscription_merge()
     # Logged because its absence is invisible and looks exactly like the
     # feature being broken: until some autoloader panel opens, nothing on this
     # screen is listening, so a guide opened in Mainsail is simply not seen.
@@ -85,6 +86,40 @@ def install_global_popup_watcher(screen):
         return result
 
     screen.process_update = wrapped
+
+
+_additive = False
+_subscribed_objects = {}
+
+
+def install_subscription_merge():
+    """Send the union of every subscription asked for, not just the last one.
+
+    Also fixes the reverse loss: when KlipperScreen re-subscribes after a
+    Klippy restart it sends its own list, which does not contain `autoloader`,
+    so our data stopped arriving until a panel was opened again.
+    """
+    global _additive
+    if _additive:
+        return True
+    try:
+        from ks_includes.KlippyWebsocket import MoonrakerApi
+    except Exception:
+        logging.exception("sa_subscription: cannot make subscriptions additive")
+        return False
+
+    original = MoonrakerApi.object_subscription
+
+    def wrapped(self, updates):
+        global _subscribed_objects
+        incoming = (updates or {}).get("objects") or {}
+        _subscribed_objects = merge_objects(_subscribed_objects, incoming)
+        return original(self, {"objects": dict(_subscribed_objects)})
+
+    MoonrakerApi.object_subscription = wrapped
+    _additive = True
+    logging.info("sa_subscription: subscriptions are additive")
+    return True
 
 
 def _ensure_subscription(screen):
@@ -373,7 +408,11 @@ def build_subscription(screen, num_paths=0, include_encoders=False):
     except Exception:
         # If printer object isn't fully initialized yet, return what we have.
         pass
-    # Everything KlipperScreen watches, plus ours. A subscription REPLACES
-    # the connection's previous one, so anything missing here stops being
-    # delivered to the whole application -- not just to us.
+    # With the additive wrap in place the host's own call already carries its
+    # objects, so this only has to name ours. Without it, a subscription
+    # REPLACES the connection's previous one and anything missing here stops
+    # being delivered to the whole application -- hence the reconstruction,
+    # kept strictly as the fallback it is.
+    if _additive:
+        return objs
     return merge_objects(host_objects(screen), objs)

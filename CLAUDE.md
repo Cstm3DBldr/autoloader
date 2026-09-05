@@ -716,8 +716,13 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   replaces a connection's ENTIRE subscription on every
   `printer.objects.subscribe`, and KlipperScreen subscribes to every extruder,
   heater, temperature sensor, fan, filament sensor, output pin and LED it
-  found. `build_subscription` returns the union for that reason — the failure
-  is silent, and the only symptom is temperatures that stop changing.
+  found. `install_subscription_merge` wraps `MoonrakerApi.object_subscription`
+  on the class so every call sends the accumulated union instead — which also
+  keeps `autoloader` alive when KlipperScreen re-subscribes after a Klippy
+  restart. `host_objects()` reconstructs the host's list and is the fallback
+  for when that wrap cannot be installed; prefer never to rely on it, since a
+  reconstructed list goes stale the day KlipperScreen watches something new.
+  The failure in every case is silent: temperatures simply stop changing.
 - Do not assume a subscription delivers a value. Moonraker sends CHANGED
   fields only, so a field that never changes again is never delivered: the
   KlipperScreen guide read a status object containing one key and silently
