@@ -95,6 +95,17 @@ class Autoloader:
         self.servo_engaged_angle    = config.getfloat('servo_engaged_angle',    30.0)
         self.servo_disengaged_angle = config.getfloat('servo_disengaged_angle', 160.0)
 
+        # The servo's own maximum, read from the [servo] section rather than
+        # assumed to be 180 -- mirroring an angle for a reversed servo has to
+        # land inside the range the servo actually accepts.
+        self.servo_max_angle = 180.0
+        try:
+            sc = config.getsection(self.servo_name)
+            self.servo_max_angle = sc.getfloat('maximum_servo_angle', 180.0)
+        except Exception:
+            logging.info("Autoloader: could not read maximum_servo_angle; "
+                         "assuming 180")
+
         # ── Path count ────────────────────────────────────────────────────────
         self.num_paths = config.getint('num_paths', 6)
         if not 1 <= self.num_paths <= 32:
@@ -1016,6 +1027,18 @@ class Autoloader:
             if isinstance(stashed, dict):
                 self._stashed_profiles[i] = stashed
 
+        # Servo angles found by SA_CALIBRATE_SERVO. Saved here rather than in
+        # parameters.cfg so the installer's regeneration cannot discard them.
+        for key, attr in (('sa_servo_engaged_angle',    'servo_engaged_angle'),
+                          ('sa_servo_disengaged_angle', 'servo_disengaged_angle')):
+            v = svars.get(key, None)
+            if v is not None:
+                try:
+                    setattr(self, attr, float(v))
+                except (TypeError, ValueError):
+                    logging.warning("Autoloader: bad %s in variables.cfg: %r",
+                                    key, v)
+
         for key, attr in (('sa_drive_dir_invert',    'drive_dir_invert'),
                           ('sa_selector_dir_invert', 'selector_dir_invert')):
             v = svars.get(key, None)
@@ -1212,6 +1235,10 @@ class Autoloader:
             ('SA_PARK',
              self._cmd_park,
              "Park filament at drive encoder (phases 0-2 only). TOOL=N"),
+            ('SA_CALIBRATE_SERVO',
+             self._cmd_calibrate_servo,
+             "Find the servo's gripping angle safely: arm off, fit at rest, "
+             "then step toward the gear."),
             ('SA_SET_DIRECTION',
              self._cmd_set_direction,
              "Flip or set a motor's direction and save it. "
@@ -1351,6 +1378,10 @@ class Autoloader:
                 "  [%d]   %-10s  %-8s  %-8s  %-8s  %s%s"
                 % (i, dist_s, mpp_s, entry, th, ext, marker))
         gcmd.respond_info("\n".join(lines))
+
+    def _cmd_calibrate_servo(self, gcmd):
+        """SA_CALIBRATE_SERVO — see SACalibration.calibrate_servo."""
+        self.calibration.calibrate_servo(gcmd)
 
     def _cmd_set_direction(self, gcmd):
         """SA_SET_DIRECTION MOTOR=drive|selector [INVERT=0|1]

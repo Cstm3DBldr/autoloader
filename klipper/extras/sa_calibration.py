@@ -57,7 +57,9 @@ class SACalibration:
         self.close_ui_prompt(gcmd)
 
         try:
-            if state.startswith('dir_'):
+            if state.startswith('srv_'):
+                self._srv_respond(gcmd, state, val)
+            elif state.startswith('dir_'):
                 self._dir_respond(gcmd, state, val)
             elif state.startswith('sel_'):
                 self._sel_respond(gcmd, state, val)
@@ -301,6 +303,8 @@ class SACalibration:
     def _ui_title(self):
         """Short heading for the prompt dialog, from the current phase."""
         st = (self.owner._cal_state or '').lower()
+        if st.startswith('srv_'):
+            return "Servo Calibration"
         if st.startswith('dir_'):
             return "Motor Direction"
         if st.startswith('sel_'):
@@ -364,6 +368,11 @@ class SACalibration:
         try:
             d['_np_val'] = max(0.0, float(d['_np_val']) + float(delta))
         except ValueError:
+            return
+        # The servo phase moves to the new angle as you step, so the operator
+        # is watching the mechanism rather than reading a number.
+        if (self.owner._cal_state or '').startswith('srv_'):
+            self._srv_render(gcmd)
             return
         self._numeric_render(gcmd)
 
@@ -542,6 +551,162 @@ class SACalibration:
             detail=("Total travel %.2fmm over %d paths, spacing %.2fmm"
                     % (total_travel, n, spacing)
                     + NL + offset_note + width_note + pos_lines))
+
+    # ── Servo ─────────────────────────────────────────────────────────────────
+    #
+    # Ordered to protect the servo, not to be quick.
+    #
+    # A servo driven against a hard stop strips its gears in seconds, and an arm
+    # fitted at the wrong angle turns the whole travel into one long hard stop.
+    # So nothing sweeps until the arm is OFF; the arm goes back on only at the
+    # end that is mechanically safe by definition -- resting against the
+    # selector body, away from the drive gear -- and from there only the far
+    # angle is searched, stepping toward the gear and stopping the moment it
+    # grips.
+    #
+    # The disengaged angle is therefore never "calibrated": it is defined by
+    # where the arm is fitted. Only the engaged angle is found.
+
+    _SERVO_STEPS = (1.0, 5.0, 10.0)
+
+    def calibrate_servo(self, gcmd):
+        owner = self.owner
+        owner._cal_data = {
+            'dis': float(owner.servo_disengaged_angle),
+            'eng': float(owner.servo_engaged_angle),
+        }
+        owner._cal_state = 'srv_armoff'
+        self._prompt(
+            gcmd,
+            "Is the servo arm removed?",
+            "SA_RESPOND VALUE=yes",
+            detail=(
+                "TAKE THE SERVO ARM OFF before continuing." + NL + NL
+                + "With the arm fitted, moving the servo can drive it into the "
+                  "selector body and strip the gears -- and if the arm was "
+                  "fitted at the wrong angle, its whole travel is a hard stop."
+                + NL + NL
+                + "Undo the arm screw and lift the arm off the spline. Leave "
+                  "the screw somewhere you will find it."),
+            choices=[("ARM IS OFF", "yes", "primary")])
+
+    def _srv_respond(self, gcmd, state, value):
+        owner = self.owner
+        d     = owner._cal_data
+
+        def move(angle):
+            owner.gcode.run_script_from_command(
+                "SET_SERVO SERVO=%s ANGLE=%.1f"
+                % (owner._servo_short_name(), angle))
+
+        if state == 'srv_armoff':
+            # Safe now: nothing is attached to the spline.
+            move(d['dis'])
+            owner._cal_state = 'srv_armon'
+            self._prompt(
+                gcmd,
+                "Fit the arm at the rest position",
+                "SA_RESPOND VALUE=yes",
+                detail=(
+                    "The servo is now at %.0f deg -- the DISENGAGED end."
+                    % d['dis'] + NL + NL
+                    + "Fit the arm so it rests against the selector body, on "
+                      "the side AWAY from the drive gear, and tighten the "
+                      "screw." + NL + NL
+                    + "That position is what 'disengaged' means, so it is not "
+                      "measured -- it is defined by where you fit the arm. "
+                      "Only the gripping angle is searched from here."),
+                choices=[("ARM IS FITTED", "yes", "primary")])
+            return
+
+        if state == 'srv_armon':
+            # Start the search AT the rest angle and walk toward the gear, so
+            # the first move is zero and every move after it is small.
+            d['_np_val'] = d['dis']
+            owner._cal_state = 'srv_find'
+            self._srv_render(gcmd)
+            return
+
+        if state == 'srv_find':
+            if str(value).strip().lower() == 'flip':
+                # A reversed servo is not fixed by stepping the other way: the
+                # arm is fitted near one extreme, so searching back past it
+                # runs out of travel almost immediately. The arm has to come
+                # off and go back on at the mirrored end -- and it must come
+                # off FIRST, because driving it across the full range while
+                # fitted is exactly the hard-stop crash this routine exists to
+                # avoid.
+                span = float(getattr(owner, 'servo_max_angle', 180.0))
+                d['dis'] = max(0.0, min(span, span - d['dis']))
+                d['eng'] = max(0.0, min(span, span - d['eng']))
+                owner._cal_state = 'srv_armoff'
+                self._prompt(
+                    gcmd,
+                    "Take the arm off again",
+                    "SA_RESPOND VALUE=yes",
+                    detail=(
+                        "This servo runs the other way, so the rest position "
+                        "is at the opposite end of its travel." + NL + NL
+                        + "REMOVE THE ARM before continuing -- it will be "
+                          "driven to %.0f deg, and crossing that far with the "
+                          "arm fitted is what strips the gears." % d['dis']
+                        + NL + NL
+                        + "You will refit it at the new rest position, then "
+                          "search from there."),
+                    choices=[("ARM IS OFF", "yes", "primary")])
+                return
+            if self._yes(value):
+                eng = float(d.get('_np_val', d['eng']))
+                owner.servo_engaged_angle = eng
+                self._save_variable('sa_servo_engaged_angle', '%.1f' % eng)
+                self._save_variable('sa_servo_disengaged_angle',
+                                    '%.1f' % d['dis'])
+                move(d['dis'])
+                self._clear()
+                gcmd.respond_info(
+                    "SA CAL: Servo saved — engaged %.1f deg, disengaged %.1f "
+                    "deg. Effective now, no restart needed." % (eng, d['dis']))
+                return
+            self._clear()
+            move(d['dis'])
+            gcmd.respond_info(
+                "SA CAL: Servo calibration cancelled. Returned to %.0f deg."
+                % d['dis'])
+            return
+
+    def _srv_render(self, gcmd):
+        """Re-ask the engage question at the current angle, moving there first."""
+        owner = self.owner
+        d     = owner._cal_data
+        ang   = float(d.get('_np_val', d['dis']))
+        owner.gcode.run_script_from_command(
+            "SET_SERVO SERVO=%s ANGLE=%.1f"
+            % (owner._servo_short_name(), ang))
+
+        toward = "up" if d['eng'] >= d['dis'] else "down"
+        buttons = []
+        for step in self._SERVO_STEPS:
+            delta = step if d['eng'] >= d['dis'] else -step
+            buttons.append(("%+g" % delta, "adj:%g" % delta, "secondary"))
+        for step in self._SERVO_STEPS:
+            delta = -step if d['eng'] >= d['dis'] else step
+            buttons.append(("%+g" % delta, "adj:%g" % delta, "secondary"))
+        buttons.append(("GRIPS — SAVE", "yes", "primary"))
+        buttons.append(("WRONG WAY", "flip", "warning"))
+
+        self._emit_ui_prompt(
+            gcmd, "Servo Calibration",
+            ("Angle: %.1f deg" % ang) + NL + NL
+            + ("Step %s until the drive gear just grips the filament, then "
+               "save. Move in small steps: past the grip point the arm is "
+               "pushing against the mechanism." % toward) + NL
+            + ("Rest position is %.0f deg; previously saved grip was %.0f deg."
+               % (d['dis'], d['eng'])) + NL
+            + "If the arm is moving AWAY from the gear, press WRONG WAY.",
+            buttons,
+            footer=[("CANCEL", "abort", "error")],
+            columns=3)
+        owner._cal_prompt = "Servo: %.1f deg" % ang
 
     # ── Motor direction ───────────────────────────────────────────────────────
 
