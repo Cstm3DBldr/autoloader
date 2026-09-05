@@ -2289,7 +2289,17 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
             this.pickerOpen = false
         }
 
-        this.promptOpen = active
+        // Calibration prompts are emitted by the backend as native
+        // action:prompt_* now, and Mainsail renders those itself -- with the
+        // phase title and only the buttons that phase offers. Opening this
+        // panel for them too put two dialogs on screen at once: the native one
+        // showing the computed positions, and this generic
+        // "Autoloader needs your input" with Yes/No/OK/Continue/Cancel
+        // covering it.
+        //
+        // 'load' and 'unload' stay, because those are path grids with colours
+        // and per-tool buttons that the prompt protocol cannot express.
+        this.promptOpen = active && this.promptKind !== 'generic'
         if (!active) this.calResponse = ''
     }
 
