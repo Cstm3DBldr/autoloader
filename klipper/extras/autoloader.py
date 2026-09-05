@@ -349,12 +349,20 @@ class Autoloader:
         #
         # The prompt protocol has no "is one open?" query, and prompt_end on
         # nothing is harmless, so this is unconditional.
-        try:
-            self.gcode.respond_raw("// action:prompt_end")
-        except Exception:
-            logging.exception("Autoloader: could not clear a stale UI prompt")
+        # Deliberately delayed. klippy:ready fires before Moonraker has
+        # reattached and resubscribed, so sending this immediately would
+        # broadcast it to nobody and the stale dialog would survive anyway.
+        self.reactor.register_callback(
+            self._clear_stale_prompt, self.reactor.monotonic() + 3.0)
 
         self.reactor.register_callback(self._init_hardware)
+
+    def _clear_stale_prompt(self, eventtime):
+        try:
+            self.gcode.respond_raw("// action:prompt_end")
+            logging.info("Autoloader: cleared any stale calibration dialog")
+        except Exception:
+            logging.exception("Autoloader: could not clear a stale UI prompt")
 
     def _init_hardware(self, eventtime):
         self.motion.on_ready()
