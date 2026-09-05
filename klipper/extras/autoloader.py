@@ -1029,7 +1029,8 @@ class Autoloader:
 
         # Servo angles found by SA_CALIBRATE_SERVO. Saved here rather than in
         # parameters.cfg so the installer's regeneration cannot discard them.
-        for key, attr in (('sa_servo_engaged_angle',    'servo_engaged_angle'),
+        for key, attr in (('sa_selector_end_offset',    'selector_end_offset'),
+                          ('sa_servo_engaged_angle',    'servo_engaged_angle'),
                           ('sa_servo_disengaged_angle', 'servo_disengaged_angle')):
             v = svars.get(key, None)
             if v is not None:

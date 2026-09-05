@@ -374,6 +374,9 @@ class SACalibration:
         if (self.owner._cal_state or '').startswith('srv_'):
             self._srv_render(gcmd)
             return
+        if self.owner._cal_state == 'sel_tune':
+            self._sel_tune_render(gcmd)
+            return
         self._numeric_render(gcmd)
 
     def _save_variable(self, key, value):
@@ -551,6 +554,122 @@ class SACalibration:
             detail=("Total travel %.2fmm over %d paths, spacing %.2fmm"
                     % (total_travel, n, spacing)
                     + NL + offset_note + width_note + pos_lines))
+
+    # ── Selector: "no, I don't like these numbers" ────────────────────────────
+    #
+    # Rejecting the computed positions used to end the routine with "adjust
+    # assembly or selector_end_offset and retry", which meant editing a config
+    # file and running the whole sweep again to see the effect of a number you
+    # were guessing at.
+    #
+    # The sweep measured total travel; that part is fine and worth keeping. It
+    # is only the DIVISION of that travel that is in question, and that is
+    # arithmetic -- so it can be redone instantly, as many times as needed,
+    # with the resulting positions shown each time.
+
+    _OFFSET_STEPS  = (0.5, 2.0, 10.0)
+    _SPACING_STEPS = (0.1, 1.0, 5.0)
+
+    def _sel_compute(self, total_travel, n, end_offset, spacing=None):
+        """(positions, spacing) for a travel divided n ways."""
+        usable = max(0.0, total_travel - end_offset)
+        if n <= 1:
+            return [0.0], 0.0
+        sp = float(spacing) if spacing else usable / float(n - 1)
+        return [round(i * sp, 2) for i in range(n)], sp
+
+    def _sel_reject_menu(self, gcmd):
+        owner = self.owner
+        d     = owner._cal_data
+        owner._cal_state = 'sel_reject'
+        self._prompt(
+            gcmd,
+            "What is wrong with them?",
+            "SA_RESPOND VALUE=offset",
+            "SA_RESPOND VALUE=spacing",
+            "SA_RESPOND VALUE=resweep",
+            detail=(
+                "The sweep measured %.2fmm of travel. That measurement is "
+                "probably fine -- it is how it gets divided that is in "
+                "question, and that is just arithmetic, so it can be redone "
+                "instantly." % d.get('total_travel', 0.0) + NL + NL
+                + "END OFFSET  - hold some travel back before dividing, if "
+                  "path 0 or the last path sits slightly off." + NL
+                + "SPACING     - set the gap between paths directly, if you "
+                  "know what it should measure." + NL
+                + "SWEEP AGAIN - if the travel measurement itself looks wrong."),
+            choices=[("END OFFSET",  "offset",  "primary"),
+                     ("SPACING",     "spacing", "primary"),
+                     ("SWEEP AGAIN", "resweep", "secondary")],
+            columns=3)
+
+    def _sel_tune_render(self, gcmd):
+        """Show the positions the current offset/spacing would produce."""
+        owner = self.owner
+        d     = owner._cal_data
+        mode  = d.get('_tune')
+        tt    = float(d.get('total_travel', 0.0))
+        n     = int(owner.num_paths)
+        val   = float(d.get('_np_val', 0.0))
+
+        if mode == 'offset':
+            positions, spacing = self._sel_compute(tt, n, val)
+            head = "End offset: %.2fmm  ->  spacing %.2fmm" % (val, spacing)
+            steps = self._OFFSET_STEPS
+        else:
+            positions, spacing = self._sel_compute(tt, n, 0.0, spacing=val)
+            head = "Spacing: %.2fmm  ->  last path at %.2fmm" % (
+                val, positions[-1] if positions else 0.0)
+            steps = self._SPACING_STEPS
+
+        d['_preview'] = positions
+        buttons = [("%+g" % s,  "adj:%g" % s,  "secondary") for s in steps]
+        buttons += [("%+g" % -s, "adj:%g" % -s, "secondary") for s in steps]
+        buttons.append(("SAVE THESE", "yes", "primary"))
+        buttons.append(("BACK", "back", "secondary"))
+
+        pos_lines = NL.join("  Path %d: %.2fmm" % (i, p)
+                            for i, p in enumerate(positions))
+        over = ""
+        if positions and positions[-1] > tt + 0.01:
+            over = (NL + "WARNING: the last path is beyond the %.2fmm the "
+                         "selector can travel." % tt)
+
+        self._emit_ui_prompt(
+            gcmd, "Selector Calibration",
+            head + NL + NL + pos_lines + over,
+            buttons,
+            footer=[("ABORT", "abort", "error")],
+            columns=3)
+        owner._cal_prompt = head
+
+    def _sel_tune_respond(self, gcmd, value):
+        owner = self.owner
+        d     = owner._cal_data
+        v     = str(value).strip().lower()
+
+        if v == 'back':
+            self._sel_reject_menu(gcmd)
+            return
+
+        if self._yes(v):
+            positions = d.get('_preview') or []
+            for i, pos in enumerate(positions):
+                owner._selector_positions[i] = pos
+                self._save_variable('selector_position_%d' % i, '%.2f' % pos)
+            if d.get('_tune') == 'offset':
+                owner.selector_end_offset = float(d.get('_np_val', 0.0))
+                self._save_variable('sa_selector_end_offset',
+                                    '%.2f' % owner.selector_end_offset)
+            self._clear()
+            gcmd.respond_info(
+                "SA CAL: Selector positions saved — effective now, no restart "
+                "needed.\nRun SA_HOME then SA_SELECT TOOL=N to check each one.")
+            owner.motion.selector_home()
+            return
+
+        self._clear()
+        gcmd.respond_info("SA CAL: Nothing saved.")
 
     # ── Servo ─────────────────────────────────────────────────────────────────
     #
@@ -756,6 +875,33 @@ class SACalibration:
     def _sel_respond(self, gcmd, state, value):
         owner = self.owner
 
+        if state == 'sel_reject':
+            v = str(value).strip().lower()
+            if v == 'resweep':
+                self._clear()
+                gcmd.respond_info("SA CAL: Sweeping again...")
+                self.calibrate_selector_auto(gcmd)
+                return
+            if v in ('offset', 'spacing'):
+                d = owner._cal_data
+                d['_tune'] = v
+                if v == 'offset':
+                    d['_np_val'] = float(getattr(owner, 'selector_end_offset', 0.0))
+                else:
+                    n  = int(owner.num_paths)
+                    tt = float(d.get('total_travel', 0.0))
+                    d['_np_val'] = (tt / float(n - 1)) if n > 1 else 0.0
+                owner._cal_state = 'sel_tune'
+                self._sel_tune_render(gcmd)
+                return
+            self._clear()
+            gcmd.respond_info("SA CAL: Nothing saved.")
+            return
+
+        if state == 'sel_tune':
+            self._sel_tune_respond(gcmd, value)
+            return
+
         if state == 'sel_confirm':
             if self._yes(value):
                 positions = owner._cal_data['positions']
@@ -769,11 +915,16 @@ class SACalibration:
                     "Run SA_HOME then SA_SELECT TOOL=N to verify each position.")
                 owner.motion.selector_home()
             else:
-                self._clear()
-                owner.motion.selector_home()
-                gcmd.respond_info(
-                    "SA CAL: Positions NOT saved.\n"
-                    "Adjust assembly or selector_end_offset and retry.")
+                # NO _clear() here. The measured travel lives in _cal_data and
+                # the retune arithmetic needs it -- clearing first left every
+                # recomputed position at 0.00mm, since total_travel had gone.
+                #
+                # Not a dead end any more. The sweep's travel measurement
+                # stands; only its division into path positions is in
+                # question, and that is arithmetic -- so it is redone here,
+                # instantly, as many times as needed, rather than sending the
+                # operator to edit a config file and sweep again.
+                self._sel_reject_menu(gcmd)
 
     # ══════════════════════════════════════════════════════════════════════════
     # SA_CALIBRATE_DRIVE
