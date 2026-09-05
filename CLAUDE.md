@@ -580,6 +580,7 @@ If you add a new file to the project, add its destination here AND update
 | `moonraker/sa_moonraker.py` | `~/moonraker/moonraker/components/sa_moonraker.py` | symlink (install.sh) |
 | `autoloader/*.cfg` | `~/printer_data/config/autoloader/` | direct copy (post_update.sh) |
 | `autoloader/examples/*.cfg` | `~/printer_data/config/autoloader/examples/` | direct copy (post_update.sh) |
+| `filaments/brands/*.cfg` | `~/printer_data/config/autoloader/filament_profiles/` | direct copy (post_update.sh). KlipperScreen reads brand files from here; copied without deleting, so a user-added brand file survives |
 | — (user-owned) | `~/printer_data/config/autoloader/leds/` | **created empty, never written.** The user's adapted LED config lives here so updates cannot discard it. `post_update.sh` must never copy into or delete from this directory |
 | — (user-owned, untracked) | `~/printer_data/config/autoloader/user.cfg` | Written **once** by `install.sh`, never by `post_update.sh`. `autoloader.cfg` includes it **last**, and Klipper parses with `strict=False`, so any value here overrides `parameters.cfg` without editing a tracked file. Carries the `#[include leds/*.cfg]` opt-in switch. Re-running `install.sh` prompts keep / upgrade / overwrite; `SA_USER_CFG=keep\|upgrade\|overwrite` answers it unattended, and no terminal means keep |
 | — (user-owned, untracked) | `~/printer_data/config/autoloader/variables.cfg` | `[save_variables]` — every calibrated bowden length, encoder mm/pulse and selector position. Not in the repo, so nothing else holds a copy |

@@ -60,6 +60,20 @@ fi
 
 
 
+# The filament database. KlipperScreen reads brand files from
+# config/autoloader/filament_profiles (sa_load_unload.py), and nothing ever put
+# them there -- they survived only because nothing had deleted them. An
+# uninstall/reinstall wiped the lot and left the filament picker empty, with no
+# error to explain why.
+#
+# Copied file by file, never with a delete: a brand file the user added
+# themselves is theirs to keep.
+mkdir -p "${CONFIG}/autoloader/filament_profiles"
+if ls "${REPO}"/filaments/brands/*.cfg >/dev/null 2>&1; then
+    cp -f "${REPO}"/filaments/brands/*.cfg "${CONFIG}/autoloader/filament_profiles/"
+    echo "[POST-UPDATE] Filament database: $(ls "${REPO}"/filaments/brands/*.cfg | wc -l) brand file(s)."
+fi
+
 # Worked examples the user copies and adapts. Always refreshed, because
 # nobody edits these in place -- the copy they edit lives in leds/.
 mkdir -p "${CONFIG}/autoloader/examples"

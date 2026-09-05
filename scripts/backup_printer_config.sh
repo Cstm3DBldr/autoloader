@@ -224,10 +224,15 @@ EOF
 git checkout -q "$ORIGINAL_BRANCH"
 
 echo ""
-SNAP_COUNT=$(find "$REPO/printer_snapshot" -type f 2>/dev/null | wc -l)
+# Ask the COMMITTED BRANCH, not the working tree. This runs after the checkout
+# back to the original branch, at which point printer_snapshot/ is gone from
+# the working tree -- so a find here reported zero files and declared a
+# perfectly good backup incomplete. A check that cries wolf is worse than none:
+# it teaches you to ignore it.
+SNAP_COUNT=$(git ls-tree -r --name-only "$BRANCH" -- printer_snapshot 2>/dev/null | wc -l)
 echo "Done — $SNAP_COUNT file(s) captured."
 for must in autoloader/variables.cfg printer.cfg; do
-    if [ -f "$REPO/printer_snapshot/$must" ]; then
+    if git cat-file -e "$BRANCH:printer_snapshot/$must" 2>/dev/null; then
         echo "  ✓ $must"
     else
         echo "  ✗ $must is NOT in the snapshot — treat this backup as incomplete." >&2
