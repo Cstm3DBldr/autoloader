@@ -101,12 +101,31 @@ def _on_status(screen, *args):
     # Otherwise a printer that already has filament inserted at boot would
     # auto-open the load wizard, and a stale cal_state would auto-open the
     # post-load panel.
+    #
+    # guide_open is deliberately NOT baselined that way. The other two are
+    # conditions that happen to be true at boot -- filament sitting in a
+    # sensor, a cal_state left over from before a restart -- and acting on
+    # them would be acting on history. guide_open is someone having the guide
+    # open on another screen right now, and following it is the entire point
+    # of the flag.
+    #
+    # Swallowing it here is what made the quirk: this watcher is installed by
+    # the first autoloader panel to open, so opening the Autoloader panel took
+    # an already-true guide_open as the baseline and then waited forever for a
+    # change that had already happened. The calibration panel had to be opened
+    # by hand, which looks like the sync not working at all.
     if not _initialized:
         _last_cal_state = cal if cal is not None else _last_cal_state
         if isinstance(entry, list):
             _last_entry = list(entry)
         _last_guide_open = bool(sa.get("guide_open", False))
         _initialized = True
+        if _last_guide_open:
+            from gi.repository import GLib
+            stack = getattr(screen, "_cur_panels", None) or []
+            if (stack[-1] if stack else None) != "sa_calibration_guide":
+                GLib.idle_add(screen.show_panel, "sa_calibration_guide",
+                              "Calibration Guide")
         return
 
     # Clear the user-dismissed flag once cal_state actually changes away
