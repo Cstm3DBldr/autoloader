@@ -67,6 +67,12 @@ def install_global_popup_watcher(screen):
     if _watcher_installed:
         return
     _watcher_installed = True
+    # Logged because its absence is invisible and looks exactly like the
+    # feature being broken: until some autoloader panel opens, nothing on this
+    # screen is listening, so a guide opened in Mainsail is simply not seen.
+    # With this line the log answers "was anything watching?" directly.
+    import logging
+    logging.info("sa_subscription: global watcher installed")
     original = screen.process_update
 
     def wrapped(*args, **kwargs):
@@ -121,6 +127,9 @@ def _on_status(screen, *args):
         _last_guide_open = bool(sa.get("guide_open", False))
         _initialized = True
         if _last_guide_open:
+            import logging
+            logging.info(
+                "sa_subscription: guide already open elsewhere -> following it")
             from gi.repository import GLib
             stack = getattr(screen, "_cur_panels", None) or []
             if (stack[-1] if stack else None) != "sa_calibration_guide":
@@ -148,6 +157,9 @@ def _on_status(screen, *args):
     # time they navigated away from a guide that is still open.
     guide_open = sa.get("guide_open")
     if isinstance(guide_open, bool) and guide_open != _last_guide_open:
+        import logging
+        logging.info("sa_subscription: guide_open %r -> %r"
+                     % (_last_guide_open, guide_open))
         _last_guide_open = guide_open
         # _cur_panels is a stack, not a single name -- the last entry is what
         # is on screen. There is no _cur_panel attribute, so testing for one
