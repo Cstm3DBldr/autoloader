@@ -105,7 +105,33 @@ A first install with no UUID now ends with instructions rather than a cryptic
 `mcu 'autoloader': Invalid CAN uuid` after the next restart, and supplying it
 through `user.cfg` was verified to override the generated file.
 
-**Not yet done:** the menu has only ever run non-interactively (`SA_NO_MENU`).
+A fourth pass — Mike driving the menu interactively for the first time — found
+the last five, all of which only appear when a real person runs it:
+
+- The menu's key hints were wrong (written from memory, not from kconfiglib's
+  own bindings: back is left-arrow, backspace OR Esc, and `/` searches).
+- **The CAN scan had never once run.** `canbus_query` imports python-can, which
+  lives in klippy-env, not system python3. It died with ModuleNotFoundError on
+  every printer and that was reported as "no nodes answered".
+- The generated CAN-list fragment was written relative to the caller's working
+  directory, so running `~/autoloader/install.sh` from `~` put it in
+  `~/installer/generated` where nothing sources it. The list silently never
+  appeared.
+- **Refresh mode preserved `CHANGE_ME` over a real answer.** Supplying the UUID
+  through the menu generated the correct value, then reapply put the
+  placeholder back over it and reported the file unchanged.
+- `autoloader/hardware.cfg` shipped the developer's own `canbus_uuid`, and that
+  file is the fallback for an install that never ran `installer/` — so a manual
+  install silently pointed at someone else's board.
+
+A placeholder means unanswered, everywhere: that same assumption was wrong in
+three separate places (detect's answer-file check, the unset-UUID warning, and
+generate's refresh).
+
+The menu now also distinguishes no CAN interface / interface down / nothing
+unassigned answered, instead of calling all three "normal".
+
+**Installer status: done and hardware-proven, interactively included.**
 The curses TUI itself is unexercised — that needs a human at a terminal.
 
 ---
