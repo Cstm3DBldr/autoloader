@@ -602,6 +602,31 @@ class SACalibration:
          None, None, None, None),
     ]
 
+    def _offer_next_path(self, gcmd, kind, path, cmd_fmt, label):
+        """Offer the same calibration on the next path, else move on.
+
+        A per-path step is not finished when one path is done. Being asked
+        about Bowden lengths after calibrating encoder 0 of six skips five
+        paths silently, so the path loop is offered first and the chain only
+        advances once the last one is done.
+        """
+        nxt = int(path) + 1
+        if nxt >= int(self.owner.num_paths):
+            self._offer_next(gcmd, kind)
+            return
+        self.owner._cal_data = {'_next_cmd': cmd_fmt % nxt}
+        self.owner._cal_state = 'chain_next'
+        self._prompt(
+            gcmd,
+            "%s done. Do path %d next?" % (label, nxt),
+            cmd_fmt % nxt,
+            "SA_RESPOND VALUE=no",
+            detail=("Path %d of %d complete. Each path is measured separately "
+                    "-- the remaining ones still hold their old values."
+                    % (int(path) + 1, int(self.owner.num_paths))),
+            choices=[("PATH %d" % nxt, "yes", "primary"),
+                     ("STOP HERE", "no", "secondary")])
+
     def _offer_next(self, gcmd, step):
         """After a calibration completes, offer the one that follows it."""
         entry = None
@@ -1168,6 +1193,7 @@ class SACalibration:
                         "Manually set rotation_distance: %.4f in "
                         "[manual_stepper sa_drive] then restart Klipper."
                         % (new_rd, result, new_rd))
+                self._offer_next(gcmd, 'drive')
             else:
                 gcmd.respond_info(
                     "SA CAL: Not saved. rotation_distance remains %.4f." % orig_rd)
@@ -1355,6 +1381,9 @@ class SACalibration:
                         "SA CAL: Encoder %d mm_per_pulse=%.5f saved to "
                         "variables.cfg. Could not auto-update hardware.cfg (%s)."
                         % (path, new_mpp, result))
+                self._offer_next_path(gcmd, 'encoder', path,
+                                      'SA_CALIBRATE_ENCODER TOOL=%d',
+                                      'Encoder mm/pulse')
             else:
                 enc.mm_per_pulse = orig_mpp
                 gcmd.respond_info(
@@ -1452,6 +1481,7 @@ class SACalibration:
             "SA CAL: Max reliable speed %dmm/s → safe speed %.0fmm/s (80%%).\n"
             "Saved as encoder_max_speed — Bowden cal blast speed updated automatically."
             % (max_pass, safe_speed))
+        self._offer_next(gcmd, 'enc_speed')
 
     # ══════════════════════════════════════════════════════════════════════════
     # SA_CALIBRATE_BOWDEN
@@ -1628,3 +1658,5 @@ class SACalibration:
             gcmd.respond_info(
                 "SA CAL: bowden_length_%d=%.2fmm saved — "
                 "effective immediately, no restart needed." % (path, avg_length))
+            self._offer_next_path(gcmd, 'bowden', path,
+                                  'SA_CALIBRATE_BOWDEN TOOL=%d', 'Bowden length')
