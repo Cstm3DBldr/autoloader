@@ -92,6 +92,14 @@ if [ -d "${KS}/panels" ]; then
     cp -f "${REPO}"/KlipperScreen/sa_*.py        "${KS}/"        2>/dev/null || true
     cp -f "${REPO}"/KlipperScreen/sa_klipperscreen.conf "${CONFIG}/" 2>/dev/null || true
 
+    # The add-on that starts watching at boot, plus the hook that runs it.
+    # A KlipperScreen update replaces screen.py and silently takes the hook
+    # with it, so this re-applies on every update rather than once. It is
+    # idempotent and refuses to touch a screen.py it does not recognise.
+    mkdir -p "${KS}/addons"
+    cp -f "${REPO}"/KlipperScreen/addons/*.py "${KS}/addons/" 2>/dev/null || true
+    bash "${REPO}/scripts/patch_klipperscreen.sh" || true
+
     # Icons are per-theme in KlipperScreen, so the file goes into every theme
     # that is installed rather than just the active one — the active theme is
     # not always pinned in config, and a missing icon renders as a blank tile.
