@@ -85,6 +85,26 @@ Bugs the hardware testing found that sandboxes had not:
 - Uninstall preserved calibration but nothing restored it, so a reinstall came
   up correct except for every bowden length at its 800 mm default.
 
+A third pass — a true bare-metal install with every recovery source deleted —
+found three more:
+
+- **The filament database was never deployed by anything.** KlipperScreen reads
+  brand files from `config/autoloader/filament_profiles`, and no script put them
+  there; the fifteen files survived only because nothing had deleted them. The
+  wipe took them and left the filament picker silently empty.
+- **The unset-UUID warning never fired.** It grepped the answers file, but
+  `detect.py` only writes that key when it finds a UUID, so on a first install
+  the key is absent and `CHANGE_ME` arrives from the Kconfig default at generate
+  time. It checks the generated `hardware.cfg` now — the artifact Klipper reads.
+- **The backup script's own self-check cried wolf**, running after the checkout
+  back to the original branch when `printer_snapshot/` was already gone from the
+  working tree. It declared a good backup incomplete. It asks the committed
+  branch now.
+
+A first install with no UUID now ends with instructions rather than a cryptic
+`mcu 'autoloader': Invalid CAN uuid` after the next restart, and supplying it
+through `user.cfg` was verified to override the generated file.
+
 **Not yet done:** the menu has only ever run non-interactively (`SA_NO_MENU`).
 The curses TUI itself is unexercised — that needs a human at a terminal.
 
