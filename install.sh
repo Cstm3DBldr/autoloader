@@ -243,6 +243,13 @@ else
     echo ""
     echo "[INSTALL] ${USER_CFG} already exists."
     echo "          It may hold settings that override parameters.cfg."
+    if grep -qE '^[[:space:]]*canbus_uuid' "${USER_CFG}" 2>/dev/null; then
+        echo ""
+        echo "          NOTE: it contains a canbus_uuid. If that is the only"
+        echo "          place your board's UUID is written, overwriting will"
+        echo "          stop Klipper starting until you put it back. A backup"
+        echo "          is taken either way."
+    fi
     echo ""
     echo "            k) Keep it as it is                      (default, safe)"
     echo "            u) Upgrade — append only blocks it is missing, change nothing else"

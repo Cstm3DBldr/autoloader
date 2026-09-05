@@ -139,14 +139,23 @@ def detect_can_uuid(files, config_dir):
     excludes the autoloader directory -- that keeps the LED collision check
     from flagging our own macros -- so this reads it directly.
     """
-    hw = os.path.join(config_dir, "autoloader", "hardware.cfg")
-    if os.path.exists(hw):
+    # Look in user.cfg BEFORE hardware.cfg. A user whose board was already
+    # assigned had to type the UUID into user.cfg by hand, and only that file
+    # holds it -- hardware.cfg still says CHANGE_ME. Reading it here means the
+    # next regeneration bakes it into hardware.cfg, so the printer stops
+    # depending on user.cfg surviving. Overwriting user.cfg at the installer
+    # prompt used to take the only working UUID with it.
+    for name in ("user.cfg", "hardware.cfg"):
+        path = os.path.join(config_dir, "autoloader", name)
+        if not os.path.exists(path):
+            continue
         try:
-            with open(hw, "r", encoding="utf-8", errors="replace") as f:
-                m = re.search(r"^\s*canbus_uuid\s*:\s*([0-9a-fA-F]{6,})",
-                              f.read(), re.M)
-            if m:
-                return [m.group(1)], "from your existing autoloader config"
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for m in re.finditer(r"^\s*canbus_uuid\s*:\s*(\S+)",
+                                     f.read(), re.M):
+                    val = m.group(1).strip()
+                    if re.fullmatch(r"[0-9a-fA-F]{6,}", val):
+                        return [val], "from your existing %s" % name
         except OSError:
             pass
 
