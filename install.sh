@@ -431,7 +431,12 @@ echo "  • Run ${INSTALL_PATH}/scripts/verify.sh to confirm everything is in sy
 # and said so during detection. Staying quiet here means a first-time user
 # restarts and meets "mcu 'autoloader': Invalid CAN uuid" with no idea it was
 # foreseeable. Warn at the end, where they are actually looking.
-if grep -q '^CONFIG_MCU_UUID="CHANGE_ME"' "${SA_ANSWERS}" 2>/dev/null; then
+# Checks the GENERATED FILE, not the answers. detect.py only writes MCU_UUID
+# when it actually found one, so on a first install the key is absent from the
+# answers entirely and CHANGE_ME arrives from the Kconfig default at generate
+# time -- a grep of the answers file matches nothing and the warning never
+# fires. The artifact is what Klipper reads, so the artifact is what to check.
+if grep -qE '^canbus_uuid:[[:space:]]*CHANGE_ME'         "${CONFIG_DIR}/autoloader/hardware.cfg" 2>/dev/null; then
     echo ""
     echo "  ⚠  YOUR CAN UUID IS NOT SET YET — Klipper will not start until it is."
     echo ""
