@@ -339,6 +339,21 @@ class Autoloader:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _on_ready(self):
+        # Close any calibration dialog left over from before the restart.
+        #
+        # _cal_state is cleared on startup, so a prompt that survives is a
+        # dialog whose buttons do nothing: pressing YES calls SA_RESPOND with
+        # no phase waiting for it. Worse, it still LOOKS live -- Mike hit a
+        # stale "Accept these positions?" that had been emitted by the
+        # previous session and read it as the current one.
+        #
+        # The prompt protocol has no "is one open?" query, and prompt_end on
+        # nothing is harmless, so this is unconditional.
+        try:
+            self.gcode.respond_raw("// action:prompt_end")
+        except Exception:
+            logging.exception("Autoloader: could not clear a stale UI prompt")
+
         self.reactor.register_callback(self._init_hardware)
 
     def _init_hardware(self, eventtime):
