@@ -57,7 +57,9 @@ class SACalibration:
         self.close_ui_prompt(gcmd)
 
         try:
-            if state.startswith('srv_'):
+            if state.startswith('chain_'):
+                self._chain_respond(gcmd, state, val)
+            elif state.startswith('srv_'):
                 self._srv_respond(gcmd, state, val)
             elif state.startswith('dir_'):
                 self._dir_respond(gcmd, state, val)
@@ -303,6 +305,8 @@ class SACalibration:
     def _ui_title(self):
         """Short heading for the prompt dialog, from the current phase."""
         st = (self.owner._cal_state or '').lower()
+        if st.startswith('chain_'):
+            return "Calibration"
         if st.startswith('srv_'):
             return "Servo Calibration"
         if st.startswith('dir_'):
@@ -555,6 +559,85 @@ class SACalibration:
                     % (total_travel, n, spacing)
                     + NL + offset_note + width_note + pos_lines))
 
+    # ── Chaining one calibration to the next ──────────────────────────────────
+    #
+    # Finishing a step used to end with a console line and a closed dialog. On
+    # KlipperScreen that was survivable -- the guide panel is still underneath,
+    # with its own Next button. In Mainsail there is no guide: the dialog closes
+    # back to the dashboard and nothing says what to do next, which is what Mike
+    # hit after accepting the selector positions.
+    #
+    # So the BACKEND offers the next step, as one more prompt. That works in
+    # every UI at once and needs no panel code, which is the same reason the
+    # prompts themselves are native.
+
+    _CHAIN = [
+        ('selector',   "Selector positions",
+         "Calibrate the drive motor next?",
+         "Measures how far one motor turn moves filament. Everything that "
+         "feeds or retracts is measured in those millimetres, so nothing "
+         "downstream is trustworthy until it is set.",
+         "CALIBRATE DRIVE", "SA_CALIBRATE_DRIVE"),
+
+        ('drive',      "Drive rotation distance",
+         "Calibrate encoder speed next?",
+         "Finds the fastest feed the encoder can still count reliably, which "
+         "is what the Bowden measurement then uses.",
+         "CALIBRATE ENCODER SPEED", "SA_CALIBRATE_ENCODER_SPEED"),
+
+        ('enc_speed',  "Encoder max speed",
+         "Calibrate encoder mm/pulse next?",
+         "Per path. Sets how far one encoder pulse means, which every slip "
+         "check and every park depends on.",
+         "CALIBRATE ENCODER T0", "SA_CALIBRATE_ENCODER TOOL=0"),
+
+        ('encoder',    "Encoder mm/pulse",
+         "Calibrate Bowden length next?",
+         "Per path. Measures the tube from the drive gear to the toolhead, "
+         "which is the distance a load feeds before it expects the filament "
+         "to arrive.",
+         "CALIBRATE BOWDEN T0", "SA_CALIBRATE_BOWDEN TOOL=0"),
+
+        ('bowden',     "Bowden length",
+         None, None, None, None),
+    ]
+
+    def _offer_next(self, gcmd, step):
+        """After a calibration completes, offer the one that follows it."""
+        entry = None
+        for e in self._CHAIN:
+            if e[0] == step:
+                entry = e
+                break
+        if entry is None or entry[2] is None:
+            gcmd.respond_info(
+                "SA CAL: %s done — that is the last step."
+                % (entry[1] if entry else step))
+            return
+
+        _key, done_label, question, why, btn_label, btn_cmd = entry
+        self.owner._cal_data = {'_next_cmd': btn_cmd}
+        self.owner._cal_state = 'chain_next'
+        self._prompt(
+            gcmd, question,
+            btn_cmd,
+            "SA_RESPOND VALUE=no",
+            detail=("%s saved." % done_label) + NL + NL + why,
+            choices=[(btn_label, "yes", "primary"),
+                     ("STOP HERE", "no", "secondary")])
+
+    def _chain_respond(self, gcmd, state, value):
+        owner = self.owner
+        nxt = (owner._cal_data or {}).get('_next_cmd')
+        self._clear()
+        if not self._yes(value):
+            gcmd.respond_info(
+                "SA CAL: Stopped. Run the next step whenever you are ready.")
+            return
+        if nxt:
+            gcmd.respond_info("SA CAL: Starting %s..." % nxt)
+            owner.gcode.run_script_from_command(nxt)
+
     # ── Selector: "no, I don't like these numbers" ────────────────────────────
     #
     # Rejecting the computed positions used to end the routine with "adjust
@@ -666,6 +749,7 @@ class SACalibration:
                 "SA CAL: Selector positions saved — effective now, no restart "
                 "needed.\nRun SA_HOME then SA_SELECT TOOL=N to check each one.")
             owner.motion.selector_home()
+            self._offer_next(gcmd, 'selector')
             return
 
         self._clear()
@@ -914,6 +998,7 @@ class SACalibration:
                     "effective now, no restart needed.\n"
                     "Run SA_HOME then SA_SELECT TOOL=N to verify each position.")
                 owner.motion.selector_home()
+                self._offer_next(gcmd, 'selector')
             else:
                 # NO _clear() here. The measured travel lives in _cal_data and
                 # the retune arithmetic needs it -- clearing first left every
