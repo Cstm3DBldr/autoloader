@@ -433,6 +433,35 @@ Restore rather than redesign unless Mike asks for a new layout.
 
 ### 7a. Fixed since this list was written
 
+- **Auto-park ignored a pull-and-reinsert, and lied when it failed** (2026-09-04).
+  Two bugs in the same area, found by watching the machine rather than reading
+  the code.
+
+  A park was queued only when the path state was `empty` or `unknown`, and a
+  path only reaches `empty` after the entry sensor reads clear for
+  `runout_timeout` (10 s). Remove and replace filament inside that window and
+  nothing moved at all -- the path went on claiming filament was parked at the
+  drive gear while it sat at the entry sensor. The state machine watched a
+  level where the real event is an edge. Parks now also fire on the sensor's
+  low->high transition, with the baseline dropped during a load or unload
+  because those drive the sensor clear and back deliberately.
+
+  Separately: when the encoder never fired, the park printed
+  "WARNING ... Parking anyway" and then "Filament parked", and the caller set
+  the path to `partial` regardless -- byte-identical output to a park that
+  worked. That is why 100 mm fed into thin air on two paths went unnoticed. It
+  now reports failure plainly and refuses to write a state it did not earn.
+
+  Verified: six paths, encoder movement 3.7-9.7 mm on every one, where paths 2
+  and 3 previously registered 0.0.
+
+  **Lesson worth keeping:** three separate theories were argued from logs and
+  code (dead encoder channels, stepper auto-disable, insertion depth) and all
+  three were wrong. One observation at the machine found it. The log said
+  "Filament parked" six times and four of them were true -- a success message
+  that cannot fail is worse than no message.
+
+
 - **Profile wipe is no longer destructive.** A wipe now stashes the profile
   first, to `sa_lastprofile_<N>` in the variables file, so it survives a
   restart. `SA_RESTORE_PROFILE TOOL=N` puts it back and refuses to overwrite a
