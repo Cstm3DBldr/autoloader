@@ -184,6 +184,21 @@ case "$GEN_OUT" in
         ;;
 esac
 
+# ── owner.<attr> references ──────────────────────────────────────────────────
+# Static, so it costs nothing and needs no printer. Three separate times a
+# helper reached for an attribute Autoloader never defined, and each time the
+# result was AttributeError out of a gcode handler -- which shuts Klipper down.
+# Each lay dormant until someone ran the one command that touched it.
+ATTR_FAIL=0
+echo
+echo "── Helper modules vs Autoloader attributes ──"
+REPO_ROOT_A="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$REPO_ROOT_A/scripts/check_owner_attrs.py" ]; then
+    if python3 "$REPO_ROOT_A/scripts/check_owner_attrs.py"; then :; else ATTR_FAIL=1; fi
+else
+    echo "  – checker not present"
+fi
+
 # ── Symlinks ─────────────────────────────────────────────────────────────────
 echo "── Klipper extras symlinks ──"
 $REMOTE 'for f in autoloader.py sa_motion.py sa_sequences.py sa_calibration.py sa_encoder.py sa_led_animator.py; do
@@ -271,4 +286,4 @@ $REMOTE 'awk "/Starting Moonraker on/{out=\"\"} {out=out\$0\"\\n\"} END{print ou
 
 echo
 # Combined exit: any forbidden pattern OR any parameters drift fails the check.
-[ $HITS_EXIT -ne 0 ] || [ $PARAM_DRIFT -ne 0 ] || [ $GEN_DRIFT -ne 0 ] && exit 1 || exit 0
+[ $HITS_EXIT -ne 0 ] || [ $PARAM_DRIFT -ne 0 ] || [ $GEN_DRIFT -ne 0 ] || [ $ATTR_FAIL -ne 0 ] && exit 1 || exit 0

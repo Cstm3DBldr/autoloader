@@ -163,6 +163,23 @@ class Autoloader:
         self.selector_stall_threshold    = config.getint(  'selector_stall_threshold',  1)
         self.selector_stall_current      = config.getfloat('selector_stall_current',    0.3)
         self.selector_stall_speed        = config.getfloat('selector_stall_speed',     30.0)
+
+        # Used by SA_CALIBRATE_SELECTOR. These were referenced by
+        # sa_calibration.py and defined nowhere, so the command raised
+        # AttributeError out of a gcode handler and SHUT KLIPPER DOWN every
+        # time it was run. It had simply never been run on this build.
+        #
+        # selector_cal_current: reduced current for the one-time sweep into the
+        #   far wall. A brief grind there is acceptable; the measurement comes
+        #   from homing back, not from detecting the stop.
+        # selector_end_offset: mm held back from total travel before dividing
+        #   it between paths. 0 uses the full measured travel.
+        # path_width: expected spacing, purely informational -- the routine
+        #   reports calculated vs configured so a mechanical error is obvious.
+        #   0 disables that note.
+        self.selector_cal_current    = config.getfloat('selector_cal_current',  0.4)
+        self.selector_end_offset     = config.getfloat('selector_end_offset',   0.0)
+        self.path_width              = config.getfloat('path_width',            0.0)
         self.encoder_to_gear_distance    = config.getfloat('encoder_to_gear_distance',  20.0)
         self.sensor_retry_dist           = config.getfloat('sensor_retry_dist',          20.0)
 
