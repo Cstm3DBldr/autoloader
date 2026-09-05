@@ -322,7 +322,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config-dir", default=os.path.expanduser("~/printer_data/config"))
     ap.add_argument("--answers", required=True)
-    ap.add_argument("--kconfig", default="installer/Kconfig")
+    # Relative to THIS FILE, not the caller's working directory. The
+    # default used to be the bare path "installer/Kconfig", so running
+    # ~/autoloader/install.sh from the home directory resolved it against
+    # ~ and wrote the generated menu fragment to ~/installer/generated --
+    # where nothing sources it, so the CAN list silently never appeared.
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    ap.add_argument("--kconfig", default=os.path.join(_HERE, "Kconfig"))
     ap.add_argument("--check", action="store_true",
                     help="verify the answers are safe to install; exit 1 if not")
     args = ap.parse_args()

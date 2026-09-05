@@ -5,7 +5,7 @@ mainmenu "Autoloader setup"
 #   1. If it can be detected, detect it and ask only for confirmation.
 #   2. If the answer does not change a generated file, it is not a question.
 
-comment "Arrow keys move, Enter opens, Y/N toggles, ? shows help, Q saves and quits"
+comment "Mostly filled in from your printer -- check each section, then Q to save"
 
 menu "1. Your printer"
 

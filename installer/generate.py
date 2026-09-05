@@ -305,9 +305,16 @@ TEMPLATES = [
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--kconfig", default="installer/Kconfig")
+    # Relative to THIS FILE, not the caller's working directory. The
+    # default used to be the bare path "installer/Kconfig", so running
+    # ~/autoloader/install.sh from the home directory resolved it against
+    # ~ and wrote the generated menu fragment to ~/installer/generated --
+    # where nothing sources it, so the CAN list silently never appeared.
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    ap.add_argument("--kconfig", default=os.path.join(_HERE, "Kconfig"))
     ap.add_argument("--config", default=".config")
-    ap.add_argument("--templates", default="installer/templates")
+    ap.add_argument("--templates",
+                    default=os.path.join(_HERE, "templates"))
     ap.add_argument("--out", required=True, help="destination config directory")
     ap.add_argument("--mode", choices=("refresh", "replace"), default="refresh",
                     help="refresh keeps your existing values (default); "
