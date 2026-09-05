@@ -150,6 +150,23 @@ def detect_can_uuid(files, config_dir):
         except OSError:
             pass
 
+    # Then the most recent uninstall backup. Reinstalling after an uninstall is
+    # exactly when the live config is gone and the scan cannot help, because a
+    # board that is powered and configured does not answer one.
+    backups = sorted(glob.glob(os.path.expanduser("~/autoloader-config-backup-*")))
+    for b in reversed(backups):
+        hw = os.path.join(b, "hardware.cfg")
+        if not os.path.exists(hw):
+            continue
+        try:
+            with open(hw, "r", encoding="utf-8", errors="replace") as f:
+                m = re.search(r"^\s*canbus_uuid\s*:\s*([0-9a-fA-F]{6,})",
+                              f.read(), re.M)
+            if m:
+                return [m.group(1)], "recovered from %s" % os.path.basename(b)
+        except OSError:
+            pass
+
     script = os.path.expanduser("~/klipper/scripts/canbus_query.py")
     if not os.path.exists(script):
         return [], "canbus_query.py not found — is Klipper installed?"

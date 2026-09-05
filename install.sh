@@ -39,7 +39,11 @@ if [ "${1:-}" = "--uninstall" ]; then
         # .autoloader-config is every menuconfig answer. Losing it means the
         # next install starts from defaults and silently regenerates a config
         # for a machine it no longer knows the shape of.
-        for keep in variables.cfg user.cfg .autoloader-config; do
+        # hardware.cfg is here for one reason: it holds the CAN UUID, and a
+        # board already in use does not answer canbus_query. Lose it and
+        # reinstalling means hunting the UUID down again with the board
+        # unplugged.
+        for keep in variables.cfg user.cfg .autoloader-config hardware.cfg; do
             [ -f "${KEEP_DIR}/${keep}" ] && cp -a "${KEEP_DIR}/${keep}" "${KEEP_BAK}/"
         done
         [ -d "${KEEP_DIR}/leds" ] && cp -a "${KEEP_DIR}/leds" "${KEEP_BAK}/"
