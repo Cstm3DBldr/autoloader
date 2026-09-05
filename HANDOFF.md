@@ -39,6 +39,57 @@ Working and verified on the printer (192.168.1.214):
 
 ---
 
+## Installer — built and proven on hardware (2026-09-04)
+
+`install.sh` opens **menuconfig** (Klipper's own vendored kconfiglib, already on
+every Klipper printer because `make menuconfig` uses it — no new dependency)
+and the answers *generate* `pin_aliases.cfg`, `hardware.cfg` and
+`parameters.cfg` from templates in `installer/templates/`.
+
+The point is not the menu. Those three files stop being shipped and start being
+generated, so `post_update.sh` no longer copies over them — it regenerates in
+refresh mode, which rebuilds from the new template and puts back every value
+the user had, reporting anything the new version no longer uses. That is the
+fix for the clobbering this project worked around twice before (the pull-first
+rule, then `user.cfg`).
+
+`installer/detect.py` reads the printer first, so the menu is mostly
+confirmation: toolhead count, extruder naming, toolchanger, CAN UUID, LED chain
+family, and existing `STATUS_*` macros. `--check` runs after the menu and
+**refuses** an LED choice that would stop Klipper starting.
+
+**Verified end to end on both printers.**
+
+Ender (`biqu@192.168.1.75`) — different user, Python 3.11, single extruder, real
+`stealthburner_leds.cfg`: detection correct, guard refused Full and named all
+ten colliding macros, config scaled to one path, every file parsed under
+Klipper's own parser with zero empty aliases, re-install a no-op, uninstall
+clean. Machine restored to exactly its prior state afterwards.
+
+Voron (`pi@192.168.1.214`) — full wipe and reinstall, twice:
+`uninstall → install → Klipper ready`, with the CAN UUID recovered from the
+uninstall backup and all 101 calibrated values put back automatically. **A
+config generated entirely from menuconfig answers boots on real hardware.**
+
+Bugs the hardware testing found that sandboxes had not:
+
+- `verify.sh` chose which printer to check by hostname (`!= sc350`), so on any
+  other printer it queried the developer's Voron by IP and reported that
+  machine's health as if it were yours.
+- `verify.sh` reported six-toolhead defaults as drift on a correct
+  single-toolhead install, advising the user to copy the developer's file over
+  their own.
+- Uninstall discarded `hardware.cfg`, the only place the CAN UUID lives — and a
+  powered, configured board does not answer `canbus_query`, which is exactly
+  its state during a reinstall.
+- Uninstall preserved calibration but nothing restored it, so a reinstall came
+  up correct except for every bowden length at its 800 mm default.
+
+**Not yet done:** the menu has only ever run non-interactively (`SA_NO_MENU`).
+The curses TUI itself is unexercised — that needs a human at a terminal.
+
+---
+
 ## Backlog
 
 Ordered roughly by value. Items 1–3 are features; 4–5 are the test sweep;
