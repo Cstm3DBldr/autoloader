@@ -1571,12 +1571,26 @@ class Autoloader:
                 "    Do NOT home yet: homing stops on 'triggered', so an "
                 "always-triggered switch makes it stop instantly and call that "
                 "position zero.")
+            self.calibration._offer_retry(
+                gcmd, "Watch it again?",
+                "It never read open. If the carriage was sitting on the "
+                "switch the whole time, move it clear and try again -- that "
+                "looks identical to a switch stuck on, and only another go "
+                "tells them apart.",
+                "WATCH AGAIN", "SA_TEST_ENDSTOP DURATION=%.0f" % duration)
         elif seen_open and not seen_triggered:
             gcmd.respond_info(
                 "SA: ENDSTOP NEVER TRIGGERED. Either it was not pressed, or "
                 "the switch/wiring is not reaching the board.\n"
                 "    Do NOT home yet: homing would drive the carriage into the "
                 "hard stop waiting for a signal that never comes.")
+            self.calibration._offer_retry(
+                gcmd, "Watch it again?",
+                "It never triggered. If you did not get the carriage onto the "
+                "switch in time, that reads exactly the same as a switch that "
+                "is not wired -- so try again before believing the wiring is "
+                "at fault.",
+                "WATCH AGAIN", "SA_TEST_ENDSTOP DURATION=%.0f" % duration)
         else:
             gcmd.respond_info("SA: No reading obtained. Check the endstop pin.")
 

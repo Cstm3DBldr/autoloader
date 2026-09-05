@@ -638,6 +638,31 @@ class SACalibration:
          None, None, None, None),
     ]
 
+    def _offer_command(self, gcmd, question, detail, label, cmd,
+                       decline="STOP HERE"):
+        """Leave a prompt behind that will run `cmd` if accepted.
+
+        Every offer in this file goes through here. The three that existed
+        before -- next step, next path, and the endstop retry -- had drifted
+        into three copies of the same four lines, and a copy that forgets to
+        set _cal_state is an offer whose button does nothing.
+        """
+        self.owner._cal_data  = {'_next_cmd': cmd}
+        self.owner._cal_state = 'chain_next'
+        self._prompt(
+            gcmd, question,
+            cmd,
+            "SA_RESPOND VALUE=no",
+            detail=detail,
+            choices=[(label, "yes", "primary"),
+                     (decline, "no", "secondary")])
+
+    def _offer_retry(self, gcmd, question, detail, label, cmd):
+        """Offer to run something again. Same shape, different intent:
+        nothing has been achieved yet, so declining is not "stop here"."""
+        self._offer_command(gcmd, question, detail, label, cmd,
+                            decline="NOT NOW")
+
     def _offer_next_path(self, gcmd, kind, path, cmd_fmt, label):
         """Offer the same calibration on the next path, else move on.
 
@@ -650,18 +675,13 @@ class SACalibration:
         if nxt >= int(self.owner.num_paths):
             self._offer_next(gcmd, kind)
             return
-        self.owner._cal_data = {'_next_cmd': cmd_fmt % nxt}
-        self.owner._cal_state = 'chain_next'
-        self._prompt(
+        self._offer_command(
             gcmd,
             "%s done. Do path %d next?" % (label, nxt),
-            cmd_fmt % nxt,
-            "SA_RESPOND VALUE=no",
-            detail=("Path %d of %d complete. Each path is measured separately "
-                    "-- the remaining ones still hold their old values."
-                    % (int(path) + 1, int(self.owner.num_paths))),
-            choices=[("PATH %d" % nxt, "yes", "primary"),
-                     ("STOP HERE", "no", "secondary")])
+            ("Path %d of %d complete. Each path is measured separately "
+             "-- the remaining ones still hold their old values."
+             % (int(path) + 1, int(self.owner.num_paths))),
+            "PATH %d" % nxt, cmd_fmt % nxt)
 
     def _offer_next(self, gcmd, step):
         """After a calibration completes, offer the one that follows it."""
@@ -678,15 +698,10 @@ class SACalibration:
             return
 
         _key, done_label, question, why, btn_label, btn_cmd = entry
-        self.owner._cal_data = {'_next_cmd': btn_cmd}
-        self.owner._cal_state = 'chain_next'
-        self._prompt(
+        self._offer_command(
             gcmd, question,
-            btn_cmd,
-            "SA_RESPOND VALUE=no",
-            detail=("%s saved." % done_label) + NL + NL + why,
-            choices=[(btn_label, "yes", "primary"),
-                     ("STOP HERE", "no", "secondary")])
+            ("%s saved." % done_label) + NL + NL + why,
+            btn_label, btn_cmd)
 
     def _chain_respond(self, gcmd, state, value):
         owner = self.owner
@@ -998,16 +1013,35 @@ class SACalibration:
             "Did the %s motor move the right way?" % motor,
             "SA_RESPOND VALUE=yes",
             "SA_RESPOND VALUE=no",
+            "SA_RESPOND VALUE=again",
             detail=(expect + NL + NL
-                    + "Currently: %s. Answering NO flips it, saves it, and "
-                      "buzzes again so you can check."
-                      % ("INVERTED" if inverted else "normal")),
+                    + "Currently: %s. Answering WRONG WAY flips it, saves it, "
+                      "and buzzes again so you can check."
+                      % ("INVERTED" if inverted else "normal")
+                    + NL + NL
+                    + "The move is short and it only happens once, so it is "
+                      "easy to miss. BUZZ AGAIN repeats it and changes "
+                      "nothing -- use it as many times as you need before "
+                      "answering."),
             choices=[("RIGHT WAY", "yes", "primary"),
-                     ("WRONG WAY", "no", "warning")])
+                     ("WRONG WAY", "no", "warning"),
+                     ("BUZZ AGAIN", "again", "secondary")],
+            columns=3)
 
     def _dir_respond(self, gcmd, state, value):
         owner = self.owner
         motor = (owner._cal_data or {}).get('motor', 'drive')
+
+        if str(value).strip().lower() == 'again':
+            # Re-running the whole command re-buzzes AND re-asks, so the
+            # operator is never left looking at a stale question. Nothing is
+            # decided here: the direction, the saved value and the chain
+            # position are all exactly as they were.
+            self._clear()
+            gcmd.respond_info("SA CAL: Buzzing the %s motor again..." % motor)
+            owner.gcode.run_script_from_command(
+                "SA_BUZZ_CHECK MOTOR=%s" % motor)
+            return
 
         if self._yes(value):
             self._clear()
