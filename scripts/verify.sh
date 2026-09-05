@@ -53,6 +53,17 @@ echo
 # present in EXISTING params (case a). New repo-only params are informational.
 echo "── parameters.cfg drift (printer vs repo) ──"
 PARAM_DRIFT=0
+
+# Only meaningful for a hand-built install. Once parameters.cfg is GENERATED
+# from menuconfig answers, the repo copy is a template source and comparing
+# against it is nonsense: a correct single-toolhead install reports every
+# six-toolhead default as "drift" and advises copying the developer's file over
+# it. The generated-drift check above is the right test for those installs.
+SA_IS_GENERATED=$($REMOTE '[ -f "$HOME/printer_data/config/autoloader/.autoloader-config" ] && echo yes || echo no' 2>/dev/null)
+if [ "$SA_IS_GENERATED" = "yes" ]; then
+    echo "  – skipped: this config is generated from your answers, so the repo"
+    echo "    copy is a template rather than the expected content."
+else
 if [ -n "$REMOTE" ]; then
     REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
     REPO_PARAMS="$REPO_ROOT/autoloader/parameters.cfg"
@@ -125,6 +136,8 @@ else
 fi
 echo
 
+
+fi
 
 # ── generated config drift ───────────────────────────────────────────────────
 # pin_aliases.cfg, hardware.cfg and parameters.cfg are generated from the
