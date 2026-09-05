@@ -148,6 +148,48 @@ SA_REPO="${INSTALL_PATH}" SA_CONFIG="${CONFIG_DIR}" "${INSTALL_PATH}/post_update
 USER_CFG="${CONFIG_DIR}/autoloader/user.cfg"
 mkdir -p "${CONFIG_DIR}/autoloader"
 
+# ── put back what an uninstall set aside ─────────────────────────────────────
+# Uninstall preserves calibration, settings and the LED config; nothing put
+# them back. A wipe-and-reinstall therefore came up with the hardware correct
+# and every bowden length at its 800 mm default -- hours of measurement sitting
+# in a directory the user was never told to look in.
+#
+# Restored automatically rather than offered. variables.cfg is a measurement of
+# THIS machine, and the machine has not changed between an uninstall and the
+# reinstall that follows it; a fresh install that silently discards it is never
+# what anyone wanted. It is also trivially undone -- delete the file and
+# recalibrate -- whereas losing it is not.
+#
+# Only ever fills in what is MISSING. Anything already present wins, so this
+# cannot overwrite a config the user has just built deliberately.
+SA_BACKUP="$(ls -d "${HOME}"/autoloader-config-backup-* 2>/dev/null | tail -1)"
+if [ -n "${SA_BACKUP}" ] && [ -d "${SA_BACKUP}" ]; then
+    SA_RESTORED=""
+    if [ -f "${SA_BACKUP}/variables.cfg" ] && \
+       [ ! -f "${CONFIG_DIR}/autoloader/variables.cfg" ]; then
+        cp -a "${SA_BACKUP}/variables.cfg" "${CONFIG_DIR}/autoloader/"
+        SA_RESTORED="${SA_RESTORED} variables.cfg"
+    fi
+    if [ -f "${SA_BACKUP}/user.cfg" ] && [ ! -f "${USER_CFG}" ]; then
+        cp -a "${SA_BACKUP}/user.cfg" "${USER_CFG}"
+        SA_RESTORED="${SA_RESTORED} user.cfg"
+    fi
+    if [ -d "${SA_BACKUP}/leds" ] && \
+       [ -z "$(ls -A "${CONFIG_DIR}/autoloader/leds" 2>/dev/null)" ]; then
+        mkdir -p "${CONFIG_DIR}/autoloader/leds"
+        cp -a "${SA_BACKUP}/leds/." "${CONFIG_DIR}/autoloader/leds/" 2>/dev/null
+        SA_RESTORED="${SA_RESTORED} leds/"
+    fi
+    if [ -n "${SA_RESTORED}" ]; then
+        echo "[INSTALL] Put back from your last uninstall:${SA_RESTORED}"
+        echo "          (calibration and settings — the originals are still in"
+        echo "           ${SA_BACKUP})"
+        if [ -f "${CONFIG_DIR}/autoloader/variables.cfg" ]; then
+            echo "          $(grep -c '=' "${CONFIG_DIR}/autoloader/variables.cfg" 2>/dev/null) calibrated value(s) restored."
+        fi
+    fi
+fi
+
 sa_write_user_cfg() {
     cat > "$1" <<'USEREOF'
 # ══════════════════════════════════════════════════════════════════════════════
