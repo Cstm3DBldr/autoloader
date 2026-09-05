@@ -160,20 +160,20 @@
             </v-card-text>
 
         <!-- ─── CONTROLS DIALOG ─────────────────────────────────── -->
-        <v-dialog v-model="pathModalOpen" :max-width="pathDialogWidth" :retain-focus="false">
-            <v-card v-if="pathModalIdx !== null" class="sa-dialog">
+        <v-dialog v-model="pathModalOpen" width="400" :retain-focus="false">
+            <v-card v-if="pathModalIdx !== null" class="panel sa-dialog">
                 <!-- ─── CONTROLS VIEW ──────────────────────────────── -->
                 <template v-if="pathView === 'controls'">
-                <v-card-title class="sa-dialog-title">
+                <v-toolbar dense flat class="panel-toolbar sa-dialog-title">
                     <v-icon left size="18">{{ saFilamentIcon }}</v-icon>
-                    <span class="subtitle-2">
+                    <span class="sa-dialog-heading">
                         T{{ pathModalIdx }} — {{ $t('Panels.AutoloaderPanel.Controls') }}
                     </span>
                     <v-spacer />
                     <v-btn icon small @click="pathModalOpen = false">
                         <v-icon size="18">{{ mdiClose }}</v-icon>
                     </v-btn>
-                </v-card-title>
+                </v-toolbar>
                 <v-divider />
                 <v-card-text class="pa-3">
                     <!-- Current profile tile (clickable → opens profile editor) -->
@@ -375,15 +375,15 @@
 
                 <!-- ─── PROFILE VIEW ───────────────────────────────── -->
                 <template v-else>
-                <v-card-title class="sa-dialog-title">
-                    <span class="subtitle-2">
+                <v-toolbar dense flat class="panel-toolbar sa-dialog-title">
+                    <span class="sa-dialog-heading">
                         T{{ pathModalIdx }} — {{ $t('Panels.AutoloaderPanel.FilamentProfile') }}
                     </span>
                     <v-spacer />
                     <v-btn icon small @click="pathModalOpen = false">
                         <v-icon size="18">{{ mdiClose }}</v-icon>
                     </v-btn>
-                </v-card-title>
+                </v-toolbar>
                 <v-divider />
                 <v-card-text class="pa-3">
                     <!-- Current profile read-only summary -->
@@ -613,11 +613,11 @@
         </v-dialog>
 
         <!-- ─── CALIBRATION GUIDE DIALOG ────────────────────────── -->
-        <v-dialog v-model="calOpen" max-width="560" :retain-focus="false" scrollable>
-            <v-card class="sa-dialog">
-                <v-card-title class="sa-dialog-title">
+        <v-dialog v-model="calOpen" width="400" :retain-focus="false" scrollable>
+            <v-card class="panel sa-dialog">
+                <v-toolbar dense flat class="panel-toolbar sa-dialog-title">
                     <v-icon left size="18">{{ mdiCogOutline }}</v-icon>
-                    <span class="subtitle-2">
+                    <span class="sa-dialog-heading">
                         {{ $t('Panels.AutoloaderPanel.CalibrationGuide') }}
                         — {{ $t('Panels.AutoloaderPanel.Step') }} {{ calStep + 1 }} /
                         {{ calTotalSteps }}
@@ -626,9 +626,9 @@
                     <v-btn icon small @click="calOpen = false">
                         <v-icon size="18">{{ mdiClose }}</v-icon>
                     </v-btn>
-                </v-card-title>
+                </v-toolbar>
                 <v-divider />
-                <v-card-text class="pa-3 sa-cal-body">
+                <v-card-text class="pa-4 sa-cal-body">
                     <!-- Step 0 — Motor direction -->
                     <div v-if="calStep === 0">
                         <div class="subtitle-2 mb-2">
@@ -973,17 +973,17 @@
                * unload_done  → unload-complete action panel
                * anything else → generic calibration prompt
         -->
-        <v-dialog v-model="promptOpen" max-width="480" persistent :retain-focus="false">
-            <v-card class="sa-dialog">
-                <v-card-title class="sa-dialog-title">
+        <v-dialog v-model="promptOpen" width="400" persistent :retain-focus="false">
+            <v-card class="panel sa-dialog">
+                <v-toolbar dense flat class="panel-toolbar sa-dialog-title">
                     <v-icon
                         left
                         size="18"
                         :color="promptKind === 'load' ? 'success' : promptKind === 'unload' ? 'warning' : 'warning'">
                         {{ promptKind === 'generic' ? mdiAlertCircleOutline : mdiCheckCircle }}
                     </v-icon>
-                    <span class="subtitle-2">{{ promptDialogTitle }}</span>
-                </v-card-title>
+                    <span class="sa-dialog-heading">{{ promptDialogTitle }}</span>
+                </v-toolbar>
                 <v-divider />
 
                 <!-- ─── LOAD COMPLETE ────────────────────────────── -->
@@ -1126,10 +1126,10 @@
         </v-dialog>
 
         <!-- ─── COLOR PICKER DIALOG (for custom pie slices) ────── -->
-        <v-dialog v-model="pickerOpen" max-width="320" :retain-focus="false">
-            <v-card class="sa-dialog">
-                <v-card-title class="sa-dialog-title">
-                    <span class="subtitle-2">
+        <v-dialog v-model="pickerOpen" width="400" :retain-focus="false">
+            <v-card class="panel sa-dialog">
+                <v-toolbar dense flat class="panel-toolbar sa-dialog-title">
+                    <span class="sa-dialog-heading">
                         {{ $t('Panels.AutoloaderPanel.PickColor') }}
                         <span v-if="colorMode !== 'single'" class="grey--text">
                             — {{ pickerSliceLabel }}
@@ -1139,7 +1139,7 @@
                     <v-btn icon small @click="pickerOpen = false">
                         <v-icon size="18">{{ mdiClose }}</v-icon>
                     </v-btn>
-                </v-card-title>
+                </v-toolbar>
                 <v-divider />
                 <v-color-picker
                     v-model="pickerColor"
@@ -1902,10 +1902,6 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     }
 
     /** The profile editor needs more room than the controls. */
-    get pathDialogWidth(): number {
-        return this.pathView === 'profile' ? 460 : 380
-    }
-
     openPathModal(i: number): void {
         this.pathModalIdx = i
         // Always open on the controls, never on whichever view was last used.
@@ -2828,14 +2824,30 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 }
 
 /* ── Dialog ──────────────────────────────────────────────── */
-.sa-dialog {
-    background: #1e1e1e !important;
-}
+/*
+ * .panel and .panel-toolbar are Mainsail's own, so these dialogs inherit the
+ * theme the same way the native prompt and every dashboard panel do. What
+ * follows only fills the gaps -- it must not repaint anything, or a light
+ * theme goes back to showing dark cards.
+ */
 .sa-dialog-title {
-    background: #272727;
-    padding: 8px 12px !important;
-    min-height: 44px;
+    flex: 0 0 auto;
 }
+.sa-dialog-title >>> .v-toolbar__content {
+    padding: 0 8px 0 16px;
+}
+.sa-dialog-heading {
+    font-size: 1.25rem;
+    font-weight: 400;
+    line-height: 2rem;
+    letter-spacing: 0.0125em;
+}
+/*
+ * No fallback background here on purpose. The first attempt at one used a
+ * higher-specificity selector than Mainsail's .panel-toolbar and so overrode
+ * the colour it was meant to be backing up -- the header came out flat grey on
+ * the very build where the real rule was present and working.
+ */
 
 /* ── Profile tile (replaces Edit Profile button) ─────────── */
 .sa-profile-tile {
