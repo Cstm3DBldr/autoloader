@@ -304,6 +304,8 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `web/mainsail/AutoloaderPanel.vue` | Mainsail UI panel (in-tree fork variant, superseded by `web/mainsail-plugin/`) |
 | `web/fluidd/AutoloaderPanel.vue` | Fluidd UI panel |
 | `KlipperScreen/panels/sa_*.py` | KlipperScreen touchscreen panels |
+| `KlipperScreen/addons/sa_autoloader.py` | Runs at KlipperScreen startup and starts watching, so a touchscreen that has opened no autoloader panel still follows a guide opened in Mainsail |
+| `scripts/patch_klipperscreen.sh` | Adds the `addons/` hook to KlipperScreen's `screen.py`. Generic and does not mention the autoloader — it is what we would propose upstream. Guarded: refuses unless the exact anchor matches, idempotent, backs up, byte-compiles and restores on failure, `--revert` undoes it |
 | `KlipperScreen/sa_filament_db.py` | Filament profile DB loader (shared with Moonraker) |
 | `filaments/brands/*.cfg` | Per-brand filament profile files |
 | `References/hardware_pinouts/` | Board pinout images — local + GitHub only, NOT on printer |
@@ -480,6 +482,7 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_CALIBRATE_BOWDEN TOOL=N` | Measure Bowden tube length for path N |
 | `SA_ENCODER_QUERY [TOOL=N] [RESET=1]` | Snapshot encoder distances |
 | `SA_ENCODER_WATCH [TOOL=N] [DURATION=30] [INTERVAL=0.5]` | Live encoder delta stream |
+| `SA_GUIDE [OPEN=0\|1] [STEP=n]` | Open, close or page the calibration guide on every UI at once. The printer holds `guide_open` / `guide_step` and both UIs mirror them, the same way prompts already worked — so opening the guide in Mainsail opens it on the touchscreen and either one can page it |
 | `SA_RESPOND VALUE=x` | Advance active calibration to next phase |
 | `SA_SET_STATE TOOL=N STATE=<state>` | Override path state (loaded/empty/partial/unknown) |
 | `SA_FORM_TIP TOOL=N [MATERIAL=] [PUSH=] [SEVER=] [COOL_POS=] [COOL_LEN=] [COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=]` | Run only the tip-forming sequence, for tuning. Overrides are inline so no SAVE_CONFIG or restart is needed between attempts. `MATERIAL=` applies a material's row from the per-material tip table without that spool being loaded, so a material can be tuned with whatever filament is to hand. Leaves the tip past the gears — pull from the entry side and measure |
@@ -590,6 +593,8 @@ If you add a new file to the project, add its destination here AND update
 | `autoloader/*.html` | `~/printer_data/config/autoloader/` | direct copy (post_update.sh) |
 | `KlipperScreen/panels/sa_*.py` | `~/KlipperScreen/panels/` | direct copy (post_update.sh) |
 | `KlipperScreen/sa_*.py` | `~/KlipperScreen/` | direct copy (post_update.sh) |
+| `KlipperScreen/addons/*.py` | `~/KlipperScreen/addons/` | direct copy (post_update.sh) |
+| `scripts/patch_klipperscreen.sh` | edits `~/KlipperScreen/screen.py` | **re-applied by post_update.sh on every update.** A KlipperScreen update replaces screen.py and takes the hook with it silently, so this runs every time rather than once. `install.sh --uninstall` reverts it, but only when no other add-on is left using it |
 | `KlipperScreen/sa_klipperscreen.conf` | `~/printer_data/config/sa_klipperscreen.conf` | direct copy (post_update.sh) |
 | `web/mainsail/AutoloaderPanel.vue` | compiled into `~/mainsail/assets/*.js` | manual rebuild from VS source — not auto-synced |
 | `web/mainsail-plugin/dist/*.js` | served anywhere the browser can reach; registered in the Moonraker DB | `npm run build`, then deploy the one file — not auto-synced |
@@ -707,6 +712,19 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   `autoloader/leds/`. That directory is the user's; `post_update.sh` overwrites
   everything it copies, so anything shipped there would discard their tuning on
   the next update.
+- Do not assume a subscription delivers a value. Moonraker sends CHANGED
+  fields only, so a field that never changes again is never delivered: the
+  KlipperScreen guide read a status object containing one key and silently
+  fell back to step 1. `_ensure_subscription` seeds with a one-shot query
+  after subscribing. The same mistake in a different shape — a watcher
+  installed with nothing subscribed to — cost the previous hour. Wiring the
+  pipe is not priming it, and both versions log success while doing nothing.
+- Do not populate a KlipperScreen panel only in `activate()`. `attach_panel`
+  adds the content, calls `process_update`, THEN `activate()`, and only then
+  `show_all()` — so the first construction of a panel can end up built but not
+  shown, with every later activation reusing the cached object and looking
+  fine. Re-render on `GLib.idle_add` after activate. Same class as the
+  sa_macros first-attach history and the carousel centring fix.
 - Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin is always `^!autoloader:SA_SELECTOR_STOP`.
 
 ## Console Output Rules

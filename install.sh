@@ -27,6 +27,16 @@ if [ "${1:-}" = "--uninstall" ]; then
     rm -f "${KS_PATH}/panels/"sa_*.py 2>/dev/null || true
     rm -f "${KS_PATH}/"sa_*.py 2>/dev/null || true
     rm -f "${CONFIG_DIR}/sa_klipperscreen.conf"
+    # The add-on, and the screen.py hook that runs it. Left in place, the hook
+    # would call an add-on whose sa_subscription import no longer exists and
+    # log a failure on every KlipperScreen start. The hook itself is only
+    # reverted if nothing else is using it -- another add-on may have arrived
+    # since, and taking its entry point away is not ours to do.
+    rm -f "${KS_PATH}/addons/sa_autoloader.py" 2>/dev/null || true
+    if [ -d "${KS_PATH}/addons" ] && [ -z "$(ls -A "${KS_PATH}/addons" 2>/dev/null)" ]; then
+        rmdir "${KS_PATH}/addons" 2>/dev/null || true
+        bash "${INSTALL_PATH}/scripts/patch_klipperscreen.sh" --revert 2>/dev/null || true
+    fi
     # Live config dir
     # NOT rm -rf on the whole directory. It holds variables.cfg -- every
     # bowden length, encoder mm/pulse and selector position the machine was
