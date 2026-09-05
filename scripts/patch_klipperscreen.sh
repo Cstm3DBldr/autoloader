@@ -104,27 +104,36 @@ s = s.replace(anchor, call, 1)
 
 method_anchor = '    def process_update(self, *args):'
 method = '''    def _load_addons(self):
-        """Import addons/*.py and hand each one the screen, once, at startup.
+        """Give each addons/*.py an init(screen) call, once, at startup.
 
         process_update reaches only the panel currently on screen, so an
-        add-on has no way to observe the printer while the user is elsewhere.
-        This is the entry point that lets one arrange that for itself.
+        add-on has nowhere to stand: it cannot watch the printer while the
+        user is elsewhere, and has no point at which to subscribe to the
+        objects it cares about. This is that point.
 
-        A broken add-on must never stop KlipperScreen from starting, so every
-        import and every call is contained.
+        Loaded by path under a private module name rather than by putting the
+        directory on sys.path, so an add-on called json.py cannot shadow the
+        standard library. The directory is inside the KlipperScreen install
+        and not the config directory, which is writable through Moonraker's
+        file API -- add-ons there would turn a remote write into code that
+        runs at startup.
+
+        A broken add-on must never stop KlipperScreen from starting.
         """
+        import importlib.util
         addon_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "addons")
         if not os.path.isdir(addon_dir):
             return
-        if addon_dir not in sys.path:
-            sys.path.insert(0, addon_dir)
         for entry in sorted(os.listdir(addon_dir)):
             if not entry.endswith(".py") or entry.startswith("_"):
                 continue
             name = entry[:-3]
             try:
-                module = import_module(name)
+                spec = importlib.util.spec_from_file_location(
+                    f"ks_addons.{name}", os.path.join(addon_dir, entry))
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
                 init = getattr(module, "init", None)
                 if callable(init):
                     init(self)
