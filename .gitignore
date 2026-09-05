@@ -1,2 +1,4 @@
 installer/__pycache__/
 installer/generated/
+__pycache__/
+*.pyc
