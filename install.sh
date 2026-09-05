@@ -425,3 +425,31 @@ else
     echo "        [include autoloader/autoloader.cfg]"
 fi
 echo "  • Run ${INSTALL_PATH}/scripts/verify.sh to confirm everything is in sync"
+
+# ── the one thing that will stop Klipper starting, said plainly ──────────────
+# The installer knows perfectly well the UUID is unset -- it tried to find one
+# and said so during detection. Staying quiet here means a first-time user
+# restarts and meets "mcu 'autoloader': Invalid CAN uuid" with no idea it was
+# foreseeable. Warn at the end, where they are actually looking.
+if grep -q '^CONFIG_MCU_UUID="CHANGE_ME"' "${SA_ANSWERS}" 2>/dev/null; then
+    echo ""
+    echo "  ⚠  YOUR CAN UUID IS NOT SET YET — Klipper will not start until it is."
+    echo ""
+    echo "     The autoloader board has to be found before it can be addressed,"
+    echo "     and a board already running does not answer a scan. So:"
+    echo ""
+    echo "       1. Power the printer off, then on."
+    echo "       2. Before starting a print, run:"
+    echo "            python3 ~/klipper/scripts/canbus_query.py can0"
+    echo "       3. It prints a line like:  canbus_uuid=329ce333239a"
+    echo "       4. Put that number in:"
+    echo "            ~/printer_data/config/autoloader/user.cfg"
+    echo "          as:"
+    echo "            [mcu autoloader]"
+    echo "            canbus_uuid: <the number>"
+    echo "       5. Restart Klipper."
+    echo ""
+    echo "     user.cfg is included last, so it overrides the generated file and"
+    echo "     no update can undo it."
+    echo ""
+fi
