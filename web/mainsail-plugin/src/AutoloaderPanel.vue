@@ -616,7 +616,7 @@
         <v-dialog v-model="calOpen" width="400" :retain-focus="false" scrollable>
             <v-card class="panel sa-dialog">
                 <v-toolbar dense flat class="panel-toolbar sa-dialog-title">
-                    <v-icon left size="18">{{ mdiCogOutline }}</v-icon>
+                    <v-icon left size="18">{{ mdiInformation }}</v-icon>
                     <span class="sa-dialog-heading">
                         {{ $t('Panels.AutoloaderPanel.CalibrationShort') }}
                         — {{ $t('Panels.AutoloaderPanel.Step') }} {{ calStep + 1 }} /
@@ -624,7 +624,7 @@
                     </span>
                     <v-spacer />
                     <v-btn icon small @click="calOpen = false">
-                        <v-icon size="18">{{ mdiClose }}</v-icon>
+                        <v-icon size="18">{{ mdiCloseThick }}</v-icon>
                     </v-btn>
                 </v-toolbar>
                 <v-divider />
@@ -951,20 +951,21 @@
                     </div>
                 </v-card-text>
                 <v-divider />
-                <v-card-actions class="px-3 py-2">
+                <v-card-actions class="sa-step-actions">
+                    <v-spacer />
                     <v-btn text :disabled="calStep === 0" @click="calStepNav(-1)">
                         <v-icon size="16" left>{{ mdiArrowLeft }}</v-icon>
                         {{ $t('Panels.AutoloaderPanel.Back') }}
                     </v-btn>
-                    <v-spacer />
                     <v-btn
                         v-if="calStep < calTotalSteps - 1"
+                        text
                         color="primary"
                         @click="calStepNav(1)">
                         {{ $t('Panels.AutoloaderPanel.Next') }}
                         <v-icon size="16" right>{{ mdiArrowRight }}</v-icon>
                     </v-btn>
-                    <v-btn v-else color="primary" @click="calOpen = false">
+                    <v-btn v-else text color="primary" @click="calOpen = false">
                         {{ $t('Panels.AutoloaderPanel.Finish') }}
                     </v-btn>
                 </v-card-actions>
@@ -1161,10 +1162,12 @@
 import { Component, Mixins, Prop, Watch } from 'vue-property-decorator'
 import {
     mdiClose,
+    mdiCloseThick,
     mdiArrowUpBold,
     mdiArrowDownBold,
     mdiPencil,
     mdiCogOutline,
+    mdiInformation,
     mdiArrowLeft,
     mdiArrowRight,
     mdiAlertCircleOutline,
@@ -1473,10 +1476,12 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 
     saFilamentIcon = saFilamentIcon
     mdiClose = mdiClose
+    mdiCloseThick = mdiCloseThick
     mdiArrowUpBold = mdiArrowUpBold
     mdiArrowDownBold = mdiArrowDownBold
     mdiPencil = mdiPencil
     mdiCogOutline = mdiCogOutline
+    mdiInformation = mdiInformation
     mdiArrowLeft = mdiArrowLeft
     mdiArrowRight = mdiArrowRight
     mdiAlertCircleOutline = mdiAlertCircleOutline
@@ -2619,6 +2624,12 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 .sa-step-btn--grid {
     background: rgba(127, 127, 127, 0.16) !important;
 }
+/* Mainsail's prompt puts its footer buttons in a v-card__actions with 8px of
+   padding, right-aligned after a spacer. Same here. */
+.sa-step-actions {
+    padding: 8px !important;
+}
+
 
 
 /* ── Prompt dialog body ──────────────────────────────────── */
@@ -3133,6 +3144,28 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     padding: 16px !important;
     font-size: 0.875rem;
 }
+/*
+ * Kill the open/close animation on the prompt dialog.
+ *
+ * Every re-render of a prompt sends action:prompt_end before its
+ * action:prompt_begin, and Mainsail's showDialog is
+ *   lastPromptBeginPos > lastPromptClosePos
+ * so the dialog genuinely unmounts and remounts between the two -- that is
+ * the flash.
+ *
+ * The leading prompt_end cannot simply be dropped: KlipperScreen's
+ * prompt_show handler is `if not self.prompt: self.show()`, so without the
+ * close it leaves the OLD dialog on screen with the new buttons never
+ * rendered. A stale dialog showing the wrong buttons is far worse than a
+ * flash, so the emit order stays and the animation goes instead: the swap
+ * becomes a single frame rather than a fade out and back in.
+ */
+.v-dialog:has(.macro_prompt-dialog),
+.v-dialog__content:has(.macro_prompt-dialog) {
+    transition: none !important;
+    animation: none !important;
+}
+
 /* Every prompt_text is its own .row, and the row's default margins are what
    opened the wide gaps between each line. */
 .macro_prompt-dialog .v-card__text > .row {
