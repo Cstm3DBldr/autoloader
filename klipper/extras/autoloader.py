@@ -92,8 +92,13 @@ class Autoloader:
         self.servo_name            = config.get('servo')
 
         # ── Servo angles ──────────────────────────────────────────────────────
-        self.servo_engaged_angle    = config.getfloat('servo_engaged_angle',    30.0)
-        self.servo_disengaged_angle = config.getfloat('servo_disengaged_angle', 160.0)
+        # These fall back to what every shipped parameters.cfg carries. They
+        # used to fall back to 30/160 -- the two angles the other way round --
+        # so a config that omitted them got a drive gear that gripped when it
+        # meant to release, and nothing on screen said the values were not the
+        # ones in the file the operator was reading.
+        self.servo_engaged_angle    = config.getfloat('servo_engaged_angle',    160.0)
+        self.servo_disengaged_angle = config.getfloat('servo_disengaged_angle', 10.0)
 
         # The servo's own maximum, read from the [servo] section rather than
         # assumed to be 180 -- mirroring an angle for a reversed servo has to

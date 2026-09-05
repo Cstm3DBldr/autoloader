@@ -431,8 +431,8 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `selector_position_N` | N×21mm | Selector position in mm from home for path N (set by SA_CALIBRATE_SELECTOR) |
 | `extruder_N` | extruder / extruderN | Extruder name for heating during load |
 | `bowden_length_N` | 800.0 | Per-path Bowden tube length (mm); set by SA_CALIBRATE_BOWDEN. Replaces global `tube_length`. |
-| `servo_engaged_angle` | 30 | Servo angle when drive gear grips filament |
-| `servo_disengaged_angle` | 160 | Servo angle when path is neutral |
+| `servo_engaged_angle` | 160 | Servo angle when drive gear grips filament |
+| `servo_disengaged_angle` | 10 | Servo angle when path is neutral |
 | `tube_length` | 800 | Legacy fallback Bowden length used if `bowden_length_N` not set |
 | `nozzle_distance` | 50 | Extruder gears → nozzle tip (mm) |
 | `purge_length` | 30 | Extra extrusion after nozzle loaded (mm) |
@@ -470,6 +470,10 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_STATUS` | Print state for all paths |
 | `SA_BUZZ_DRIVE` | Test drive motor |
 | `SA_BUZZ_SELECTOR` | Test selector motor |
+| `SA_BUZZ_CHECK MOTOR=drive\|selector` | Buzz, then ask which way it went. Answering "wrong way" runs `SA_SET_DIRECTION`, saves it, and buzzes again so the fix is checked rather than taken on trust. This is what the guides call; the bare `SA_BUZZ_*` commands still exist for a quick manual poke |
+| `SA_SET_DIRECTION MOTOR=drive\|selector [INVERT=0\|1]` | Flip (or set) that motor's direction and persist it to variables.cfg. Effective immediately — the sign is applied per move, not baked into the stepper config, so no restart and no rewiring |
+| `SA_TEST_ENDSTOP [DURATION=30] [INTERVAL=0.3]` | Watch the selector endstop and report every change for DURATION seconds. Drives nothing — the operator moves the carriage by hand. Ends with ENDSTOP OK only after seeing BOTH states, so a switch stuck in either one fails rather than passing quietly |
+| `SA_CALIBRATE_SERVO` | Find the engage angle. Ordered to protect the servo: arm off first, then move to the rest angle, then the arm goes back on at the end that is safe by definition (resting on the selector body, away from the drive gear), and only the far angle is searched. A `WRONG WAY` button mirrors both angles for a reversed servo — and takes the arm off again before crossing the travel |
 | `SA_CALIBRATE_SELECTOR` | Auto sweep + measure total travel → calculate path positions |
 | `SA_CALIBRATE_DRIVE` | Interactive drive motor rotation_distance calibration |
 | `SA_CALIBRATE_ENCODER TOOL=N` | Measure mm_per_pulse for encoder N |
@@ -629,15 +633,17 @@ nothing was missed.
 
 1. **Flash and connect** the BTT MMB CAN V2.0 board.
 2. **Update `canbus_uuid`** in `hardware.cfg`.
-3. **Test motors:** `SA_BUZZ_DRIVE` then `SA_BUZZ_SELECTOR` — confirm both move.
-4. **Test servo:** `SA_ENGAGE` then `SA_DISENGAGE` — confirm servo moves.
-5. **Home selector:** `SA_HOME` — confirm endstop triggers and carriage returns.
-6. **Calibrate selector:** `SA_CALIBRATE_SELECTOR` — auto-calculates path positions via stallguard sweep.
-7. **Load filament** on path 0 past the drive gear.
-8. **Calibrate drive motor:** `SA_CALIBRATE_DRIVE` — sets `rotation_distance`.
-9. **Calibrate encoders:** `SA_CALIBRATE_ENCODER TOOL=N` for each path.
-10. **Calibrate Bowden lengths:** `SA_CALIBRATE_BOWDEN TOOL=N` for each path (requires extruder sensors).
-11. **Test full load:** `SA_LOAD TOOL=0` — verify complete sequence.
+3. **Test motors:** `SA_BUZZ_CHECK MOTOR=drive` then `MOTOR=selector` — confirm both move, and answer which way. A wrong answer is fixed in software; no rewiring.
+4. **Test servo:** `SA_ENGAGE` then `SA_DISENGAGE` — confirm servo moves. On a NEW build do `SA_CALIBRATE_SERVO` (step 9) first instead: an arm fitted at the wrong angle turns `SA_ENGAGE` into a hard stop, and the calibration is the routine that takes the arm off before anything moves. Its final grip search is the only part that needs filament, so it can be started here and finished after step 8.
+5. **Test endstop:** `SA_TEST_ENDSTOP` — push the carriage onto the switch by hand and off again. Do this BEFORE homing: homing is the first thing that trusts the switch, and it finds out by driving the carriage at it.
+6. **Home selector:** `SA_HOME` — confirm endstop triggers and carriage returns.
+7. **Calibrate selector:** `SA_CALIBRATE_SELECTOR` — auto-calculates path positions via stallguard sweep.
+8. **Load filament** on path 0 past the drive gear.
+9. **Calibrate servo:** `SA_CALIBRATE_SERVO` — finds the engage angle. Needs filament at the drive gear, which is why it comes after the selector and the first load.
+10. **Calibrate drive motor:** `SA_CALIBRATE_DRIVE` — sets `rotation_distance`.
+11. **Calibrate encoders:** `SA_CALIBRATE_ENCODER TOOL=N` for each path.
+12. **Calibrate Bowden lengths:** `SA_CALIBRATE_BOWDEN TOOL=N` for each path (requires extruder sensors).
+13. **Test full load:** `SA_LOAD TOOL=0` — verify complete sequence.
 
 ---
 
