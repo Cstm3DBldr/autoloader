@@ -12,16 +12,17 @@ logger = logging.getLogger('klipperscreen.sa_calibration_guide')
 _GREY      = "#616161"
 _GREEN     = "#388E3C"
 _AMBER     = "#F9A825"
-_NUM_STEPS = 7
+_NUM_STEPS = 8
 
 _STEP_TITLES = [
     "1 — Test Motors",
-    "2 — Home Selector",
-    "3 — Calibrate Selector",
-    "4 — Calibrate Drive Motor",
-    "5 — Calibrate Encoder Speed",
-    "6 — Calibrate Encoder (mm/pulse)",
-    "7 — Calibrate Bowden Length",
+    "2 — Test Endstop",
+    "3 — Home Selector",
+    "4 — Calibrate Selector",
+    "5 — Calibrate Drive Motor",
+    "6 — Calibrate Encoder Speed",
+    "7 — Calibrate Encoder (mm/pulse)",
+    "8 — Calibrate Bowden Length",
 ]
 
 
@@ -180,12 +181,13 @@ class Panel(ScreenPanel):
         box.pack_start(self._section(_STEP_TITLES[idx]), False, False, 0)
 
         if   idx == 0: self._step_motors(box)
-        elif idx == 1: self._step_home(box, homed)
-        elif idx == 2: self._step_selector(box, sel_pos, cal_state, num)
-        elif idx == 3: self._step_drive(box, drv_rot)
-        elif idx == 4: self._step_enc_speed(box, enc_max)
-        elif idx == 5: self._step_encoder(box, enc_mpp, num)
-        elif idx == 6: self._step_bowden(box, bowden_lens, num)
+        elif idx == 1: self._step_endstop(box)
+        elif idx == 2: self._step_home(box, homed)
+        elif idx == 3: self._step_selector(box, sel_pos, cal_state, num)
+        elif idx == 4: self._step_drive(box, drv_rot)
+        elif idx == 5: self._step_enc_speed(box, enc_max)
+        elif idx == 6: self._step_encoder(box, enc_mpp, num)
+        elif idx == 7: self._step_bowden(box, bowden_lens, num)
 
         box.show_all()
 
@@ -211,6 +213,34 @@ class Panel(ScreenPanel):
             "No movement \u2192 check motor wiring and driver power.\n"
             "Wrong direction \u2192 swap any two motor phase wires.\n"
             "Very weak \u2192 increase driver current in hardware.cfg."),
+            False, False, 0)
+
+    def _step_endstop(self, box):
+        """Prove the endstop works BEFORE anything drives at it.
+
+        Homing stops on the endstop signal, so it is the first thing that
+        trusts the switch -- and it finds out by driving the carriage at it. A
+        switch that never triggers means homing runs into the hard stop; one
+        stuck triggered means homing stops instantly and calls that zero. Both
+        are cheap to catch by hand and expensive to catch by driving.
+        """
+        box.pack_start(self._hint(
+            "Move the selector carriage BY HAND onto the endstop and off "
+            "again while this watches. Nothing is driven -- this only reads "
+            "the switch."),
+            False, False, 0)
+        btn = _sbs.make("TEST ENDSTOP", "sa-btn")
+        btn.connect("clicked", self._send, "SA_TEST_ENDSTOP DURATION=30")
+        box.pack_start(btn, False, False, 0)
+        box.pack_start(self._expect(
+            "Reads 'open' off the switch and 'TRIGGERED' on it, and reports "
+            "every change for 30s. It should end with ENDSTOP OK."),
+            False, False, 0)
+        box.pack_start(self._warn(
+            "Never triggers → check wiring and the SA_SELECTOR_STOP pin.\n"
+            "Always triggered → polarity is inverted; check the '^!' on the "
+            "endstop pin in hardware.cfg.\n"
+            "Do not run HOME until this passes."),
             False, False, 0)
 
     def _step_home(self, box, homed):

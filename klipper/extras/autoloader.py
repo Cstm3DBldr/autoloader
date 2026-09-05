@@ -1194,6 +1194,10 @@ class Autoloader:
             ('SA_PARK',
              self._cmd_park,
              "Park filament at drive encoder (phases 0-2 only). TOOL=N"),
+            ('SA_TEST_ENDSTOP',
+             self._cmd_test_endstop,
+             "Watch the selector endstop while you move the carriage by hand. "
+             "Run this BEFORE SA_HOME. [DURATION=] [INTERVAL=]"),
             ('SA_RESTORE_PROFILE',
              self._cmd_restore_profile,
              "Put back the filament profile a wipe removed. TOOL=N"),
@@ -1321,6 +1325,115 @@ class Autoloader:
                 "  [%d]   %-10s  %-8s  %-8s  %-8s  %s%s"
                 % (i, dist_s, mpp_s, entry, th, ext, marker))
         gcmd.respond_info("\n".join(lines))
+
+    def _selector_endstop_state(self):
+        """(triggered, name) for the selector endstop, or (None, name).
+
+        QUERY_ENDSTOPS is the only way to read a manual_stepper's endstop --
+        it has no status object of its own -- so this asks for a fresh query
+        and then reads the result out of query_endstops' last_query.
+        """
+        name = "manual_stepper %s" % self.selector_stepper_name.split()[-1]
+        try:
+            qe = self.printer.lookup_object('query_endstops', None)
+            if qe is None:
+                return None, name
+            self.gcode.run_script_from_command("QUERY_ENDSTOPS")
+            last = qe.get_status(self.reactor.monotonic()).get('last_query', {})
+            if name in last:
+                return bool(last[name]), name
+            # Fall back to any manual_stepper entry: a rename should degrade to
+            # "found something plausible" rather than to silence.
+            for k, v in last.items():
+                if k.startswith('manual_stepper'):
+                    return bool(v), k
+            return None, name
+        except Exception:
+            logging.exception("Autoloader: endstop query failed")
+            return None, name
+
+    def _cmd_test_endstop(self, gcmd):
+        """SA_TEST_ENDSTOP [DURATION=] [INTERVAL=] — watch the selector endstop.
+
+        Comes BEFORE homing in the calibration order on purpose. SA_HOME drives
+        the carriage at the endstop and trusts it to stop the move; if the
+        switch is not wired, not triggering, or inverted, homing is the moment
+        you find out, and it finds out by driving into the hard stop.
+
+        This asks nothing of the motors. The operator moves the carriage by
+        hand while the state is read back live, so a switch that never changes
+        is obvious before anything is driven anywhere.
+        """
+        duration = gcmd.get_float('DURATION', 30.0, minval=2.0, maxval=300.0)
+        interval = gcmd.get_float('INTERVAL',  0.3, minval=0.05, maxval=5.0)
+
+        state, name = self._selector_endstop_state()
+        if state is None:
+            gcmd.respond_info(
+                "SA: Could not read an endstop for the selector (looked for "
+                "'%s').\n"
+                "    Check that the selector's manual_stepper has an "
+                "endstop_pin in hardware.cfg." % name)
+            return
+
+        gcmd.respond_info(
+            "SA ENDSTOP TEST — %s\n"
+            "  Now: %s\n"
+            "  Move the selector carriage BY HAND onto the endstop, then off "
+            "again.\n"
+            "  Watching for %.0fs; every change is reported."
+            % (name, "TRIGGERED" if state else "open", duration))
+
+        if state:
+            gcmd.respond_info(
+                "SA: NOTE — it reads TRIGGERED already. Either the carriage is "
+                "sitting on the switch, or the polarity is inverted. Move it "
+                "OFF the switch and confirm this flips to 'open'.")
+
+        seen_open      = not state
+        seen_triggered = bool(state)
+        changes        = 0
+        prev           = state
+        end_time       = self.reactor.monotonic() + duration
+
+        while self.reactor.monotonic() < end_time:
+            self.reactor.pause(self.reactor.monotonic() + interval)
+            now, _ = self._selector_endstop_state()
+            if now is None or now == prev:
+                continue
+            changes += 1
+            prev = now
+            if now:
+                seen_triggered = True
+            else:
+                seen_open = True
+            gcmd.respond_info(
+                "  %5.1fs  -> %s"
+                % (duration - (end_time - self.reactor.monotonic()),
+                   "TRIGGERED" if now else "open"))
+
+        # A switch that only ever reads one way is the failure this exists to
+        # catch, and it is indistinguishable from "the operator did not move
+        # it" -- so say both rather than declaring a fault.
+        if seen_open and seen_triggered:
+            gcmd.respond_info(
+                "SA: ENDSTOP OK — saw both states (%d change(s)). "
+                "Safe to run SA_HOME." % changes)
+        elif seen_triggered and not seen_open:
+            gcmd.respond_info(
+                "SA: ENDSTOP NEVER READ OPEN. Either it was pressed the whole "
+                "time, or it is stuck/inverted.\n"
+                "    Do NOT home yet: homing stops on 'triggered', so an "
+                "always-triggered switch makes it stop instantly and call that "
+                "position zero.")
+        elif seen_open and not seen_triggered:
+            gcmd.respond_info(
+                "SA: ENDSTOP NEVER TRIGGERED. Either it was not pressed, or "
+                "the switch/wiring is not reaching the board.\n"
+                "    Do NOT home yet: homing would drive the carriage into the "
+                "hard stop waiting for a signal that never comes.")
+        else:
+            gcmd.respond_info("SA: No reading obtained. Check the endstop pin.")
 
     def _cmd_encoder_watch(self, gcmd):
         tool     = gcmd.get_int(  'TOOL',      -1)
