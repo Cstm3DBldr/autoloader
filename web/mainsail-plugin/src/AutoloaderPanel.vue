@@ -618,7 +618,7 @@
                 <v-toolbar dense flat class="panel-toolbar sa-dialog-title">
                     <v-icon left size="18">{{ mdiCogOutline }}</v-icon>
                     <span class="sa-dialog-heading">
-                        {{ $t('Panels.AutoloaderPanel.CalibrationGuide') }}
+                        {{ $t('Panels.AutoloaderPanel.CalibrationShort') }}
                         — {{ $t('Panels.AutoloaderPanel.Step') }} {{ calStep + 1 }} /
                         {{ calTotalSteps }}
                     </span>
@@ -629,6 +629,19 @@
                 </v-toolbar>
                 <v-divider />
                 <v-card-text class="pa-4 sa-cal-body">
+                    <!--
+                        A prompt is open in front of this panel. Without this
+                        line the guide sits behind it showing the step's
+                        introduction, which reads as two unrelated windows;
+                        with it, the page says what is being asked and that
+                        the answer belongs in the dialog.
+                    -->
+                    <div v-if="liveOnThisStep" class="sa-cal-live">
+                        <div class="font-weight-medium">{{ liveQuestion }}</div>
+                        <div class="caption">
+                            {{ $t('Panels.AutoloaderPanel.AnswerInDialog') }}
+                        </div>
+                    </div>
                     <!-- Step 0 — Motor direction -->
                     <div v-if="calStep === 0">
                         <div class="subtitle-2 mb-2">
@@ -946,7 +959,7 @@
                 </v-card-text>
                 <v-divider />
                 <v-card-actions class="px-3 py-2">
-                    <v-btn small text :disabled="calStep === 0" @click="calStep--">
+                    <v-btn small text :disabled="calStep === 0" @click="calStepNav(-1)">
                         <v-icon size="16" left>{{ mdiArrowLeft }}</v-icon>
                         {{ $t('Panels.AutoloaderPanel.Back') }}
                     </v-btn>
@@ -955,7 +968,7 @@
                         v-if="calStep < calTotalSteps - 1"
                         small
                         color="primary"
-                        @click="calStep++">
+                        @click="calStepNav(1)">
                         {{ $t('Panels.AutoloaderPanel.Next') }}
                         <v-icon size="16" right>{{ mdiArrowRight }}</v-icon>
                     </v-btn>
@@ -1492,6 +1505,13 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     calOpen = false
     calStep = 0
     calTotalSteps = 9
+    /*
+     * Set while the operator is paging around by hand, so following the live
+     * phase does not yank the page out from under someone reading ahead. It
+     * lasts until the guide is reopened -- a deliberate move away is a
+     * decision, not a momentary one.
+     */
+    calStepPinned = false
 
     // Feed/Retract state
     feedDistance = 50
@@ -1911,6 +1931,8 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 
     openCalibration(): void {
         this.calStep = 0
+        this.calStepPinned = false
+        this.syncCalStep()
         this.calOpen = true
     }
 
@@ -1940,6 +1962,44 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         const dis = this.saStatus.servo_disengaged_angle ?? 0
         return `Engaged ${eng.toFixed(0)}\u00b0`
             + ` \u00b7 disengaged ${dis.toFixed(0)}\u00b0`
+    }
+
+    /*
+     * Move the guide to whichever step the machine is actually waiting on.
+     *
+     * The step number comes from the backend, not from a copy of the mapping
+     * here: the prompt dialog is titled from the same value, so the page
+     * behind it cannot end up claiming a different step than the dialog in
+     * front of it -- which is exactly what made the prompt read as an
+     * interruption rather than the next page.
+     */
+    syncCalStep(): void {
+        const live = this.saStatus.cal_step ?? 0
+        if (live >= 1 && !this.calStepPinned) {
+            this.calStep = live - 1
+        }
+    }
+
+    calStepNav(delta: number): void {
+        this.calStepPinned = true
+        this.calStep = Math.min(this.calTotalSteps - 1,
+                                Math.max(0, this.calStep + delta))
+    }
+
+    @Watch('saStatus.cal_step')
+    onCalStepChange(): void {
+        if (this.calOpen) this.syncCalStep()
+    }
+
+    /** The question the machine is waiting on, if any. */
+    get liveQuestion(): string {
+        return (this.saStatus.cal_prompt ?? '').trim()
+    }
+
+    /** True when the live phase belongs to the step being shown. */
+    get liveOnThisStep(): boolean {
+        const live = this.saStatus.cal_step ?? 0
+        return live >= 1 && live - 1 === this.calStep && !!this.liveQuestion
     }
 
     get selectorCalibrated(): boolean {
@@ -2519,6 +2579,13 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 /* Calibration dialog body can scroll if a step gets tall */
 .sa-cal-body {
     max-height: 60vh;
+}
+.sa-cal-live {
+    border-left: 3px solid var(--v-primary-base, #2196f3);
+    background: rgba(33, 150, 243, 0.08);
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    border-radius: 2px;
 }
 
 /* Status banner at top of each step — current calibrated values */

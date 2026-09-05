@@ -1940,6 +1940,14 @@ class Autoloader:
                                          for i in range(self.num_paths)],
             'drive_rotation_distance' : self._get_drive_rotation_distance(),
             'cal_state'               : self._cal_state or '',
+            # The step the waiting phase belongs to, derived in one place in
+            # sa_calibration so a panel can follow the prompt instead of
+            # re-deriving the mapping and drifting from it.
+            'cal_step'                : (self.calibration._current_step()[0]
+                                         or 0),
+            'cal_step_name'           : (self.calibration._current_step()[1]
+                                         or ''),
+            'cal_step_total'          : self.calibration._STEP_TOTAL,
             'cal_path'                : self._cal_data.get('path', -1),
             'cal_prompt'              : self._cal_prompt or '',
         }

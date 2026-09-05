@@ -32,6 +32,9 @@ export interface SAStatus {
     drive_dir_invert?: boolean
     selector_dir_invert?: boolean
     cal_state: string
+    cal_step?: number
+    cal_step_name?: string
+    cal_step_total?: number
     cal_path: number
     cal_prompt: string
 }

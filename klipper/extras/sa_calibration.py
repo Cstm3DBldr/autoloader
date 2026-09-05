@@ -53,6 +53,14 @@ class SACalibration:
             self._numeric_adjust(gcmd, val[4:])
             return
 
+        # SKIP STEP is answered here rather than in every phase handler: it
+        # means "leave this one alone and move on", which is the same action
+        # whatever question is on screen.
+        if val.lower() == 'skipstep':
+            self.close_ui_prompt(gcmd)
+            self._skip_step(gcmd)
+            return
+
         # A real answer closes the dialog; the next phase raises its own.
         self.close_ui_prompt(gcmd)
 
@@ -147,6 +155,22 @@ class SACalibration:
                 title, text, list(buttons), list(footer), columns)
         except Exception:
             pass
+
+        # The step name, as the guide panel prints it above its own body. The
+        # title carries "Step 4 / 9"; this says which step that is, so the two
+        # surfaces read identically.
+        step_n, step_name = self._current_step()
+        if step_name and not str(text).startswith(step_name):
+            text = step_name + NL + NL + str(text)
+
+        # Somewhere to go that is not ABORT. A calibration cannot offer BACK
+        # honestly -- the phases are not reversible, and a "back" that silently
+        # did nothing would be worse than none -- but skipping forward is
+        # always meaningful, and it is what the guide's NEXT does.
+        footer = list(footer)
+        if step_n is not None and not (self.owner._cal_state or '').startswith('chain_'):
+            if self._step_after(step_n) is not None:
+                footer = [("SKIP STEP", "skipstep", "secondary")] + footer
 
         r = gcmd.respond_raw
         try:
@@ -302,23 +326,104 @@ class SACalibration:
                         self._PATH_STYLE.get(st, 'secondary')))
         return out
 
+    # ── Where am I? ───────────────────────────────────────────────────────────
+    #
+    # The panels number the calibration 1..9 and the prompts used to number
+    # nothing, so a prompt could not say which step it belonged to and read as
+    # a popup that had interrupted the guide rather than a page of it.
+    #
+    # Both now take the number from here. A phase maps to a step by its state
+    # prefix; a chain offer maps by the command it is about to run, so the
+    # offer already shows the step you are going TO.
+
+    _STEP_TOTAL = 9
+    _STEP_NAMES = {
+        1: "Motor direction",
+        2: "Endstop test",
+        3: "Home selector",
+        4: "Selector positions",
+        5: "Servo engage angle",
+        6: "Drive rotation distance",
+        7: "Encoder speed",
+        8: "Encoder mm/pulse",
+        9: "Bowden length",
+    }
+
+    # Longest prefix first: SA_CALIBRATE_ENCODER_SPEED would otherwise match
+    # the per-path SA_CALIBRATE_ENCODER entry and report step 8 for step 7.
+    _STEP_BY_COMMAND = (
+        ("SA_BUZZ_CHECK",              1),
+        ("SA_TEST_ENDSTOP",            2),
+        ("SA_HOME",                    3),
+        ("SA_CALIBRATE_SELECTOR",      4),
+        ("SA_CALIBRATE_SERVO",         5),
+        ("SA_CALIBRATE_DRIVE",         6),
+        ("SA_CALIBRATE_ENCODER_SPEED", 7),
+        ("SA_CALIBRATE_ENCODER",       8),
+        ("SA_CALIBRATE_BOWDEN",        9),
+    )
+
+    # load_purge and unload_done are deliberately absent: they are load/unload
+    # flows, not calibration, and numbering them "step N of 9" would be a lie.
+    _STEP_BY_STATE = (
+        ("dir_", 1),
+        ("sel_", 4),
+        ("srv_", 5),
+        ("drv_", 6),
+        ("enc_", 8),
+        ("bow_", 9),
+    )
+
+    def _step_after(self, step_n):
+        """The first chain entry belonging to a later step, or None."""
+        for entry in self._CHAIN:
+            n = self._step_for_command(entry[5]) if entry[5] else None
+            if n is None:
+                # The last entry has no follow-on command; find its own step
+                # from the key instead so the end of the list still terminates.
+                continue
+            if n > step_n:
+                return entry
+        return None
+
+    @classmethod
+    def _step_for_command(cls, cmd):
+        text = (cmd or "").strip().upper()
+        best = None
+        for prefix, step in cls._STEP_BY_COMMAND:
+            if text.startswith(prefix):
+                if best is None or len(prefix) > len(best[0]):
+                    best = (prefix, step)
+        return best[1] if best else None
+
+    def _current_step(self):
+        """(number, name) for the phase now waiting, or (None, None)."""
+        st = (self.owner._cal_state or "").lower()
+        if not st:
+            return None, None
+        if st.startswith("chain_"):
+            nxt = (self.owner._cal_data or {}).get("_next_cmd")
+            n = self._step_for_command(nxt)
+        else:
+            n = None
+            for prefix, step in self._STEP_BY_STATE:
+                if st.startswith(prefix):
+                    n = step
+                    break
+        if n is None:
+            return None, None
+        return n, self._STEP_NAMES.get(n, "")
+
     def _ui_title(self):
-        """Short heading for the prompt dialog, from the current phase."""
-        st = (self.owner._cal_state or '').lower()
-        if st.startswith('chain_'):
-            return "Calibration"
-        if st.startswith('srv_'):
-            return "Servo Calibration"
-        if st.startswith('dir_'):
-            return "Motor Direction"
-        if st.startswith('sel_'):
-            return "Selector Calibration"
-        if st.startswith('drv_'):
-            return "Drive Calibration"
-        if st.startswith('enc_'):
-            return "Encoder Calibration"
-        if st.startswith('bow_'):
-            return "Bowden Calibration"
+        """Heading for the prompt dialog.
+
+        Matches the guide panel's own title exactly, so a prompt raised while
+        the guide is open reads as that guide's next page rather than as
+        something that has interrupted it.
+        """
+        n, _name = self._current_step()
+        if n is not None:
+            return "Calibration — Step %d / %d" % (n, self._STEP_TOTAL)
         return "Autoloader Calibration"
 
     # -- Numeric entry without a numpad ----------------------------------------
@@ -702,6 +807,26 @@ class SACalibration:
             gcmd, question,
             ("%s saved." % done_label) + NL + NL + why,
             btn_label, btn_cmd)
+
+    def _skip_step(self, gcmd):
+        """Abandon the phase now waiting and offer the next step.
+
+        Nothing is saved -- skipping is not answering. The step keeps whatever
+        value it had, which is said out loud, because a skipped calibration
+        that looked accepted is the failure this has to avoid.
+        """
+        step_n, step_name = self._current_step()
+        entry = self._step_after(step_n) if step_n is not None else None
+        self._clear()
+        gcmd.respond_info(
+            "SA CAL: %s skipped — nothing saved, it keeps its previous value."
+            % (step_name or "Step"))
+        if entry is None:
+            gcmd.respond_info("SA CAL: That was the last step.")
+            return
+        self._offer_command(
+            gcmd, entry[2] or ("Run %s next?" % entry[1]),
+            entry[3] or "", entry[4] or "CONTINUE", entry[5])
 
     def _chain_respond(self, gcmd, state, value):
         owner = self.owner
