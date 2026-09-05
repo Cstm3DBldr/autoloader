@@ -110,7 +110,23 @@ def _ensure_subscription(screen):
         logging.exception("sa_subscription: could not subscribe")
         return
     _subscribed = True
-    logging.info("sa_subscription: subscribed to the autoloader object")
+
+    # Subscribing only opens the tap. Moonraker then sends CHANGED fields
+    # and nothing else, so a value that never changes again -- guide_step
+    # sitting at 6, say -- is never delivered at all, and every reader sees
+    # a status object containing one key. One query seeds the real thing.
+    try:
+        resp = screen.apiclient.send_request("printer/objects/query?autoloader")
+        sa = (resp or {}).get("status", {}).get("autoloader")
+        if isinstance(sa, dict) and sa:
+            screen.printer.process_update({"autoloader": sa})
+            logging.info("sa_subscription: subscribed and seeded %d fields"
+                         % len(sa))
+            return
+    except Exception:
+        logging.exception("sa_subscription: could not seed the autoloader object")
+    logging.info("sa_subscription: subscribed to the autoloader object "
+                 "(not seeded - values that never change will be missing)")
 
 
 def _on_status(screen, *args):

@@ -165,6 +165,10 @@ class Panel(ScreenPanel):
         """
         step = sa.get("guide_step")
         if not isinstance(step, int) or step < 1:
+            # Logged because the failure is silent and looks like the panel
+            # ignoring the printer: it renders step 1 and nothing says why.
+            logger.info("guide: no usable guide_step in %s",
+                        sorted(sa.keys())[:6] or "an empty status")
             return False
         idx = min(_NUM_STEPS - 1, step - 1)
         if idx != self._step:
@@ -590,6 +594,15 @@ class Panel(ScreenPanel):
         self._stack.set_visible_child_name("pages")
         self._sync_from_printer(sa)
         self._show_step()
+        # Render again once the panel is realized.
+        #
+        # attach_panel adds the content, calls the panel's process_update,
+        # THEN activate(), and only then show_all(). Populating during that
+        # first pass left the page built but not shown -- a blank content area
+        # under a correct title and nav strip, on the first construction of the
+        # panel only. Every later activation reuses the cached panel and looked
+        # fine, which is what made it hard to see.
+        GLib.idle_add(self._show_step)
         # Announce it, so opening the guide here opens it in Mainsail too.
         self._gcode("SA_GUIDE OPEN=1")
 
