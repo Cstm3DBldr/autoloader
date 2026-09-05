@@ -1,3 +1,4 @@
+import logging
 # sa_subscription.py — shared object-subscription builder for autoloader panels.
 #
 # Problem this solves:
@@ -35,6 +36,7 @@
 
 _watcher_installed = False
 _last_guide_open = False
+_subscribed = False
 _last_cal_state    = None
 _last_entry        = []
 _initialized       = False  # baseline from first observation (no trigger)
@@ -71,7 +73,6 @@ def install_global_popup_watcher(screen):
     # feature being broken: until some autoloader panel opens, nothing on this
     # screen is listening, so a guide opened in Mainsail is simply not seen.
     # With this line the log answers "was anything watching?" directly.
-    import logging
     logging.info("sa_subscription: global watcher installed")
     original = screen.process_update
 
@@ -80,11 +81,36 @@ def install_global_popup_watcher(screen):
         try:
             _on_status(screen, *args)
         except Exception:
-            import logging
             logging.exception("sa_subscription: popup watcher failed")
         return result
 
     screen.process_update = wrapped
+
+
+def _ensure_subscription(screen):
+    """Ask Moonraker for the autoloader object, once.
+
+    A panel does two things when it activates: subscribes to this object and
+    installs the watcher. Installing the watcher on its own -- which is what
+    starting from an add-on did at first -- gives you a listener for data
+    nobody is sending: KlipperScreen's own subscription does not include
+    `autoloader`, so notify_status_update arrives without it and every check
+    below falls through. The watcher looked installed and did nothing.
+
+    Deferred to the first status update rather than done in init(), because at
+    KlipperScreen startup the websocket is not connected yet.
+    """
+    global _subscribed
+    if _subscribed:
+        return
+    try:
+        screen._ws.klippy.object_subscription(
+            {"objects": build_subscription(screen)})
+    except Exception:
+        logging.exception("sa_subscription: could not subscribe")
+        return
+    _subscribed = True
+    logging.info("sa_subscription: subscribed to the autoloader object")
 
 
 def _on_status(screen, *args):
@@ -93,11 +119,13 @@ def _on_status(screen, *args):
     global _last_cal_state, _last_entry, _initialized
     if not args or args[0] != "notify_status_update":
         return
+    _ensure_subscription(screen)
     if len(args) < 2 or not isinstance(args[1], dict):
         return
     sa = args[1].get("autoloader")
     if not isinstance(sa, dict):
         return
+
 
     global _dismissed_at_cal_state, _last_guide_open
     cal   = sa.get("cal_state")
@@ -127,7 +155,6 @@ def _on_status(screen, *args):
         _last_guide_open = bool(sa.get("guide_open", False))
         _initialized = True
         if _last_guide_open:
-            import logging
             logging.info(
                 "sa_subscription: guide already open elsewhere -> following it")
             from gi.repository import GLib
@@ -157,7 +184,6 @@ def _on_status(screen, *args):
     # time they navigated away from a guide that is still open.
     guide_open = sa.get("guide_open")
     if isinstance(guide_open, bool) and guide_open != _last_guide_open:
-        import logging
         logging.info("sa_subscription: guide_open %r -> %r"
                      % (_last_guide_open, guide_open))
         _last_guide_open = guide_open
@@ -179,7 +205,6 @@ def _on_status(screen, *args):
 
     # cal_state transition → post-load action popup
     if cal is not None and cal != _last_cal_state:
-        import logging
         logging.info(
             "sa_subscription: cal_state %r -> %r (dismissed_at=%r)"
             % (_last_cal_state, cal, _dismissed_at_cal_state))
