@@ -18,6 +18,8 @@ _extras_dir = _os.path.dirname(_os.path.abspath(__file__))
 if _extras_dir not in sys.path:
     sys.path.insert(0, _extras_dir)
 
+NL = chr(10)
+
 import logging
 
 
@@ -144,7 +146,16 @@ class SACalibration:
         try:
             r("// action:prompt_end")
             r("// action:prompt_begin %s" % title)
-            r("// action:prompt_text %s" % text)
+            # One prompt_text per line. Each "//" line is a separate command,
+            # so an embedded newline would truncate the dialog at the first
+            # one -- which is why "Accept these positions?" appeared with no
+            # positions under it while they went to the console instead.
+            for line in str(text).split(NL):
+                line = line.rstrip()
+                if line:
+                    r("// action:prompt_text %s" % line)
+                else:
+                    r("// action:prompt_text  ")
             if buttons:
                 step = columns if columns and columns > 0 else len(buttons)
                 for i in range(0, len(buttons), step):
@@ -208,12 +219,16 @@ class SACalibration:
           numeric -- {'value': float, 'unit': str, 'steps': (...)} for a value
                      the operator dials in; see _numeric_prompt
         """
+        detail = kw.get('detail')
         self.owner._cal_prompt = message
         lines = [
             "",
             "SA CAL: " + message,
             "",
         ]
+        if detail:
+            lines.extend(str(detail).split(NL))
+            lines.append("")
         for cmd in commands:
             lines.append("  " + cmd)
         lines.append("")
@@ -252,8 +267,13 @@ class SACalibration:
                 buttons.append((lbl, val,
                                 self._BTN_STYLE.get(str(val).lower(),
                                                     'default')))
+        # The detail goes into the DIALOG, not just the console. A question
+        # like "Accept these positions?" with the positions printed only to the
+        # console is unanswerable on a touchscreen, and barely better in
+        # Mainsail where the numbers scroll away behind the modal.
+        body = message if not detail else (message + NL + NL + str(detail))
         self._emit_ui_prompt(
-            gcmd, self._ui_title(), message, buttons,
+            gcmd, self._ui_title(), body, buttons,
             footer=[("ABORT", "abort", "error")],
             columns=kw.get('columns'))
 
@@ -514,7 +534,10 @@ class SACalibration:
         self._prompt(gcmd,
             "Accept these positions?",
             "SA_RESPOND VALUE=yes",
-            "SA_RESPOND VALUE=no")
+            "SA_RESPOND VALUE=no",
+            detail=("Total travel %.2fmm over %d paths, spacing %.2fmm"
+                    % (total_travel, n, spacing)
+                    + NL + offset_note + width_note + pos_lines))
 
     def _sel_respond(self, gcmd, state, value):
         owner = self.owner
