@@ -623,7 +623,7 @@
                         {{ calTotalSteps }}
                     </span>
                     <v-spacer />
-                    <v-btn icon small @click="calOpen = false">
+                    <v-btn icon small @click="closeGuide()">
                         <v-icon size="18">{{ mdiCloseThick }}</v-icon>
                     </v-btn>
                 </v-toolbar>
@@ -965,7 +965,7 @@
                         {{ $t('Panels.AutoloaderPanel.Next') }}
                         <v-icon size="16" right>{{ mdiArrowRight }}</v-icon>
                     </v-btn>
-                    <v-btn v-else text color="primary" @click="calOpen = false">
+                    <v-btn v-else text color="primary" @click="closeGuide()">
                         {{ $t('Panels.AutoloaderPanel.Finish') }}
                     </v-btn>
                 </v-card-actions>
@@ -1509,6 +1509,13 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
      * decision, not a momentary one.
      */
     calStepPinned = false
+    /*
+     * True when the guide closed itself to let a prompt have the screen, as
+     * opposed to the operator closing it. Only the former reopens: pressing X
+     * during a calibration has to mean "go away", or the guide fights the
+     * person trying to dismiss it.
+     */
+    calYielded = false
 
     // Feed/Retract state
     feedDistance = 50
@@ -1984,6 +1991,14 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         }
     }
 
+    closeGuide(): void {
+        // Clears the yield flag as well as the dialog, so a guide dismissed
+        // during a calibration stays dismissed rather than springing back when
+        // the phase clears.
+        this.calYielded = false
+        this.calOpen = false
+    }
+
     calStepNav(delta: number): void {
         this.calStepPinned = true
         this.calStep = Math.min(this.calTotalSteps - 1,
@@ -1993,6 +2008,30 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     @Watch('saStatus.cal_step')
     onCalStepChange(): void {
         if (this.calOpen) this.syncCalStep()
+    }
+
+    /** Whether a calibration phase is waiting on an answer right now. */
+    get promptWaiting(): boolean {
+        return (this.saStatus.cal_state ?? '') !== ''
+    }
+
+    @Watch('promptWaiting')
+    onPromptWaitingChange(waiting: boolean): void {
+        if (waiting) {
+            // Step aside. The prompt carries the same title, the same step
+            // number and the same blocks, so nothing is lost by closing.
+            if (this.calOpen) {
+                this.calYielded = true
+                this.calOpen = false
+            }
+            return
+        }
+        if (this.calYielded) {
+            this.calYielded = false
+            this.calStepPinned = false
+            this.syncCalStep()
+            this.calOpen = true
+        }
     }
 
     /** The question the machine is waiting on, if any. */
@@ -3161,7 +3200,9 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
  * becomes a single frame rather than a fade out and back in.
  */
 .v-dialog:has(.macro_prompt-dialog),
-.v-dialog__content:has(.macro_prompt-dialog) {
+.v-dialog__content:has(.macro_prompt-dialog),
+.v-dialog:has(.sa-dialog-title),
+.v-dialog__content:has(.sa-dialog-title) {
     transition: none !important;
     animation: none !important;
 }
