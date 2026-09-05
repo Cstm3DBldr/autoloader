@@ -100,9 +100,9 @@ if [ "${SA_RUN_MENU}" = "1" ]; then
     echo "[INSTALL] Opening setup. This is the same menu Klipper uses to build"
     echo "          firmware, so it should look familiar."
     echo ""
-    echo "            arrow keys  move            Enter  open a menu"
-    echo "            Y / N       turn on/off     ?      explain this setting"
-    echo "            Q           save and quit   Esc Esc  go back"
+    echo "            up / down     move                 Enter or Space  open / toggle"
+    echo "            left or Esc   go back a level      ?               explain this line"
+    echo "            /             search               Q               save and quit"
     echo ""
     printf "          Press Enter to start..."
     read -r _ || true

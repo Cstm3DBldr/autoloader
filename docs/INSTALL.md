@@ -93,10 +93,13 @@ A menu opens. **It is the same menu Klipper uses to build firmware**, so if you
 have ever flashed a board you have used it before.
 
 ```
-  arrow keys   move around          Enter    open a menu
-  Y / N        turn a thing on/off  ?        explain this setting
-  Q            save and quit        Esc Esc  go back one level
+  up / down      move around        Enter or Space  open a menu / toggle
+  left or Esc    go back a level    ?               explain the selected line
+  /              search             Q               save and quit
 ```
+
+Backspace also goes back, if that is what your fingers reach for. There is no
+separate "save" key — **Q** quits and asks whether to save.
 
 **Before the menu opens, the installer reads your printer** and fills in
 whatever it can work out — how many toolheads you have, what your extruders are
@@ -122,8 +125,16 @@ you will get a blank pin map to fill in by hand.
 **How is it connected?** CAN bus for the usual build.
 
 **CAN UUID.** A 12-character code like `329ce333239a` that identifies your
-board. The installer looks it up for you. If it cannot find one it says so —
-leave it as `CHANGE_ME`, finish the install, and run:
+board.
+
+The installer scans for you. **If it finds any unclaimed boards it offers them
+as a list you pick from**, so you never have to transcribe hex. It also prints
+every UUID already in use on your printer and what it belongs to — so if the
+scan comes up empty, the one you want is the one *not* on that list.
+
+A scan only sees boards nothing has claimed yet. A board already named in your
+config will not answer, which is normal and not a fault. If nothing is found,
+leave it as `CHANGE_ME`, finish the install, then power-cycle and run:
 
 ```bash
 python3 ~/klipper/scripts/canbus_query.py can0

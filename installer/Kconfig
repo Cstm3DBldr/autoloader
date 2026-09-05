@@ -50,6 +50,11 @@ config CONN_USB
     bool "USB serial"
 endchoice
 
+# Written by installer/detect.py when a CAN scan finds unclaimed boards, so the
+# user can pick from a list instead of transcribing hex. `osource` is the
+# optional form: a printer where nothing was found still parses.
+osource "installer/generated/Kconfig.uuid"
+
 config MCU_UUID
     string "CAN UUID of the autoloader board"
     depends on CONN_CAN
