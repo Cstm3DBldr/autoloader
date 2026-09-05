@@ -27,6 +27,10 @@ export interface SAStatus {
     encoder_mpp: number[]
     encoder_max_speed?: number
     drive_rotation_distance: number
+    servo_engaged_angle?: number
+    servo_disengaged_angle?: number
+    drive_dir_invert?: boolean
+    selector_dir_invert?: boolean
     cal_state: string
     cal_path: number
     cal_prompt: string

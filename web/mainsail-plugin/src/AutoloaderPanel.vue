@@ -637,11 +637,20 @@
                         <div class="caption grey--text mb-3">
                             {{ $t('Panels.AutoloaderPanel.CalMotorsHint') }}
                         </div>
+                        <div class="sa-cal-status" :class="motorDirClass">
+                            {{ motorDirLabel }}
+                        </div>
                         <div class="d-flex mb-3">
-                            <v-btn small class="mr-2 sa-feed-btn" @click="saGcode('SA_BUZZ_DRIVE')">
+                            <v-btn
+                                small
+                                class="mr-2 sa-feed-btn"
+                                @click="saGcode('SA_BUZZ_CHECK MOTOR=drive')">
                                 {{ $t('Panels.AutoloaderPanel.BuzzDrive') }}
                             </v-btn>
-                            <v-btn small class="sa-feed-btn" @click="saGcode('SA_BUZZ_SELECTOR')">
+                            <v-btn
+                                small
+                                class="sa-feed-btn"
+                                @click="saGcode('SA_BUZZ_CHECK MOTOR=selector')">
                                 {{ $t('Panels.AutoloaderPanel.BuzzSelector') }}
                             </v-btn>
                         </div>
@@ -656,7 +665,34 @@
                     </div>
 
                     <!-- Step 1 — Home -->
+                    <!-- Step 1 - Endstop
+                         Before homing, not after: homing is the first thing
+                         that trusts the switch, and it finds out by driving
+                         the carriage at it. -->
                     <div v-if="calStep === 1">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalEndstop') }}
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalEndstopHint') }}
+                        </div>
+                        <v-btn
+                            small
+                            class="sa-feed-btn mb-3"
+                            @click="saGcode('SA_TEST_ENDSTOP DURATION=30')">
+                            {{ $t('Panels.AutoloaderPanel.RunEndstop') }}
+                        </v-btn>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalEndstopExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalEndstopWarn') }}
+                        </div>
+                    </div>
+
+                    <div v-if="calStep === 2">
                         <div class="subtitle-2 mb-2">
                             {{ $t('Panels.AutoloaderPanel.CalHome') }}
                         </div>
@@ -684,7 +720,7 @@
                     </div>
 
                     <!-- Step 2 — Selector positions -->
-                    <div v-if="calStep === 2">
+                    <div v-if="calStep === 3">
                         <div class="subtitle-2 mb-2">
                             {{ $t('Panels.AutoloaderPanel.CalSelector') }}
                         </div>
@@ -723,7 +759,37 @@
                     </div>
 
                     <!-- Step 3 — Drive rotation distance -->
-                    <div v-if="calStep === 3">
+                    <!-- Step 4 - Servo engage angle
+                         After the selector so a path with filament can be
+                         selected: the engage angle is judged by watching the
+                         drive gear actually grip. -->
+                    <div v-if="calStep === 4">
+                        <div class="subtitle-2 mb-2">
+                            {{ $t('Panels.AutoloaderPanel.CalServo') }}
+                        </div>
+                        <div class="sa-cal-status">
+                            {{ servoAnglesLabel }}
+                        </div>
+                        <div class="caption grey--text mb-3">
+                            {{ $t('Panels.AutoloaderPanel.CalServoHint') }}
+                        </div>
+                        <v-btn
+                            small
+                            class="sa-feed-btn mb-3"
+                            @click="saGcode('SA_CALIBRATE_SERVO')">
+                            {{ $t('Panels.AutoloaderPanel.RunServo') }}
+                        </v-btn>
+                        <div class="sa-cal-expect">
+                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalServoExpect') }}
+                        </div>
+                        <div class="sa-cal-warn">
+                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
+                            {{ $t('Panels.AutoloaderPanel.CalServoWarn') }}
+                        </div>
+                    </div>
+
+                    <div v-if="calStep === 5">
                         <div class="subtitle-2 mb-2">
                             {{ $t('Panels.AutoloaderPanel.CalDrive') }}
                         </div>
@@ -757,7 +823,7 @@
                     </div>
 
                     <!-- Step 4 — Encoder max speed -->
-                    <div v-if="calStep === 4">
+                    <div v-if="calStep === 6">
                         <div class="subtitle-2 mb-2">
                             {{ $t('Panels.AutoloaderPanel.CalEncSpeed') }}
                         </div>
@@ -793,7 +859,7 @@
                     </div>
 
                     <!-- Step 5 — Per-tool encoder mm/pulse -->
-                    <div v-if="calStep === 5">
+                    <div v-if="calStep === 7">
                         <div class="subtitle-2 mb-2">
                             {{ $t('Panels.AutoloaderPanel.CalEncoder') }}
                         </div>
@@ -833,7 +899,7 @@
                     </div>
 
                     <!-- Step 6 — Per-tool bowden length -->
-                    <div v-if="calStep === 6">
+                    <div v-if="calStep === 8">
                         <div class="subtitle-2 mb-2">
                             {{ $t('Panels.AutoloaderPanel.CalBowden') }}
                         </div>
@@ -1425,7 +1491,7 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     // Calibration wizard state (mirrors KlipperScreen sa_calibration_guide)
     calOpen = false
     calStep = 0
-    calTotalSteps = 7
+    calTotalSteps = 9
 
     // Feed/Retract state
     feedDistance = 50
@@ -1853,6 +1919,33 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     }
 
     // ── Calibration status helpers ────────────────────────────────────
+    /*
+     * Whether either motor is running inverted, shown beside the buzz
+     * buttons. The state matters because SA_BUZZ_CHECK's "wrong way" answer
+     * flips it -- without a readout, two wrong answers land back where you
+     * started with nothing on screen saying so.
+     */
+    get motorDirInverted(): boolean {
+        return !!this.saStatus.drive_dir_invert || !!this.saStatus.selector_dir_invert
+    }
+
+    get motorDirLabel(): string {
+        const f = (inv?: boolean) => (inv ? 'INVERTED' : 'normal')
+        return `Direction: drive ${f(this.saStatus.drive_dir_invert)}`
+            + ` \u00b7 selector ${f(this.saStatus.selector_dir_invert)}`
+    }
+
+    get motorDirClass(): string {
+        return this.motorDirInverted ? 'sa-cal-status--warn' : ''
+    }
+
+    get servoAnglesLabel(): string {
+        const eng = this.saStatus.servo_engaged_angle ?? 0
+        const dis = this.saStatus.servo_disengaged_angle ?? 0
+        return `Engaged ${eng.toFixed(0)}\u00b0`
+            + ` \u00b7 disengaged ${dis.toFixed(0)}\u00b0`
+    }
+
     get selectorCalibrated(): boolean {
         const positions = this.saStatus.selector_positions ?? []
         if (positions.length === 0) return false

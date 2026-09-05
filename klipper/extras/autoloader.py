@@ -1890,6 +1890,8 @@ class Autoloader:
             'engage_max_distance'     : self.engage_max_distance,
             'servo_engaged_angle'     : self.servo_engaged_angle,
             'servo_disengaged_angle'  : self.servo_disengaged_angle,
+            'drive_dir_invert'        : bool(self.drive_dir_invert),
+            'selector_dir_invert'     : bool(self.selector_dir_invert),
             'tip_form_temp'           : self.tip_form_temp,
             'tip_form_sever_dist'     : self.tip_form_sever_dist,
             'tip_form_cooling_pos'    : self.tip_form_cooling_pos,

@@ -12,17 +12,18 @@ logger = logging.getLogger('klipperscreen.sa_calibration_guide')
 _GREY      = "#616161"
 _GREEN     = "#388E3C"
 _AMBER     = "#F9A825"
-_NUM_STEPS = 8
+_NUM_STEPS = 9
 
 _STEP_TITLES = [
     "1 — Test Motors",
     "2 — Test Endstop",
     "3 — Home Selector",
     "4 — Calibrate Selector",
-    "5 — Calibrate Drive Motor",
-    "6 — Calibrate Encoder Speed",
-    "7 — Calibrate Encoder (mm/pulse)",
-    "8 — Calibrate Bowden Length",
+    "5 — Calibrate Servo",
+    "6 — Calibrate Drive Motor",
+    "7 — Calibrate Encoder Speed",
+    "8 — Calibrate Encoder (mm/pulse)",
+    "9 — Calibrate Bowden Length",
 ]
 
 
@@ -180,39 +181,94 @@ class Panel(ScreenPanel):
 
         box.pack_start(self._section(_STEP_TITLES[idx]), False, False, 0)
 
-        if   idx == 0: self._step_motors(box)
+        if   idx == 0: self._step_motors(box, sa)
         elif idx == 1: self._step_endstop(box)
         elif idx == 2: self._step_home(box, homed)
         elif idx == 3: self._step_selector(box, sel_pos, cal_state, num)
-        elif idx == 4: self._step_drive(box, drv_rot)
-        elif idx == 5: self._step_enc_speed(box, enc_max)
-        elif idx == 6: self._step_encoder(box, enc_mpp, num)
-        elif idx == 7: self._step_bowden(box, bowden_lens, num)
+        elif idx == 4: self._step_servo(box, sa)
+        elif idx == 5: self._step_drive(box, drv_rot)
+        elif idx == 6: self._step_enc_speed(box, enc_max)
+        elif idx == 7: self._step_encoder(box, enc_mpp, num)
+        elif idx == 8: self._step_bowden(box, bowden_lens, num)
 
         box.show_all()
 
-    def _step_motors(self, box):
+    def _step_motors(self, box, sa):
+        """Buzz each motor and ask which way it went.
+
+        The old buttons buzzed and left the operator to spot the direction
+        themselves, with "swap any two motor phase wires" as the printed fix
+        -- a teardown for something the firmware can invert.
+        """
+        drv_inv = bool(sa.get("drive_dir_invert", False))
+        sel_inv = bool(sa.get("selector_dir_invert", False))
+        box.pack_start(self._status(
+            "Direction:  drive %s   selector %s"
+            % ("INVERTED" if drv_inv else "normal",
+               "INVERTED" if sel_inv else "normal"),
+            _AMBER if (drv_inv or sel_inv) else _GREY),
+            False, False, 0)
         box.pack_start(self._hint(
-            "Run both buzz tests to confirm motor wiring and direction."),
+            "Buzz each motor and answer which way it moved. Answering "
+            "'wrong way' flips that motor in software, saves it, and buzzes "
+            "again so you can check the fix."),
             False, False, 0)
         row = Gtk.Grid(column_spacing=8)
         row.set_column_homogeneous(True)
         b1 = _sbs.make("BUZZ DRIVE",    "sa-btn")
         b2 = _sbs.make("BUZZ SELECTOR", "sa-btn")
-        b1.connect("clicked", self._send, "SA_BUZZ_DRIVE")
-        b2.connect("clicked", self._send, "SA_BUZZ_SELECTOR")
+        b1.connect("clicked", self._send, "SA_BUZZ_CHECK MOTOR=drive")
+        b2.connect("clicked", self._send, "SA_BUZZ_CHECK MOTOR=selector")
         row.attach(b1, 0, 0, 1, 1)
         row.attach(b2, 1, 0, 1, 1)
         box.pack_start(row, False, False, 0)
         box.pack_start(self._expect(
             "Drive: first move pushes filament toward the toolhead (forward).\n"
             "Selector: first move travels away from the endstop toward higher path numbers.\n"
-            "Both motors click/buzz and return to starting position."),
+            "Both motors click/buzz, return to where they started, then ask "
+            "which way they went."),
             False, False, 0)
         box.pack_start(self._warn(
             "No movement \u2192 check motor wiring and driver power.\n"
-            "Wrong direction \u2192 swap any two motor phase wires.\n"
+            "Wrong direction \u2192 answer WRONG WAY; no rewiring needed.\n"
             "Very weak \u2192 increase driver current in hardware.cfg."),
+            False, False, 0)
+
+    def _step_servo(self, box, sa):
+        """Find the engage angle without letting the servo strip its gears.
+
+        Placed after the selector calibration because the engage search is
+        judged by watching the drive gear grip filament, which needs a path
+        that can be selected. Everything before that -- arm off, move to
+        rest, arm back on -- is bench work.
+        """
+        eng = float(sa.get("servo_engaged_angle", 0.0))
+        dis = float(sa.get("servo_disengaged_angle", 0.0))
+        box.pack_start(self._status(
+            "Engaged %.0f\u00b0    Disengaged %.0f\u00b0" % (eng, dis), _GREY),
+            False, False, 0)
+        box.pack_start(self._hint(
+            "Load filament to the drive gear on the selected path first. "
+            "You will be asked to REMOVE the servo arm before anything moves, "
+            "then refit it at the rest position, then step toward the gear "
+            "until it grips."),
+            False, False, 0)
+        btn = _sbs.make("CAL SERVO", "sa-btn")
+        btn.connect("clicked", self._send, "SA_CALIBRATE_SERVO")
+        box.pack_start(btn, False, False, 0)
+        box.pack_start(self._expect(
+            "Arm off \u2192 servo moves to the rest angle \u2192 refit the arm "
+            "resting against the selector body, away from the drive gear "
+            "\u2192 step in 1/5/10\u00b0 until the gear just grips \u2192 save.\n"
+            "Effective immediately, no restart."),
+            False, False, 0)
+        box.pack_start(self._warn(
+            "Take the arm OFF when asked. Fitted at the wrong angle, its "
+            "whole travel is a hard stop and the gears strip in seconds.\n"
+            "Arm moves away from the gear as the angle rises \u2192 the servo "
+            "is reversed; press WRONG WAY.\n"
+            "Near the grip point move in 1\u00b0 steps \u2192 past it the arm is "
+            "pushing on the mechanism."),
             False, False, 0)
 
     def _step_endstop(self, box):
@@ -260,7 +316,8 @@ class Panel(ScreenPanel):
             "to confirm position."),
             False, False, 0)
         box.pack_start(self._warn(
-            "Moves away from endstop \u2192 invert endstop pin or swap motor wires.\n"
+            "Moves away from endstop \u2192 go back to step 1 and answer "
+            "WRONG WAY for the selector.\n"
             "Never triggers \u2192 check endstop wiring and SA_SELECTOR_STOP pin.\n"
             "Slams hard \u2192 reduce selector_homing_speed in hardware.cfg."),
             False, False, 0)
@@ -317,7 +374,8 @@ class Panel(ScreenPanel):
             False, False, 0)
         box.pack_start(self._warn(
             "No movement \u2192 engage servo first (SA_ENGAGE), check drive gear.\n"
-            "Filament slips \u2192 tighten idler or increase servo_engaged_angle.\n"
+            "Filament slips \u2192 tighten idler, or re-run step 5 for a "
+            "firmer engage angle.\n"
             "Result far from 100 mm \u2192 re-check microstep and full_steps_per_rotation settings."),
             False, False, 0)
 
