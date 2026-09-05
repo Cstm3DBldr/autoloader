@@ -1,0 +1,7 @@
+
+# Filled in by installer/detect.py — change any of these in the menu.
+CONFIG_NUM_PATHS=6
+CONFIG_EXTRUDER_PREFIX="extruder"
+CONFIG_HAS_TOOLCHANGER=y
+CONFIG_LED_CHAIN_PREFIX="et"
+CONFIG_LED_CHAIN_SUFFIX="_leds"

@@ -1,0 +1,86 @@
+
+#
+# Arrow keys move, Enter opens, Y/N toggles, ? shows help, Q saves and quits
+#
+
+#
+# 1. Your printer
+#
+CONFIG_NUM_PATHS=6
+CONFIG_EXTRUDER_PREFIX="extruder"
+# end of 1. Your printer
+
+#
+# 2. The autoloader board
+#
+CONFIG_BOARD_MMB_2_0=y
+CONFIG_BOARD_NAME="BTT MMB CAN v2.0"
+CONFIG_PIN_DRIVE_STEP="PC15"
+CONFIG_PIN_DRIVE_DIR="PC11"
+CONFIG_PIN_DRIVE_ENABLE="PC10"
+CONFIG_PIN_DRIVE_CS="PB3"
+CONFIG_PIN_DRIVE_DIAG="PB7"
+CONFIG_PIN_SELECTOR_STEP="PD4"
+CONFIG_PIN_SELECTOR_DIR="PD3"
+CONFIG_PIN_SELECTOR_ENABLE="PD5"
+CONFIG_PIN_SELECTOR_CS="PB5"
+CONFIG_PIN_SELECTOR_DIAG="PB9"
+CONFIG_PIN_SELECTOR_STOP="PA15"
+CONFIG_PIN_SERVO="PA1"
+CONFIG_PIN_TMC_MISO="PB14"
+CONFIG_PIN_TMC_MOSI="PB15"
+CONFIG_PIN_TMC_SCK="PB13"
+CONFIG_TMC_SENSE_RESISTOR="0.075"
+CONFIG_PINS_ENCODER="PC7,PA9,PB12,PB10,PB1,PC5"
+CONFIG_PINS_ENTRY="PC6,PA8,PB11,PB2,PB0,PC4"
+CONFIG_ENTRY_SENSOR_POLARITY="^!"
+CONFIG_BOARD_MAX_PATHS=6
+# CONFIG_BOARD_OTHER is not set
+CONFIG_CONN_CAN=y
+# CONFIG_CONN_USB is not set
+# end of 2. The autoloader board
+
+#
+# 3. Sensors you actually have
+#
+
+#
+# Entry sensors are required. The other two are optional but earn their keep.
+#
+CONFIG_HAS_EXTRUDER_SENSOR=y
+CONFIG_HAS_TOOLHEAD_SENSOR=y
+# end of 3. Sensors you actually have
+
+#
+# 4. Toolchanger
+#
+CONFIG_HAS_TOOLCHANGER=y
+CONFIG_ADD_TOOLCHANGE_LED_HOOK=y
+# end of 4. Toolchanger
+
+#
+# 5. Toolhead status LEDs
+#
+
+#
+# Optional. Nothing in loading, unloading or calibration needs LEDs.
+#
+# CONFIG_LEDS_NONE is not set
+# CONFIG_LEDS_FILAMENT_ONLY is not set
+CONFIG_LEDS_FULL=y
+CONFIG_LED_CHAIN_PREFIX="et"
+CONFIG_LED_CHAIN_SUFFIX="_leds"
+CONFIG_LED_LOGO_INDEX="3"
+CONFIG_LED_NOZZLE_INDEXES="1,2"
+# end of 5. Toolhead status LEDs
+
+#
+# 6. What the installer is allowed to touch
+#
+CONFIG_WRITE_PRINTER_CFG_INCLUDE=y
+CONFIG_REGISTER_UPDATE_MANAGER=y
+CONFIG_RESTART_SERVICES=y
+# end of 6. What the installer is allowed to touch
+
+# Filled in by installer/detect.py — change any of these in the menu.
+CONFIG_MCU_UUID="329ce333239a"
