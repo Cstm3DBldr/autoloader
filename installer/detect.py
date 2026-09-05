@@ -195,7 +195,26 @@ def detect_can_uuid(files, config_dir):
         return [], ("Klipper's python environment (~/klippy-env) not found, so "
                     "the CAN scan cannot run"), False
 
-    for iface in ("can0", "can1"):
+    # Which CAN interfaces actually exist. Without this the scan on a machine
+    # with no CAN bus throws "OSError: No such device", finds no UUIDs in the
+    # output, and gets reported as "nothing answered, which is normal" --
+    # telling someone whose bus is not set up that all is well.
+    ifaces = [i for i in ("can0", "can1")
+              if os.path.exists("/sys/class/net/%s" % i)]
+    if not ifaces:
+        return [], ("no CAN interface found on this machine (looked for can0 "
+                    "and can1). The bus has to be up before any board can "
+                    "answer -- see Klipper's CAN bus documentation."), False
+
+    down = []
+    for iface in ifaces:
+        try:
+            with open("/sys/class/net/%s/operstate" % iface) as f:
+                if f.read().strip() not in ("up", "unknown"):
+                    down.append(iface)
+                    continue
+        except OSError:
+            pass
         try:
             r = subprocess.run(
                 [interp, script, iface],
@@ -206,8 +225,15 @@ def detect_can_uuid(files, config_dir):
         uuids = re.findall(r"canbus_uuid=([0-9a-f]+)", r.stdout)
         if uuids:
             return uuids, "found on %s" % iface, True
-    return [], ("no unassigned CAN nodes answered. A board already listed in "
-                "printer.cfg will not answer a scan, which is normal."), False
+
+    if down and len(down) == len(ifaces):
+        return [], ("%s exists but is DOWN, so nothing can answer. Bring the "
+                    "bus up before looking for the board." % ", ".join(down)), False
+
+    return [], ("no unassigned board answered on %s. That is normal if yours is "
+                "already in printer.cfg -- but if this is a NEW board, check it "
+                "is powered, flashed, and wired to the bus."
+                % ", ".join(i for i in ifaces if i not in down)), False
 
 
 def detect_assigned_uuids(files):
