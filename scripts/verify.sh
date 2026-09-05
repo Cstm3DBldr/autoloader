@@ -25,17 +25,20 @@ fi
 # Build alternation pattern (escape any regex metachars in user input later if needed)
 PATTERN_RE=$(IFS='|'; echo "${PATTERNS[*]}")
 
-if [ -z "${LOCAL_ONLY:-}" ] && [ "$(hostname 2>/dev/null)" != "sc350" ]; then
-    REMOTE="ssh $PRINTER"
-    IS_LOCAL=0
-else
-    # `bash -c`, not empty. Every call site below is `$REMOTE '<one quoted
-    # command>'`, which is the shape `ssh host '<cmd>'` takes -- so with REMOTE
-    # empty the quoted string became the command NAME and the log-scanning
-    # sections died with "No such file or directory". `bash -c` has the same
-    # shape as the ssh form, so both paths run identically.
+# "Am I on a printer?" answered by looking for one, not by hostname. The old
+# test was `hostname != sc350`, so on ANY other printer -- a second machine, or
+# anyone else's -- this script decided it was a dev box and went off to query
+# the developer's Voron by IP. It reported that machine's health as if it were
+# yours.
+if [ -d "$HOME/printer_data/config" ] && [ -d "$HOME/klipper" ]; then
     REMOTE="bash -c"
     IS_LOCAL=1
+elif [ -n "${LOCAL_ONLY:-}" ]; then
+    REMOTE="bash -c"
+    IS_LOCAL=1
+else
+    REMOTE="ssh $PRINTER"
+    IS_LOCAL=0
 fi
 
 echo "Verify against: ${REMOTE:-(local)}"
@@ -155,7 +158,9 @@ case "$GEN_OUT" in
         echo "  – ${GEN_OUT#SKIP: }"
         ;;
     "")
-        echo "  ✓ in sync with your saved answers"
+        # Empty means the command produced nothing -- ssh failed, python
+        # crashed, the directory was missing. That is unknown, not healthy.
+        echo "  ? could not check (no output from the generator)"
         ;;
     *)
         echo "  ✗ regenerating would change these:"
