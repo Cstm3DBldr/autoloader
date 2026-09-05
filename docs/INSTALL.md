@@ -76,11 +76,14 @@ tar -czf ~/config-backup-$(date +%F).tar.gz ~/printer_data/config
 SSH into the printer, then paste this **one line** and press Enter:
 
 ```bash
-cd ~ && git clone https://github.com/Cstm3DBldr/autoloader.git && ~/autoloader/install.sh
+[ -d ~/autoloader ] || git clone https://github.com/Cstm3DBldr/autoloader.git ~/autoloader; ~/autoloader/install.sh
 ```
 
-That downloads the project and starts setup. It will ask you things — the next
-section walks through each one.
+That downloads the project if you do not have it, then starts setup. Safe to
+paste again later — on a machine that already has it, it just re-runs the
+installer, which keeps everything you have tuned.
+
+It will ask you things — the next section walks through each one.
 
 ---
 

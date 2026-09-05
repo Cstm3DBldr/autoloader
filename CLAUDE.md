@@ -550,8 +550,7 @@ For .cfg-only changes, `FIRMWARE_RESTART` is fine and faster.
 **First-time install** on a new printer:
 
 ```bash
-git clone https://github.com/Cstm3DBldr/autoloader.git ~/autoloader
-cd ~/autoloader && ./install.sh
+[ -d ~/autoloader ] || git clone https://github.com/Cstm3DBldr/autoloader.git ~/autoloader; ~/autoloader/install.sh
 ```
 
 `install.sh` creates the 6 symlinks (5 Klipper extras + Moonraker component),
