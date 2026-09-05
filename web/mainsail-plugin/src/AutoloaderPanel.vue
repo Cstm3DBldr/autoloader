@@ -614,7 +614,7 @@
 
         <!-- ─── CALIBRATION GUIDE DIALOG ────────────────────────── -->
         <v-dialog v-model="calOpen" width="400" :retain-focus="false" scrollable>
-            <v-card class="panel sa-dialog">
+            <v-card class="panel sa-dialog sa-guide-card">
                 <v-toolbar dense flat class="panel-toolbar sa-dialog-title">
                     <v-icon left size="18">{{ mdiInformation }}</v-icon>
                     <span class="sa-dialog-heading">
@@ -629,19 +629,6 @@
                 </v-toolbar>
                 <v-divider />
                 <v-card-text class="pa-4 sa-cal-body">
-                    <!--
-                        A prompt is open in front of this panel. Without this
-                        line the guide sits behind it showing the step's
-                        introduction, which reads as two unrelated windows;
-                        with it, the page says what is being asked and that
-                        the answer belongs in the dialog.
-                    -->
-                    <div v-if="liveOnThisStep" class="sa-cal-live">
-                        <div class="font-weight-medium">{{ liveQuestion }}</div>
-                        <div class="caption">
-                            {{ $t('Panels.AutoloaderPanel.AnswerInDialog') }}
-                        </div>
-                    </div>
                     <!-- Step 0 — Motor direction -->
                     <div v-if="calStep === 0">
                         <div class="sa-step-head">
@@ -2034,17 +2021,6 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         }
     }
 
-    /** The question the machine is waiting on, if any. */
-    get liveQuestion(): string {
-        return (this.saStatus.cal_prompt ?? '').trim()
-    }
-
-    /** True when the live phase belongs to the step being shown. */
-    get liveOnThisStep(): boolean {
-        const live = this.saStatus.cal_step ?? 0
-        return live >= 1 && live - 1 === this.calStep && !!this.liveQuestion
-    }
-
     get selectorCalibrated(): boolean {
         const positions = this.saStatus.selector_positions ?? []
         if (positions.length === 0) return false
@@ -2668,6 +2644,33 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 .sa-step-actions {
     padding: 8px !important;
 }
+/*
+ * The guide is the same box as the prompt: 548px, fixed.
+ *
+ * Vuetify centres dialogs vertically, so a card sized to its content moves
+ * every time the content changes -- which through nine steps of different
+ * lengths meant the window jumped on every NEXT, and jumped again handing off
+ * to a prompt of a different height. Mainsail's prompt avoids it by being
+ * built with height: 548; this matches, and the body scrolls inside.
+ */
+.sa-guide-card {
+    height: 548px;
+    display: flex;
+    flex-direction: column;
+}
+.sa-guide-card .sa-cal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    max-height: none;
+}
+/* Phones get the full screen, the way Mainsail's prompt does. */
+@media (max-height: 620px) {
+    .sa-guide-card {
+        height: auto;
+        max-height: 92vh;
+    }
+}
+
 
 
 
@@ -2721,13 +2724,6 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 /* Calibration dialog body can scroll if a step gets tall */
 .sa-cal-body {
     max-height: 60vh;
-}
-.sa-cal-live {
-    border-left: 3px solid var(--v-primary-base, #2196f3);
-    background: rgba(33, 150, 243, 0.08);
-    padding: 8px 10px;
-    margin-bottom: 12px;
-    border-radius: 2px;
 }
 
 /* Status banner at top of each step — current calibrated values */
