@@ -1,0 +1,158 @@
+www.stealthchanger.com
+
+## Crowsnest Camera ID FIND
+## cd ~/crowsnest/tools/
+## ./dev-helper.sh -c
+
+#Calibrate & Test:
+
+HA_CALIBRATE  
+# (homes feeder/selector).
+MMU_CALIBRATE_SELECTOR REPEATS=3 
+#(gate alignment).
+MMU_CALIBRATE_BOWDEN BOWDEN_LENGTH=1600 REPEATS=5 
+#(long paths).
+MMU_CALIBRATE_GATES MANUAL=1 
+#(per-gate Binky tune: insert/pull filament, check pulses).
+Test: 
+TOOL_CHANGE TOOL=1 
+#(queries T1/E1 sensors)
+MMU_LOAD GATE=1 
+#(polls Binky1 + T1/E1), 
+MMU_TEST_RUNOUT FORCE_RUNOUT=1 GATE=0 
+#(swaps tools, no eject).
+Logs: 
+tail -f ~/printer_data/logs/klippy.log 
+#(watch for pulses/queries).
+
+# 1. Verify all sensors detected
+MMU_SENSORS
+
+# 2. Check encoder states
+MMU_ENCODER_STATE
+
+# 3. Calibrate each encoder
+MMU_CALIBRATE_ENCODER GATE=0 LENGTH=400 REPEATS=3
+MMU_CALIBRATE_ENCODER GATE=1 LENGTH=400 REPEATS=3
+# ... or bulk calibrate
+MMU_CALIBRATE_ALL_ENCODERS LENGTH=400 REPEATS=3
+
+# 4. Verify calibrations
+MMU_ENCODER_CALIBRATIONS
+
+# 5. Test gate switching
+MMU_SELECT GATE=0
+MMU_SELECT GATE=1
+MMU_ENCODER_STATE  # Check active encoder switched
+
+MMU_ENCODER_STATE ACTION=RESET GATE=1
+
+MMU_CALIBRATE_BOWDEN BOWDEN_LENGTH=1400
+
+save offsets
+[gcode_macro CALIBRATE_ALL_OFFSETS]
+gcode:
+    {% set tools = printer.toolchanger.tool_numbers %}
+    {% set names = printer.toolchanger.tool_names %}
+    # Tool 0
+    SELECT_TOOL T={tools[0]}  RESTORE_AXIS=XYZ
+    STOP_TOOL_PROBE_CRASH_DETECTION
+    #_CLEAN_NOZZLE TEMP=220
+    CALIBRATE_MOVE_OVER_PROBE
+    M104 S150
+    TEMPERATURE_WAIT SENSOR='{printer.toolhead.extruder}' MINIMUM=150
+    TOOL_LOCATE_SENSOR
+    TOOL_CALIBRATE_PROBE_OFFSET PROBE="tool_probe T0"
+    M104 S0
+    {% for tool in tools[1:] %}
+        SELECT_TOOL T={tool}  RESTORE_AXIS=Z
+        STOP_TOOL_PROBE_CRASH_DETECTION
+        #_CLEAN_NOZZLE TEMP=220
+        M104 S150 T{tool}
+        CALIBRATE_MOVE_OVER_PROBE
+        TEMPERATURE_WAIT SENSOR='{printer[names[loop.index]].extruder}' MINIMUM=150
+        TOOL_CALIBRATE_TOOL_OFFSET
+        {% if tool != 0 %}
+           TOOL_CALIBRATE_SAVE_TOOL_OFFSET SECTION="{names[loop.index]}" ATTRIBUTE=gcode_x_offset VALUE="{% raw %}{x:0.6f}{% endraw %}"
+           TOOL_CALIBRATE_SAVE_TOOL_OFFSET SECTION="{names[loop.index]}" ATTRIBUTE=gcode_y_offset VALUE="{% raw %}{y:0.6f}{% endraw %}"
+           TOOL_CALIBRATE_SAVE_TOOL_OFFSET SECTION="{names[loop.index]}" ATTRIBUTE=gcode_z_offset VALUE="{% raw %}{z:0.6f}{% endraw %}"
+        {% endif %}
+        TOOL_CALIBRATE_PROBE_OFFSET PROBE="tool_probe T{tool}"
+        M104 S0
+    {% endfor %}
+
+    #Finish up
+    SELECT_TOOL T={tools[0]} RESTORE_AXIS=XYZ (edited)
+NEW
+[7:43 PM]
+Result (at the end of printer.cfg with the other pragmas):
+## [tool T1]
+## gcode_x_offset = -0.032812
+## gcode_y_offset = 0.237500
+## gcode_z_offset = -0.126528
+##
+## [tool T2]
+## gcode_x_offset = 0.065625
+## gcode_y_offset = 0.468750
+## gcode_z_offset = -0.223611
+##
+## [tool T3]
+## gcode_x_offset = 0.396875
+## gcode_y_offset = 0.457813
+## gcode_z_offset = -0.334028 (edited)
+NEW
+[7:44 PM]
+That macro is provided in calibrate-offsets.cfg
+
+
+
+####Example Servos
+
+[pca9685 my_pca9685]
+# Optional I2C parameters (see "common I2C settings" section for details):
+#i2c_mcu: mcu
+#i2c_bus: i2c_bus
+#i2c_address: 0x40
+#i2c_software_scl_pin:
+#i2c_software_sda_pin:
+#i2c_speed: 400000
+frequency: 50  # PWM frequency in Hz (default: 50 for servos; range 24-1526)
+
+This section configures a PCA9685 16-channel PWM driver over I2C. It exposes PWM pins
+named "pca9685:my_pca9685:<channel>" where <channel> is 0-15. These can be used in
+[servo], [output_pin], or [fan] sections for PWM control.
+
+Example pins:
+  pin: ^pca9685:my_pca9685:0  # Channel 0, inverted
+
+
+## Useable
+[i2c]
+# Optional: Define an I2C bus (if not using default)
+#i2c_mcu: mcu  # If on MCU, else omit for host
+#i2c_bus: i2c1  # Default i2c1 on Pi
+
+[pca9685 servo_board]
+i2c_bus: i2c1  # Or just the bus name if host-side
+i2c_address: 0x40  # Default PCA9685 address
+frequency: 50  # 50 Hz for standard servos
+
+[servo servo1]
+pin: pca9685:servo_board:0
+maximum_servo_angle: 180
+minimum_pulse_width: 0.001
+maximum_pulse_width: 0.002
+
+[servo servo2]
+pin: pca9685:servo_board:1
+maximum_servo_angle: 180
+minimum_pulse_width: 0.001
+maximum_pulse_width: 0.002
+
+# ... up to servo16 on channel 15
+
+# Test with G-code:
+# SET_SERVO SERVO=servo1 ANGLE=0    # Min position
+# SET_SERVO SERVO=servo1 ANGLE=90   # Center
+# SET_SERVO SERVO=servo1 ANGLE=180  # Max position
+
