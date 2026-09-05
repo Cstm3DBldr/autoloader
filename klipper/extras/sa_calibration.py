@@ -133,8 +133,23 @@ class SACalibration:
     _BTN_LABEL = {'yes': 'YES', 'no': 'NO', 'abort': 'ABORT'}
     _BTN_STYLE = {'yes': 'primary', 'no': 'secondary', 'abort': 'error'}
 
+    SECT_EXPECT = "%s What to expect" % '✓'
+    SECT_WARN   = "%s Watch out for" % '⚠'
+
+    def _section(self, heading, items):
+        """One marked block: a heading line, then bulleted lines."""
+        if not items:
+            return ""
+        lines = [heading]
+        for item in items:
+            for part in str(item).split(NL):
+                part = part.strip()
+                if part:
+                    lines.append("%s %s" % ('•', part))
+        return NL.join(lines)
+
     def _emit_ui_prompt(self, gcmd, title, text, buttons, footer=(),
-                        columns=None):
+                        columns=None, expect=(), warn=()):
         """Send one action:prompt_* sequence.
 
         `buttons` and `footer` are (label, value, style) triples; each becomes a
@@ -162,6 +177,12 @@ class SACalibration:
         step_n, step_name = self._current_step()
         if step_name and not str(text).startswith(step_name):
             text = step_name + NL + NL + str(text)
+
+        for heading, items in ((self.SECT_EXPECT, expect),
+                               (self.SECT_WARN, warn)):
+            block = self._section(heading, items)
+            if block:
+                text = str(text) + NL + NL + block
 
         # Somewhere to go that is not ABORT. A calibration cannot offer BACK
         # honestly -- the phases are not reversible, and a "back" that silently
@@ -305,7 +326,8 @@ class SACalibration:
         self._emit_ui_prompt(
             gcmd, self._ui_title(), body, buttons,
             footer=[("ABORT", "abort", "error")],
-            columns=kw.get('columns'))
+            columns=kw.get('columns'),
+            expect=kw.get('expect', ()), warn=kw.get('warn', ()))
 
     _PATH_STYLE = {'loaded': 'primary', 'partial': 'info'}
 
@@ -754,11 +776,13 @@ class SACalibration:
         """
         self.owner._cal_data  = {'_next_cmd': cmd}
         self.owner._cal_state = 'chain_next'
+        head, _, why = str(detail).partition(NL + NL)
         self._prompt(
             gcmd, question,
             cmd,
             "SA_RESPOND VALUE=no",
-            detail=detail,
+            detail=head,
+            expect=[why] if why.strip() else (),
             choices=[(label, "yes", "primary"),
                      (decline, "no", "secondary")])
 
@@ -1139,15 +1163,13 @@ class SACalibration:
             "SA_RESPOND VALUE=yes",
             "SA_RESPOND VALUE=no",
             "SA_RESPOND VALUE=again",
-            detail=(expect + NL + NL
-                    + "Currently: %s. Answering WRONG WAY flips it, saves it, "
-                      "and buzzes again so you can check."
-                      % ("INVERTED" if inverted else "normal")
-                    + NL + NL
-                    + "The move is short and it only happens once, so it is "
-                      "easy to miss. BUZZ AGAIN repeats it and changes "
-                      "nothing -- use it as many times as you need before "
-                      "answering."),
+            detail="Currently: %s." % ("INVERTED" if inverted else "normal"),
+            expect=[expect,
+                    "The move is short and happens once, so it is easy to "
+                    "miss. BUZZ AGAIN repeats it and changes nothing."],
+            warn=["WRONG WAY flips this motor and saves it, so answer it "
+                  "rather than guessing -- a wrong answer inverts a motor "
+                  "that was fine."],
             choices=[("RIGHT WAY", "yes", "primary"),
                      ("WRONG WAY", "no", "warning"),
                      ("BUZZ AGAIN", "again", "secondary")],

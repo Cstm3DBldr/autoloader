@@ -1860,6 +1860,7 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     }
 
     mounted(): void {
+        this.installPromptSkin()
         // Scan recent gcode events to recover the "homed" flag across a page
         // refresh. `stepper_enable` covers the "unhomed" side authoritatively.
         if (this.selectorStepperEnabled) {
@@ -1886,6 +1887,12 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         if (this._unsubStore) {
             this._unsubStore()
             this._unsubStore = null
+        }
+        // A MutationObserver on document.body outlives the panel unless it is
+        // disconnected here, and Mainsail mounts and unmounts panels freely.
+        if (this.saPromptObserver) {
+            this.saPromptObserver.disconnect()
+            this.saPromptObserver = null
         }
     }
 
@@ -2450,6 +2457,57 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         // and per-tool buttons that the prompt protocol cannot express.
         this.promptOpen = active && this.promptKind !== 'generic'
         if (!active) this.calResponse = ''
+    }
+
+    /*
+     * Give Mainsail's prompt dialog the calibration guide's structure.
+     *
+     * See the comment on saPromptSkin for why this is done by decorating the
+     * rendered lines rather than by sending markup: the prompt protocol has no
+     * markup, and Mainsail escapes the text.
+     */
+    private saPromptObserver: MutationObserver | null = null
+
+    installPromptSkin(): void {
+        if (this.saPromptObserver) return
+        const CHECK = '✓'
+        const WARN = '⚠'
+
+        const decorate = (): void => {
+            const dlg = document.querySelector('.macro_prompt-dialog')
+            if (!dlg) return
+            let block: '' | 'expect' | 'warn' = ''
+            dlg.querySelectorAll('p').forEach((el, idx) => {
+                const raw = (el.textContent || '')
+                const t = raw.trim()
+                el.classList.remove(
+                    'sa-p-step', 'sa-p-blank', 'sa-p-expect', 'sa-p-warn',
+                    'sa-p-expect-head', 'sa-p-warn-head')
+                if (!t) {
+                    // The spacer lines are what open those big gaps. The
+                    // backend still sends them because KlipperScreen uses them
+                    // for spacing; here the stylesheet provides it instead.
+                    el.classList.add('sa-p-blank')
+                    return
+                }
+                if (t.startsWith(CHECK)) { block = 'expect'; el.classList.add('sa-p-expect-head'); return }
+                if (t.startsWith(WARN))  { block = 'warn';   el.classList.add('sa-p-warn-head');   return }
+                if (t.startsWith('\u2022')) {
+                    el.classList.add(block === 'warn' ? 'sa-p-warn' : 'sa-p-expect')
+                    return
+                }
+                // A non-bullet line ends whichever block was running; the very
+                // first one is the step name, which the guide prints as its
+                // section header.
+                block = ''
+                if (idx === 0) el.classList.add('sa-p-step')
+            })
+        }
+
+        this.saPromptObserver = new MutationObserver(() => decorate())
+        this.saPromptObserver.observe(document.body,
+                                      { childList: true, subtree: true })
+        decorate()
     }
 
     saveProfile(): void {
@@ -3018,3 +3076,95 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     min-height: 32px !important;
 }
 </style>
+
+<style>
+/*
+ * ── Mainsail's prompt dialog, wearing the guide's clothes ──────────────────
+ *
+ * Global on purpose. The dialog is rendered by Mainsail, not by this
+ * component, so a scoped rule would never reach it. Everything here is under
+ * .macro_prompt-dialog, Mainsail's own class for that card, so nothing else on
+ * the page is touched.
+ *
+ * The classes on the <p> elements come from installPromptSkin(), which reads
+ * the markers the backend puts at the start of each line. Mainsail renders
+ * prompt_text as escaped plain text in <p class="mb-0"> -- no markup and no
+ * per-line classes -- so a marker is the only channel there is.
+ *
+ * The colours are copied from .sa-cal-expect / .sa-cal-warn rather than picked
+ * again by eye: the whole point is that a prompt and the guide page behind it
+ * are the same two blocks.
+ */
+.macro_prompt-dialog .v-card__text {
+    padding: 16px !important;
+    font-size: 0.875rem;
+}
+/* Every prompt_text is its own .row, and the row's default margins are what
+   opened the wide gaps between each line. */
+.macro_prompt-dialog .v-card__text > .row {
+    margin: 0;
+}
+.macro_prompt-dialog .v-card__text > .row > .col {
+    padding: 0;
+}
+.macro_prompt-dialog p {
+    line-height: 1.45;
+}
+/* Spacer lines, sent for KlipperScreen's benefit. Hidden rather than dropped
+   from the protocol, so this stays presentation-only and KlipperScreen keeps
+   the spacing it relies on. */
+.macro_prompt-dialog p.sa-p-blank {
+    display: none;
+}
+.macro_prompt-dialog p:not([class*="sa-p-"]) {
+    margin-bottom: 8px !important;
+}
+/* The step name, styled as the guide styles its section header. */
+.macro_prompt-dialog p.sa-p-step {
+    font-weight: 500;
+    margin-bottom: 6px !important;
+}
+/* ✓ What to expect — .sa-cal-expect, applied per line so a heading and its
+   bullets share one background and one rule and read as a single block. */
+.macro_prompt-dialog p.sa-p-expect-head,
+.macro_prompt-dialog p.sa-p-expect {
+    font-size: 12px;
+    line-height: 1.45;
+    color: rgba(129, 199, 132, 0.92);
+    background: rgba(76, 175, 80, 0.06);
+    border-left: 2px solid #4caf50;
+    padding: 1px 12px;
+}
+/* ⚠ Watch out for — .sa-cal-warn. */
+.macro_prompt-dialog p.sa-p-warn-head,
+.macro_prompt-dialog p.sa-p-warn {
+    font-size: 12px;
+    line-height: 1.45;
+    color: rgba(255, 183, 77, 0.92);
+    background: rgba(255, 152, 0, 0.05);
+    border-left: 2px solid #ff9800;
+    padding: 1px 12px;
+}
+.macro_prompt-dialog p.sa-p-expect-head,
+.macro_prompt-dialog p.sa-p-warn-head {
+    font-weight: 500;
+    margin-top: 10px !important;
+    padding-top: 8px;
+    border-radius: 0 4px 0 0;
+}
+/* Close the box on the last line of a run. :has() is what makes this work
+   without the decorator having to know where a run ends. */
+.macro_prompt-dialog p.sa-p-expect:last-child,
+.macro_prompt-dialog p.sa-p-warn:last-child,
+.macro_prompt-dialog p.sa-p-expect:has(+ p:not(.sa-p-expect)),
+.macro_prompt-dialog p.sa-p-warn:has(+ p:not(.sa-p-warn)) {
+    padding-bottom: 8px;
+    border-radius: 0 0 4px 0;
+}
+/* The buttons, at the guide's scale rather than the dialog's default. */
+.macro_prompt-dialog .v-card__text .v-btn {
+    text-transform: none;
+    letter-spacing: 0.02em;
+}
+</style>
+
