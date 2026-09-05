@@ -57,7 +57,9 @@ class SACalibration:
         self.close_ui_prompt(gcmd)
 
         try:
-            if state.startswith('sel_'):
+            if state.startswith('dir_'):
+                self._dir_respond(gcmd, state, val)
+            elif state.startswith('sel_'):
                 self._sel_respond(gcmd, state, val)
             elif state.startswith('drv_'):
                 self._drv_respond(gcmd, state, val)
@@ -299,6 +301,8 @@ class SACalibration:
     def _ui_title(self):
         """Short heading for the prompt dialog, from the current phase."""
         st = (self.owner._cal_state or '').lower()
+        if st.startswith('dir_'):
+            return "Motor Direction"
         if st.startswith('sel_'):
             return "Selector Calibration"
         if st.startswith('drv_'):
@@ -538,6 +542,51 @@ class SACalibration:
             detail=("Total travel %.2fmm over %d paths, spacing %.2fmm"
                     % (total_travel, n, spacing)
                     + NL + offset_note + width_note + pos_lines))
+
+    # ── Motor direction ───────────────────────────────────────────────────────
+
+    def ask_direction(self, gcmd, motor, expect):
+        """Ask which way a motor just moved, and fix it if it was wrong.
+
+        The answer is acted on, not just reported: "wrong way" flips the saved
+        direction and re-buzzes so the operator can confirm the fix rather than
+        take it on trust.
+        """
+        owner = self.owner
+        owner._cal_data  = {'motor': motor}
+        owner._cal_state = 'dir_confirm'
+        inverted = bool(getattr(owner, '%s_dir_invert' % motor, False))
+
+        self._prompt(
+            gcmd,
+            "Did the %s motor move the right way?" % motor,
+            "SA_RESPOND VALUE=yes",
+            "SA_RESPOND VALUE=no",
+            detail=(expect + NL + NL
+                    + "Currently: %s. Answering NO flips it, saves it, and "
+                      "buzzes again so you can check."
+                      % ("INVERTED" if inverted else "normal")),
+            choices=[("RIGHT WAY", "yes", "primary"),
+                     ("WRONG WAY", "no", "warning")])
+
+    def _dir_respond(self, gcmd, state, value):
+        owner = self.owner
+        motor = (owner._cal_data or {}).get('motor', 'drive')
+
+        if self._yes(value):
+            self._clear()
+            gcmd.respond_info(
+                "SA CAL: %s direction confirmed. Nothing changed." % motor)
+            return
+
+        owner.gcode.run_script_from_command(
+            "SA_SET_DIRECTION MOTOR=%s" % motor)
+        self._clear()
+        gcmd.respond_info(
+            "SA CAL: Direction flipped and saved. Buzzing again — check it now "
+            "moves the right way.")
+        owner.gcode.run_script_from_command(
+            "SA_BUZZ_CHECK MOTOR=%s" % motor)
 
     def _sel_respond(self, gcmd, state, value):
         owner = self.owner

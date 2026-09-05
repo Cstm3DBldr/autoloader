@@ -142,6 +142,20 @@ class SAMotion:
     # Selector motor
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _sel_sign(self):
+        """+1, or -1 when the selector is wired backwards.
+
+        Applied to EVERY selector move, homing included. Homing is the one that
+        matters: it drives toward the endstop, so a reversed motor sends the
+        carriage away from the switch and into the far stop instead. A sign
+        flip fixes all four moves consistently.
+        """
+        return -1.0 if getattr(self.owner, 'selector_dir_invert', False) else 1.0
+
+    def _drv_sign(self):
+        """+1, or -1 when the drive motor is wired backwards."""
+        return -1.0 if getattr(self.owner, 'drive_dir_invert', False) else 1.0
+
     def selector_home(self):
         """Home selector to physical endstop — double-touch for accuracy.
 
@@ -161,22 +175,23 @@ class SAMotion:
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % sn)
 
         # Fast approach
+        sg = self._sel_sign()
         owner.gcode.run_script_from_command(
-            "MANUAL_STEPPER STEPPER=%s MOVE=-%.1f SPEED=%.1f STOP_ON_ENDSTOP=1"
-            % (sn, mt + 20.0, hs))
+            "MANUAL_STEPPER STEPPER=%s MOVE=%.1f SPEED=%.1f STOP_ON_ENDSTOP=1"
+            % (sn, sg * -(mt + 20.0), hs))
         owner.gcode.run_script_from_command("M400")
         owner.gcode.run_script_from_command(
             "MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % sn)
 
         # Back off
         owner.gcode.run_script_from_command(
-            "MANUAL_STEPPER STEPPER=%s MOVE=%.1f SPEED=%.1f" % (sn, bo, hs))
+            "MANUAL_STEPPER STEPPER=%s MOVE=%.1f SPEED=%.1f" % (sn, sg * bo, hs))
         owner.gcode.run_script_from_command("M400")
 
         # Slow re-approach
         owner.gcode.run_script_from_command(
-            "MANUAL_STEPPER STEPPER=%s MOVE=-%.1f SPEED=%.1f STOP_ON_ENDSTOP=1"
-            % (sn, bo * 4.0, hs / 4.0))
+            "MANUAL_STEPPER STEPPER=%s MOVE=%.1f SPEED=%.1f STOP_ON_ENDSTOP=1"
+            % (sn, sg * -(bo * 4.0), hs / 4.0))
         owner.gcode.run_script_from_command("M400")
         owner.gcode.run_script_from_command(
             "MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % sn)
@@ -201,7 +216,7 @@ class SAMotion:
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=1" % sn)
         owner.gcode.run_script_from_command(
             "MANUAL_STEPPER STEPPER=%s MOVE=%.3f SPEED=%.1f"
-            % (sn, position_mm, owner.selector_speed))
+            % (sn, self._sel_sign() * position_mm, owner.selector_speed))
         owner.gcode.run_script_from_command("M400")
         self._arm_timeout(sn)
         self._selector_position = position_mm
@@ -226,7 +241,8 @@ class SAMotion:
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % dn)
         owner.gcode.run_script_from_command(
-            "MANUAL_STEPPER STEPPER=%s MOVE=%.3f SPEED=%.1f" % (dn, distance_mm, speed))
+            "MANUAL_STEPPER STEPPER=%s MOVE=%.3f SPEED=%.1f"
+            % (dn, self._drv_sign() * distance_mm, speed))
         owner.gcode.run_script_from_command("M400")
         self._arm_timeout(dn)
 
