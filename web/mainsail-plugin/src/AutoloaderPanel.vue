@@ -1851,6 +1851,13 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 
     mounted(): void {
         this.installPromptSkin()
+        // Adopt the printer's current guide state. A refresh while the guide
+        // is open would otherwise show a closed dialog with no change coming
+        // to correct it.
+        if (this.saStatus.guide_open && !this.promptWaiting) {
+            this.syncCalStep()
+            this.calOpen = true
+        }
         // Scan recent gcode events to recover the "homed" flag across a page
         // refresh. `stepper_enable` covers the "unhomed" side authoritatively.
         if (this.selectorStepperEnabled) {
@@ -1994,14 +2001,22 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     }
 
     openGuide(): void {
+        // Open here directly rather than waiting for guide_open to change:
+        // if it is already true -- the touchscreen has the guide up -- there
+        // is no change coming and the click would do nothing at all.
+        this.calYielded = false
+        this.syncCalStep()
+        this.calOpen = true
         this.saGcode('SA_GUIDE OPEN=1')
     }
 
     closeGuide(): void {
-        // Clears the yield flag as well as the dialog, so a guide dismissed
-        // during a calibration stays dismissed rather than springing back when
-        // the phase clears.
+        // Same reasoning as openGuide: close here rather than waiting for the
+        // flag to come back false. Clearing calYielded as well means a guide
+        // dismissed during a calibration stays dismissed rather than springing
+        // back when the phase clears.
         this.calYielded = false
+        this.calOpen = false
         this.saGcode('SA_GUIDE OPEN=0')
     }
 
