@@ -185,6 +185,9 @@ def fix_alias_commas(text):
 _SECTION = re.compile(r"^\[([^\]]+)\]\s*$")
 # A setting, not a continuation: no leading whitespace, and a value on the line.
 _SETTING = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*?)\s*$")
+
+# Values that mean "not answered yet". Never carried forward over a real one.
+PLACEHOLDER_VALUES = ("CHANGE_ME", "/dev/serial/by-id/CHANGE_ME", "")
 # Klipper parses with inline_comment_prefixes=(';', '#'), so a value ends at
 # whitespace followed by one of those.
 _INLINE_COMMENT = re.compile(r"\s+[#;].*$")
@@ -265,6 +268,13 @@ def reapply(rendered, existing):
             key, new_val = m.group(1), value_only(m.group(2))
             seen.add((section, key))
             old_val = existing.get((section, key))
+            # A placeholder is not a value worth preserving. "existing wins" is
+            # right for a tuned number and wrong for CHANGE_ME: it carried the
+            # placeholder forward over a UUID the user had just supplied
+            # through the menu, so the answer was accepted, generated, and then
+            # immediately overwritten by the thing it was meant to replace.
+            if old_val in PLACEHOLDER_VALUES:
+                old_val = None
             if old_val is not None and old_val != new_val and new_val != "":
                 # Replace ONLY the value, leaving the template's own spelling
                 # of the line intact -- key, the alignment either side of the
