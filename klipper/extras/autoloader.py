@@ -356,6 +356,13 @@ class Autoloader:
         # selector next?" after every home would be a popup on a command people
         # run all day.
         self._cal_chain        = False
+        # Which calibration guide page the operator is on, held here rather
+        # than in each UI so the touchscreen and Mainsail show the same one.
+        # Not persisted: an open guide is a thing someone is doing right now,
+        # and restoring one after a restart would be reopening a window nobody
+        # asked for.
+        self._guide_open       = False
+        self._guide_step       = 1
 
         # ── Subsystems ────────────────────────────────────────────────────────
         self.motion      = SAMotion(self)
@@ -1263,6 +1270,10 @@ class Autoloader:
              self._cmd_test_endstop,
              "Watch the selector endstop while you move the carriage by hand. "
              "Run this BEFORE SA_HOME. [DURATION=] [INTERVAL=]"),
+            ('SA_GUIDE',
+             self._cmd_guide,
+             "Open, close or page the calibration guide on every UI at once. "
+             "[OPEN=0|1] [STEP=n]"),
             ('SA_RESTORE_PROFILE',
              self._cmd_restore_profile,
              "Put back the filament profile a wipe removed. TOOL=N"),
@@ -1491,6 +1502,30 @@ class Autoloader:
         except Exception:
             logging.exception("Autoloader: endstop query failed")
             return None, name
+
+    def _cmd_guide(self, gcmd):
+        """SA_GUIDE [OPEN=0|1] [STEP=n] — drive the guide on every UI at once.
+
+        Deliberately does not validate STEP against what is calibrated: paging
+        ahead to read what a later step will do is a reasonable thing to want,
+        and refusing it would make the guide worse at the one job it has.
+        """
+        total = self.calibration._STEP_TOTAL
+        opened = gcmd.get_int('OPEN', None, minval=0, maxval=1)
+        step = gcmd.get_int('STEP', None, minval=1, maxval=total)
+
+        if opened is not None:
+            self._guide_open = bool(opened)
+        if step is not None:
+            self._guide_step = step
+            # Asking for a page implies wanting to see it.
+            if opened is None:
+                self._guide_open = True
+
+        gcmd.respond_info(
+            "SA: Guide %s on step %d of %d."
+            % ("open" if self._guide_open else "closed",
+               self._guide_step, total))
 
     def _cmd_test_endstop(self, gcmd):
         """SA_TEST_ENDSTOP [DURATION=] [INTERVAL=] — watch the selector endstop.
@@ -1948,6 +1983,8 @@ class Autoloader:
             'cal_step_name'           : (self.calibration._current_step()[1]
                                          or ''),
             'cal_step_total'          : self.calibration._STEP_TOTAL,
+            'guide_open'              : bool(self._guide_open),
+            'guide_step'              : int(self._guide_step),
             'cal_path'                : self._cal_data.get('path', -1),
             'cal_prompt'              : self._cal_prompt or '',
         }

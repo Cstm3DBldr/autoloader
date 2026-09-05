@@ -34,6 +34,7 @@
 # unload_done transitions regardless of which panel is currently active.
 
 _watcher_installed = False
+_last_guide_open = False
 _last_cal_state    = None
 _last_entry        = []
 _initialized       = False  # baseline from first observation (no trigger)
@@ -92,7 +93,7 @@ def _on_status(screen, *args):
     if not isinstance(sa, dict):
         return
 
-    global _dismissed_at_cal_state
+    global _dismissed_at_cal_state, _last_guide_open
     cal   = sa.get("cal_state")
     entry = sa.get("entry_filament")
 
@@ -104,6 +105,7 @@ def _on_status(screen, *args):
         _last_cal_state = cal if cal is not None else _last_cal_state
         if isinstance(entry, list):
             _last_entry = list(entry)
+        _last_guide_open = bool(sa.get("guide_open", False))
         _initialized = True
         return
 
@@ -115,6 +117,34 @@ def _on_status(screen, *args):
         _dismissed_at_cal_state = None
 
     from gi.repository import GLib
+
+    # guide_open transition → open or leave the calibration guide.
+    #
+    # The guide used to be a panel each UI opened for itself, so opening it in
+    # Mainsail left the touchscreen wherever it was. The printer holds the flag
+    # now and this follows it, which is the same thing that already makes
+    # prompts appear on both screens at once.
+    #
+    # Only transitions act. Acting on the level would fight the operator every
+    # time they navigated away from a guide that is still open.
+    guide_open = sa.get("guide_open")
+    if isinstance(guide_open, bool) and guide_open != _last_guide_open:
+        _last_guide_open = guide_open
+        # _cur_panels is a stack, not a single name -- the last entry is what
+        # is on screen. There is no _cur_panel attribute, so testing for one
+        # would have quietly matched nothing and opened the guide on top of
+        # itself every update.
+        stack = getattr(screen, "_cur_panels", None) or []
+        current = stack[-1] if stack else None
+        if guide_open:
+            if current != "sa_calibration_guide":
+                GLib.idle_add(screen.show_panel, "sa_calibration_guide",
+                              "Calibration Guide")
+        elif current == "sa_calibration_guide":
+            # Closed elsewhere. _menu_go_back rather than show_panel, so the
+            # touchscreen returns wherever it came from instead of being sent
+            # to a panel it never asked for.
+            GLib.idle_add(screen._menu_go_back)
 
     # cal_state transition → post-load action popup
     if cal is not None and cal != _last_cal_state:

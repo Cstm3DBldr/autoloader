@@ -35,6 +35,8 @@ export interface SAStatus {
     cal_step?: number
     cal_step_name?: string
     cal_step_total?: number
+    guide_open?: boolean
+    guide_step?: number
     cal_path: number
     cal_prompt: string
 }

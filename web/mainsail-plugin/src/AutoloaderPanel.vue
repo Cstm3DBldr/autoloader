@@ -1495,7 +1495,6 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
      * lasts until the guide is reopened -- a deliberate move away is a
      * decision, not a momentary one.
      */
-    calStepPinned = false
     /*
      * True when the guide closed itself to let a prompt have the screen, as
      * opposed to the operator closing it. Only the former reopens: pressing X
@@ -1929,9 +1928,7 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 
     openCalibration(): void {
         this.calStep = 0
-        this.calStepPinned = false
-        this.syncCalStep()
-        this.calOpen = true
+        this.openGuide()
     }
 
     // ── Calibration status helpers ────────────────────────────────────
@@ -1971,11 +1968,33 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
      * front of it -- which is exactly what made the prompt read as an
      * interruption rather than the next page.
      */
+    /*
+     * The printer owns which page the guide is on, so this is a mirror rather
+     * than a second copy: nothing here decides a step, it only reflects
+     * guide_step and asks the printer to change it.
+     */
     syncCalStep(): void {
-        const live = this.saStatus.cal_step ?? 0
-        if (live >= 1 && !this.calStepPinned) {
-            this.calStep = live - 1
-        }
+        const live = this.saStatus.guide_step ?? 0
+        if (live >= 1) this.calStep = live - 1
+    }
+
+    @Watch('saStatus.guide_step')
+    onGuideStepChange(): void {
+        this.syncCalStep()
+    }
+
+    @Watch('saStatus.guide_open')
+    onGuideOpenChange(open: boolean): void {
+        // A prompt owns the screen while one is waiting; the guide reopens
+        // when it clears. See onPromptWaitingChange.
+        if (open && this.promptWaiting) return
+        this.syncCalStep()
+        this.calOpen = !!open
+        if (!open) this.calYielded = false
+    }
+
+    openGuide(): void {
+        this.saGcode('SA_GUIDE OPEN=1')
     }
 
     closeGuide(): void {
@@ -1983,13 +2002,13 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         // during a calibration stays dismissed rather than springing back when
         // the phase clears.
         this.calYielded = false
-        this.calOpen = false
+        this.saGcode('SA_GUIDE OPEN=0')
     }
 
     calStepNav(delta: number): void {
-        this.calStepPinned = true
-        this.calStep = Math.min(this.calTotalSteps - 1,
-                                Math.max(0, this.calStep + delta))
+        const next = Math.min(this.calTotalSteps,
+                              Math.max(1, this.calStep + 1 + delta))
+        this.saGcode(`SA_GUIDE STEP=${next}`)
     }
 
     @Watch('saStatus.cal_step')
@@ -2005,8 +2024,9 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     @Watch('promptWaiting')
     onPromptWaitingChange(waiting: boolean): void {
         if (waiting) {
-            // Step aside. The prompt carries the same title, the same step
-            // number and the same blocks, so nothing is lost by closing.
+            // Step aside locally only. The printer's guide_open stays true --
+            // this screen is hiding its copy behind the prompt, not closing
+            // the guide for everyone.
             if (this.calOpen) {
                 this.calYielded = true
                 this.calOpen = false
@@ -2015,9 +2035,8 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         }
         if (this.calYielded) {
             this.calYielded = false
-            this.calStepPinned = false
             this.syncCalStep()
-            this.calOpen = true
+            this.calOpen = !!this.saStatus.guide_open
         }
     }
 
@@ -2453,8 +2472,11 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
         // whichever happened to mount last. Take the screen instead.
         if (active) {
             this.pathModalOpen = false
-            this.calOpen = false
             this.pickerOpen = false
+            // The guide is deliberately NOT closed here. onPromptWaitingChange
+            // owns it, because closing it needs to record that the guide is
+            // owed a reopen -- and whichever of the two ran first would
+            // otherwise decide whether it ever came back.
         }
 
         // Calibration prompts are emitted by the backend as native

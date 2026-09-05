@@ -178,6 +178,12 @@ class SACalibration:
         if step_name and not str(text).startswith(step_name):
             text = step_name + NL + NL + str(text)
 
+        # Move the guide to this phase's page wherever it is open, so the
+        # panel behind the prompt is never showing a different step than the
+        # prompt in front of it -- on either UI.
+        if step_n is not None:
+            self.owner._guide_step = step_n
+
         for heading, items in ((self.SECT_EXPECT, expect),
                                (self.SECT_WARN, warn)):
             block = self._section(heading, items)

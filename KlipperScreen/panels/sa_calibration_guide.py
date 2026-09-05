@@ -150,13 +150,27 @@ class Panel(ScreenPanel):
 
     def _go_prev(self, widget):
         if self._step > 0:
-            self._step -= 1
-            self._show_step()
+            self._gcode("SA_GUIDE STEP=%d" % self._step)
 
     def _go_next(self, widget):
         if self._step < _NUM_STEPS - 1:
-            self._step += 1
+            self._gcode("SA_GUIDE STEP=%d" % (self._step + 2))
+
+    def _sync_from_printer(self, sa):
+        """Follow guide_step, so both screens show the same page.
+
+        The printer holds the page number and this panel reflects it. Moving
+        locally and telling the printer afterwards would leave the screens on
+        different pages whenever the command did not land.
+        """
+        step = sa.get("guide_step")
+        if not isinstance(step, int) or step < 1:
+            return False
+        idx = min(_NUM_STEPS - 1, step - 1)
+        if idx != self._step:
+            self._step = idx
             self._show_step()
+        return False
 
     def _show_step(self):
         self._page_stack.set_visible_child_name("step%d" % self._step)
@@ -546,6 +560,15 @@ class Panel(ScreenPanel):
     def _send(self, widget, gcode):
         self._screen._ws.klippy.gcode_script(gcode)
 
+    def _gcode(self, gcode):
+        """Send a command that did not come from a button press.
+
+        _send is a GTK signal handler and takes the widget first, so calling
+        it with one argument passes the command as the widget and sends
+        nothing at all.
+        """
+        self._screen._ws.klippy.gcode_script(gcode)
+
     def _pick_tool(self, widget, gcode_template, preselected=None):
         self._pending_cmd = gcode_template
         self._rebuild_tool_buttons(self._num_paths, preselected)
@@ -565,7 +588,15 @@ class Panel(ScreenPanel):
         self._last_sa   = dict(sa)
         self._num_paths = sa.get("num_paths", 6)
         self._stack.set_visible_child_name("pages")
+        self._sync_from_printer(sa)
         self._show_step()
+        # Announce it, so opening the guide here opens it in Mainsail too.
+        self._gcode("SA_GUIDE OPEN=1")
+
+    def deactivate(self):
+        # Leaving the panel closes the guide everywhere. One left open on a
+        # screen nobody is looking at would keep reopening on the other.
+        self._gcode("SA_GUIDE OPEN=0")
 
     def process_update(self, action, data):
         if action != "notify_status_update":
@@ -576,6 +607,7 @@ class Panel(ScreenPanel):
             n = sa.get("num_paths")
             if n is not None:
                 self._num_paths = n
+            GLib.idle_add(self._sync_from_printer, dict(self._last_sa))
             GLib.idle_add(self._refresh_current_step)
 
     def _refresh_current_step(self):
