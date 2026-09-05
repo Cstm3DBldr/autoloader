@@ -350,6 +350,12 @@ class Autoloader:
         self._park_active      = False
         self._cal_data         = {}
         self._cal_prompt       = ''
+        # True while the operator is walking the calibration chain, so a step
+        # that is ALSO an everyday command knows whether to offer the next one.
+        # SA_HOME is the case that forces this: offering "calibrate the
+        # selector next?" after every home would be a popup on a command people
+        # run all day.
+        self._cal_chain        = False
 
         # ── Subsystems ────────────────────────────────────────────────────────
         self.motion      = SAMotion(self)
@@ -1277,6 +1283,12 @@ class Autoloader:
         gcmd.respond_info("SA: Homing selector...")
         self.motion.selector_home()
         gcmd.respond_info("SA: Selector homed — position 0.0mm.")
+        # Homing is both a calibration step and an everyday command. Offering
+        # "calibrate the selector next?" every time someone homes would be a
+        # popup on a command people run all day, so the offer is made only
+        # when the operator got here by accepting the previous step's offer.
+        if self._cal_chain:
+            self.calibration._offer_next(gcmd, 'home')
 
     def _cmd_select(self, gcmd):
         path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
@@ -1547,6 +1559,11 @@ class Autoloader:
             gcmd.respond_info(
                 "SA: ENDSTOP OK — saw both states (%d change(s)). "
                 "Safe to run SA_HOME." % changes)
+            # Only the pass offers to go on. Offering to home after a switch
+            # that never triggered would be offering to drive the carriage
+            # into the hard stop, which is the thing this test exists to
+            # prevent.
+            self.calibration._offer_next(gcmd, 'endstop')
         elif seen_triggered and not seen_open:
             gcmd.respond_info(
                 "SA: ENDSTOP NEVER READ OPEN. Either it was pressed the whole "

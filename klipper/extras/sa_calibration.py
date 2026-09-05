@@ -572,7 +572,43 @@ class SACalibration:
     # prompts themselves are native.
 
     _CHAIN = [
+        ('buzz_drive', "Drive motor direction",
+         "Check the selector motor next?",
+         "Same question for the other motor: it should move AWAY from the "
+         "endstop first. Homing drives at that endstop, so a selector running "
+         "backwards runs into the hard stop rather than the switch.",
+         "BUZZ SELECTOR", "SA_BUZZ_CHECK MOTOR=selector"),
+
+        ('buzz_selector', "Selector motor direction",
+         "Test the endstop next?",
+         "You move the carriage onto the switch by hand while the state is "
+         "read back. Nothing is driven. Do it before homing -- homing is the "
+         "first thing that trusts the switch, and it finds out by driving the "
+         "carriage at it.",
+         "TEST ENDSTOP", "SA_TEST_ENDSTOP DURATION=30"),
+
+        ('endstop',    "Endstop test",
+         "Home the selector next?",
+         "Drives the carriage to the switch and calls that zero. Everything "
+         "measured in millimetres from home depends on it.",
+         "HOME SELECTOR", "SA_HOME"),
+
+        ('home',       "Selector home",
+         "Calibrate the selector positions next?",
+         "Sweeps the rail to measure its travel, then divides it into path "
+         "positions. Until it runs, the positions are guesses spaced 21mm "
+         "apart.",
+         "CALIBRATE SELECTOR", "SA_CALIBRATE_SELECTOR"),
+
         ('selector',   "Selector positions",
+         "Calibrate the servo next?",
+         "Finds the angle at which the drive gear grips. Needs filament at "
+         "the gear on the selected path -- if there is none in yet, stop here "
+         "and come back to it. Nothing downstream can move filament until the "
+         "gear can hold it.",
+         "CALIBRATE SERVO", "SA_CALIBRATE_SERVO"),
+
+        ('servo',      "Servo engage angle",
          "Calibrate the drive motor next?",
          "Measures how far one motor turn moves filament. Everything that "
          "feeds or retracts is measured in those millimetres, so nothing "
@@ -635,6 +671,7 @@ class SACalibration:
                 entry = e
                 break
         if entry is None or entry[2] is None:
+            self.owner._cal_chain = False
             gcmd.respond_info(
                 "SA CAL: %s done — that is the last step."
                 % (entry[1] if entry else step))
@@ -656,10 +693,15 @@ class SACalibration:
         nxt = (owner._cal_data or {}).get('_next_cmd')
         self._clear()
         if not self._yes(value):
+            owner._cal_chain = False
             gcmd.respond_info(
                 "SA CAL: Stopped. Run the next step whenever you are ready.")
             return
         if nxt:
+            # Set AFTER _clear(), which wipes the phase state between steps.
+            # SA_HOME reads this to decide whether it is a step in a sequence
+            # or just someone homing the selector.
+            owner._cal_chain = True
             gcmd.respond_info("SA CAL: Starting %s..." % nxt)
             owner.gcode.run_script_from_command(nxt)
 
@@ -894,6 +936,7 @@ class SACalibration:
                 gcmd.respond_info(
                     "SA CAL: Servo saved — engaged %.1f deg, disengaged %.1f "
                     "deg. Effective now, no restart needed." % (eng, d['dis']))
+                self._offer_next(gcmd, 'servo')
                 return
             self._clear()
             move(d['dis'])
@@ -970,6 +1013,11 @@ class SACalibration:
             self._clear()
             gcmd.respond_info(
                 "SA CAL: %s direction confirmed. Nothing changed." % motor)
+            # Confirming closed the dialog and left the operator on the
+            # dashboard with nothing saying what came next -- the same
+            # dead-end that accepting the selector positions used to have.
+            # WRONG WAY never had it, because re-buzzing reopens the prompt.
+            self._offer_next(gcmd, 'buzz_%s' % motor)
             return
 
         owner.gcode.run_script_from_command(
