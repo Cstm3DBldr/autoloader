@@ -205,7 +205,54 @@ endif
 
 endmenu
 
-menu "6. What the installer is allowed to touch"
+menu "6. Touchscreen"
+
+config KLIPPERSCREEN_PANELS
+    bool "Install the autoloader panels on the touchscreen"
+    default y
+    help
+      Adds the autoloader's own screens to KlipperScreen: status, load and
+      unload, the calibration guide, macros and settings.
+
+      Say no if this printer has no touchscreen, or if you only want to drive
+      the autoloader from Mainsail. The web panel works either way -- it does
+      not need any of this -- and saying no here changes nothing about how the
+      printer itself behaves.
+
+      The installer says yes by default only when it finds KlipperScreen
+      already installed.
+
+if KLIPPERSCREEN_PANELS
+
+config KLIPPERSCREEN_ADDON_HOOK
+    bool "Let the touchscreen react before you open an autoloader panel"
+    default y
+    help
+      KlipperScreen sends printer updates only to the panel currently on
+      screen, and has no way for an add-on to run at startup. Without this,
+      the touchscreen ignores anything happening elsewhere until you open one
+      of the autoloader's own panels by hand -- so a calibration guide opened
+      in Mainsail does not appear on the screen next to you.
+
+      Saying yes adds about twenty lines to KlipperScreen's own screen.py: a
+      hook that loads anything in its addons/ directory when it starts. The
+      change is generic and does not mention the autoloader.
+
+      It is applied carefully. The installer refuses to touch a screen.py it
+      does not recognise, backs the file up first, checks the result still
+      compiles and puts the backup back if it does not. Uninstalling reverts
+      it. A KlipperScreen update replaces screen.py and removes the hook
+      silently, so it is re-applied after every update.
+
+      Say no if you would rather nothing modified KlipperScreen. Everything
+      else still works; the touchscreen simply needs an autoloader panel
+      opened once per boot before it follows along.
+
+endif
+
+endmenu
+
+menu "7. What the installer is allowed to touch"
 
 config WRITE_PRINTER_CFG_INCLUDE
     bool "Add the include line to printer.cfg for me?"

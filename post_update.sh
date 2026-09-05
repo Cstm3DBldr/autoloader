@@ -86,8 +86,23 @@ cp -f "${REPO}"/autoloader/examples/*.cfg "${CONFIG}/autoloader/examples/" 2>/de
 mkdir -p "${CONFIG}/autoloader/leds"
 cp -f "${REPO}"/autoloader/*.html "${CONFIG}/autoloader/" 2>/dev/null || true
 
+# Answered in the installer. Absent (an install that predates the question,
+# or a hand-made one) means yes, so an existing setup is never silently
+# stripped of panels it already had.
+sa_answer() {
+    [ -f "${SA_ANSWERS}" ] || { echo "y"; return; }
+    if grep -q "^# CONFIG_${1} is not set" "${SA_ANSWERS}"; then echo "n"
+    elif grep -q "^CONFIG_${1}=y" "${SA_ANSWERS}"; then echo "y"
+    elif grep -q "^CONFIG_${1}=n" "${SA_ANSWERS}"; then echo "n"
+    else echo "${2:-y}"; fi
+}
+WANT_KS_PANELS="$(sa_answer KLIPPERSCREEN_PANELS)"
+WANT_KS_HOOK="$(sa_answer KLIPPERSCREEN_ADDON_HOOK)"
+
 echo "[POST-UPDATE] Syncing KlipperScreen panels..."
-if [ -d "${KS}/panels" ]; then
+if [ "${WANT_KS_PANELS}" != "y" ]; then
+    echo "[POST-UPDATE]   (touchscreen panels turned off in the installer — skipping)"
+elif [ -d "${KS}/panels" ]; then
     cp -f "${REPO}"/KlipperScreen/panels/sa_*.py "${KS}/panels/" 2>/dev/null || true
     cp -f "${REPO}"/KlipperScreen/sa_*.py        "${KS}/"        2>/dev/null || true
     cp -f "${REPO}"/KlipperScreen/sa_klipperscreen.conf "${CONFIG}/" 2>/dev/null || true
@@ -96,9 +111,17 @@ if [ -d "${KS}/panels" ]; then
     # A KlipperScreen update replaces screen.py and silently takes the hook
     # with it, so this re-applies on every update rather than once. It is
     # idempotent and refuses to touch a screen.py it does not recognise.
-    mkdir -p "${KS}/addons"
-    cp -f "${REPO}"/KlipperScreen/addons/*.py "${KS}/addons/" 2>/dev/null || true
-    bash "${REPO}/scripts/patch_klipperscreen.sh" || true
+    if [ "${WANT_KS_HOOK}" = "y" ]; then
+        mkdir -p "${KS}/addons"
+        cp -f "${REPO}"/KlipperScreen/addons/*.py "${KS}/addons/" 2>/dev/null || true
+        bash "${REPO}/scripts/patch_klipperscreen.sh" || true
+    else
+        # Turned off after having been on: take the hook and the add-on back
+        # out rather than leaving a modified screen.py behind.
+        rm -f "${KS}/addons/sa_autoloader.py" 2>/dev/null || true
+        bash "${REPO}/scripts/patch_klipperscreen.sh" --revert 2>/dev/null || true
+        echo "[POST-UPDATE]   (startup hook turned off — KlipperScreen left unmodified)"
+    fi
 
     # Icons are per-theme in KlipperScreen, so the file goes into every theme
     # that is installed rather than just the active one — the active theme is

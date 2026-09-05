@@ -422,6 +422,14 @@ def main():
     print("  toolchanger    %s" % ("yes" if tc_present else "not found"))
     proposed["HAS_TOOLCHANGER"] = "y" if tc_present else "n"
 
+    # Plenty of these printers are built with no screen at all, so the panels
+    # are only proposed when KlipperScreen is actually here. Detected rather
+    # than assumed: installing touchscreen panels on a headless machine is
+    # harmless but confusing, and patching its KlipperScreen would be neither.
+    ks_dir = os.path.expanduser(os.environ.get("SA_KS_PATH", "~/KlipperScreen"))
+    ks_present = os.path.isdir(os.path.join(ks_dir, "panels"))
+    proposed["KLIPPERSCREEN_PANELS"] = "y" if ks_present else "n"
+
     # ── CAN ──────────────────────────────────────────────────────────────────
     uuids, note, from_scan = detect_can_uuid(files, args.config_dir)
     assigned = detect_assigned_uuids(files)
