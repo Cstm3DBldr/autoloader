@@ -69,6 +69,8 @@ class SACalibration:
                 self._chain_respond(gcmd, state, val)
             elif state.startswith('srv_'):
                 self._srv_respond(gcmd, state, val)
+            elif state.startswith('sen_'):
+                self._sen_respond(gcmd, state, val)
             elif state.startswith('end_'):
                 self._end_respond(gcmd, state, val)
             elif state.startswith('dir_'):
@@ -106,6 +108,7 @@ class SACalibration:
         # Stop anything that re-arms itself, or the sweep keeps running after
         # the phase it belongs to has been cleared.
         self._encspeed_disarm()
+        self._sen_disarm()
         self._end_disarm(self.owner)
         self.owner.motion.servo_disengage()
         self._clear()
@@ -375,31 +378,35 @@ class SACalibration:
     # prefix; a chain offer maps by the command it is about to run, so the
     # offer already shows the step you are going TO.
 
-    _STEP_TOTAL = 9
+    _STEP_TOTAL = 11
     _STEP_NAMES = {
         1: "Motor direction",
         2: "Endstop test",
-        3: "Home selector",
-        4: "Selector positions",
-        5: "Servo engage angle",
-        6: "Drive rotation distance",
-        7: "Encoder speed",
-        8: "Encoder mm/pulse",
-        9: "Bowden length",
+        3: "Entry sensors",
+        4: "Home selector",
+        5: "Selector positions",
+        6: "Servo engage angle",
+        7: "Drive rotation distance",
+        8: "Encoder speed",
+        9: "Encoder mm/pulse",
+        10: "Toolhead sensors",
+        11: "Bowden length",
     }
 
     # Longest prefix first: SA_CALIBRATE_ENCODER_SPEED would otherwise match
     # the per-path SA_CALIBRATE_ENCODER entry and report step 8 for step 7.
     _STEP_BY_COMMAND = (
-        ("SA_BUZZ_CHECK",              1),
-        ("SA_TEST_ENDSTOP",            2),
-        ("SA_HOME",                    3),
-        ("SA_CALIBRATE_SELECTOR",      4),
-        ("SA_CALIBRATE_SERVO",         5),
-        ("SA_CALIBRATE_DRIVE",         6),
-        ("SA_CALIBRATE_ENCODER_SPEED", 7),
-        ("SA_CALIBRATE_ENCODER",       8),
-        ("SA_CALIBRATE_BOWDEN",        9),
+        ("SA_BUZZ_CHECK",               1),
+        ("SA_TEST_ENDSTOP",             2),
+        ("SA_TEST_ENTRY_SENSORS",       3),
+        ("SA_HOME",                     4),
+        ("SA_CALIBRATE_SELECTOR",       5),
+        ("SA_CALIBRATE_SERVO",          6),
+        ("SA_CALIBRATE_DRIVE",          7),
+        ("SA_CALIBRATE_ENCODER_SPEED",  8),
+        ("SA_CALIBRATE_ENCODER",        9),
+        ("SA_TEST_TOOLHEAD_SENSORS",   10),
+        ("SA_CALIBRATE_BOWDEN",        11),
     )
 
     # load_purge and unload_done are deliberately absent: they are load/unload
@@ -407,14 +414,16 @@ class SACalibration:
     _STEP_BY_STATE = (
         ("dir_", 1),
         ("end_", 2),
-        ("sel_", 4),
-        ("srv_", 5),
-        ("drv_", 6),
+        ("sen_entry", 3),
+        ("sel_", 5),
+        ("srv_", 6),
+        ("drv_", 7),
         # More specific first: the loop takes the first match, and
         # "enc_speed_run" starts with "enc_" too.
-        ("enc_speed", 7),
-        ("enc_", 8),
-        ("bow_", 9),
+        ("enc_speed", 8),
+        ("enc_", 9),
+        ("sen_th", 10),
+        ("bow_", 11),
     )
 
     def _step_after(self, step_n):
@@ -769,6 +778,13 @@ class SACalibration:
          "TEST ENDSTOP", "SA_TEST_ENDSTOP DURATION=30"),
 
         ('endstop',    "Endstop test",
+         "Test the entry sensors next?",
+         "Each path has a sensor that sees filament arrive. A load waits on it "
+         "and a runout is declared by it, so one that is stuck or inverted "
+         "means a path that never starts, or never stops.",
+         "TEST ENTRY SENSORS", "SA_TEST_ENTRY_SENSORS TOOL={TOOL}"),
+
+        ('entry_sensors', "Entry sensors",
          "Home the selector next?",
          "Drives the carriage to the switch and calls that zero. Everything "
          "measured in millimetres from home depends on it.",
@@ -809,6 +825,14 @@ class SACalibration:
          "CALIBRATE ENCODER T{TOOL}", "SA_CALIBRATE_ENCODER TOOL={TOOL}"),
 
         ('encoder',    "Encoder mm/pulse",
+         "Test the toolhead sensors next?",
+         "Per path, and worth doing before the Bowden measurement rather than "
+         "after: that one blasts filament most of a metre at speed and stops "
+         "on the extruder sensor. If the two sensors are crossed or inverted "
+         "it stops on one the filament has not reached, at the gears.",
+         "TEST TOOLHEAD SENSORS T{TOOL}", "SA_TEST_TOOLHEAD_SENSORS TOOL={TOOL}"),
+
+        ('toolhead_sensors', "Toolhead sensors",
          "Calibrate Bowden length next?",
          "Per path. Measures the tube from the drive gear to the toolhead, "
          "which is the distance a load feeds before it expects the filament "
@@ -1278,6 +1302,272 @@ class SACalibration:
 
     def _end_word(self, triggered):
         return "TRIGGERED" if triggered else "open"
+
+    # ══════════════════════════════════════════════════════════════════════
+    # SA_TEST_ENTRY_SENSORS / SA_TEST_TOOLHEAD_SENSORS
+    # ══════════════════════════════════════════════════════════════════════
+
+    _SEN_TIMEOUT = 240.0
+
+    _SEN_LABEL = {
+        'entry':    "Entry sensor",
+        'extruder': "Extruder sensor (before the gears)",
+        'toolhead': "Toolhead sensor (past the gears)",
+    }
+    _SEN_TITLE = {'entry': "Entry sensor test", 'th': "Toolhead sensor test"}
+
+    def _sen_read(self, path, key):
+        """(configured, reading) for one sensor on one path.
+
+        The owner's accessors answer False for a sensor that is not configured,
+        which is indistinguishable from one reading clear -- so configuration is
+        checked against the name list, not the reading.
+        """
+        owner = self.owner
+        try:
+            names, fn = {
+                'entry':    (owner._entry_sensor_names,    owner._entry_sensor_active),
+                'extruder': (owner._extruder_sensor_names, owner._extruder_sensor_active),
+                'toolhead': (owner._toolhead_sensor_names, owner._toolhead_sensor_active),
+            }[key]
+            name = names[path]
+        except Exception:
+            return False, None
+        if not name:
+            return False, None
+        try:
+            return True, bool(fn(path))
+        except Exception:
+            return True, None
+
+    def _sen_word(self, v):
+        return "FILAMENT" if v else ("CLEAR" if v is not None else "unreadable")
+
+    def _sen_plan(self, group, path):
+        """The stages, in the order that makes each one meaningful."""
+        if group == 'entry':
+            return [
+                {'want': {'entry': False},
+                 'ask': "Make sure path %d's entry is empty." % path,
+                 'why': "It should read CLEAR with nothing in it. One that reads "
+                        "FILAMENT while empty is inverted, and everything below "
+                        "would read backwards."},
+                {'want': {'entry': True},
+                 'ask': "Now push a piece of filament into path %d's entry, "
+                        "past the sensor." % path},
+                {'want': {'entry': False},
+                 'ask': "Now pull it back out."},
+            ]
+        return [
+            {'want': {'extruder': False, 'toolhead': False},
+             'ask': "Detach the Bowden from toolhead %d, and make sure no "
+                    "filament is left in it." % path,
+             'why': "Both should read CLEAR with nothing in them. One that "
+                    "reads FILAMENT while empty is inverted, and a Bowden blast "
+                    "would be told to stop before it had started."},
+            {'want': {'extruder': True},
+             'wrong_first': 'toolhead',
+             'ask': "Push a scrap of filament into the toolhead inlet until it "
+                    "reaches the extruder gears."},
+            {'want': {'toolhead': True},
+             'ask': "Now turn the extruder knob to feed it past the gears."},
+            {'want': {'extruder': False, 'toolhead': False},
+             'ask': "Now pull the filament back out."},
+        ]
+
+    def _sen_arm(self, delay=0.25):
+        try:
+            self.owner.gcode.run_script_from_command(
+                "UPDATE_DELAYED_GCODE ID=sa_sensor_poll DURATION=%.2f" % delay)
+        except Exception:
+            logging.exception("SA CAL: could not arm the sensor poll")
+
+    def _sen_disarm(self):
+        try:
+            self.owner.gcode.run_script_from_command(
+                "UPDATE_DELAYED_GCODE ID=sa_sensor_poll DURATION=0")
+        except Exception:
+            pass
+
+    def test_entry_sensors(self, gcmd):
+        self._sen_start(gcmd, 'entry')
+
+    def test_toolhead_sensors(self, gcmd):
+        self._sen_start(gcmd, 'th')
+
+    def _sen_start(self, gcmd, group):
+        owner = self.owner
+        if owner._cal_state is not None:
+            self._busy(gcmd)
+            return
+
+        path = gcmd.get_int('TOOL', None, minval=0, maxval=owner.num_paths - 1)
+        if path is None:
+            path = owner.current_path if owner.current_path >= 0 else 0
+
+        keys = ['entry'] if group == 'entry' else ['extruder', 'toolhead']
+        missing = [k for k in keys if not self._sen_read(path, k)[0]]
+        if missing:
+            gcmd.respond_info(
+                "SA: path %d has no %s configured, so there is nothing to "
+                "test.%s    Add %s to [autoloader]."
+                % (path, " or ".join(missing), NL,
+                   ", ".join("%s_sensor_%d" % (k, path) for k in missing)))
+            return
+
+        owner._cal_data = {
+            'group': group, 'path': path, 'keys': keys, 'stage': 0,
+            'plan': self._sen_plan(group, path),
+            'deadline': owner.reactor.monotonic() + self._SEN_TIMEOUT,
+        }
+        owner._cal_state = 'sen_%s_wait' % group
+        gcmd.respond_info(
+            "SA %s — path %d%s"
+            "===========================================%s"
+            "Nothing is driven. Move the filament by hand; this only watches."
+            % (self._SEN_TITLE[group].upper(), path, "\n", "\n"))
+        self._sen_render(gcmd)
+        self._sen_arm()
+
+    def _sen_render(self, gcmd, now=None):
+        owner = self.owner
+        d     = owner._cal_data
+        path  = d['path']
+        if now is None:
+            now = dict((k, self._sen_read(path, k)[1]) for k in d['keys'])
+        stage = d['plan'][d['stage']]
+        lines = ["  %-36s %s" % (self._SEN_LABEL[k], self._sen_word(now.get(k)))
+                 for k in d['keys']]
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("%s — path %d" % (self._SEN_TITLE[d['group']], path) + NL + NL
+             + NL.join(lines) + NL + NL
+             + stage['ask']
+             + ((NL + NL + stage['why']) if stage.get('why') else "")
+             + NL + NL
+             + "Nothing is driven — this waits for the readings to change."
+             + NL + "Stage %d of %d." % (d['stage'] + 1, len(d['plan']))),
+            [],
+            footer=[("STOP", "abort", "error")])
+
+    def sensor_poll(self, gcmd):
+        """One read. Re-armed by the delayed_gcode while the test runs."""
+        owner = self.owner
+        st    = owner._cal_state or ''
+        if not (st.startswith('sen_') and st.endswith('_wait')):
+            return
+        d     = owner._cal_data
+        path  = d['path']
+        stage = d['plan'][d['stage']]
+        now   = dict((k, self._sen_read(path, k)[1]) for k in d['keys'])
+
+        satisfied = all(now.get(k) == v for k, v in stage['want'].items())
+
+        # The far sensor leading the near one means they are crossed. This is
+        # the fault worth catching: during a Bowden blast the stop signal would
+        # come from a sensor the filament has not reached.
+        wrong = stage.get('wrong_first')
+        if wrong and now.get(wrong) and not satisfied:
+            self._sen_fault(gcmd, 'swapped', now, wrong)
+            return
+
+        if satisfied:
+            d['stage'] += 1
+            d['deadline'] = owner.reactor.monotonic() + self._SEN_TIMEOUT
+            if d['stage'] >= len(d['plan']):
+                self._sen_done(gcmd)
+                return
+            self._sen_render(gcmd)
+            self._sen_arm()
+            return
+
+        if owner.reactor.monotonic() > d['deadline']:
+            self._sen_fault(gcmd, 'stuck', now, None)
+            return
+
+        self._sen_render(gcmd, now)
+        self._sen_arm()
+
+    def _sen_fault(self, gcmd, kind, now, wrong):
+        owner = self.owner
+        d     = owner._cal_data
+        path  = d['path']
+        self._sen_disarm()
+        owner._cal_state = 'sen_%s_fault' % d['group']
+
+        readings = NL.join("  %-36s %s" % (self._SEN_LABEL[k],
+                                           self._sen_word(now.get(k)))
+                           for k in d['keys'])
+        if kind == 'swapped':
+            near = [k for k in d['plan'][d['stage']]['want']][0]
+            body = ("%s read FILAMENT before %s did." % (self._SEN_LABEL[wrong],
+                                                         self._SEN_LABEL[near])
+                    + NL + NL
+                    + "The filament reaches the near sensor first, so these two "
+                      "are crossed — either the plugs are swapped at the "
+                      "toolhead, or the two pins are the wrong way round in "
+                      "[autoloader]." + NL + NL
+                    + "Swap extruder_sensor_%d and toolhead_sensor_%d, or swap "
+                      "the two connectors, then run this again." % (path, path)
+                    + NL + NL
+                    + "Worth fixing before the Bowden calibration: it blasts "
+                      "filament most of a metre and stops on the extruder "
+                      "sensor. Crossed, it stops on a sensor the filament has "
+                      "not reached.")
+        else:
+            stage = d['plan'][d['stage']]
+            body = ("Nothing changed in %.0f seconds." % self._SEN_TIMEOUT
+                    + NL + NL + "Asked for: " + stage['ask'] + NL + NL
+                    + "If the filament did move and the reading did not, the "
+                      "sensor is not seeing it: check the connector at both "
+                      "ends, and that the switch or lever actually moves when "
+                      "filament passes." + NL + NL
+                    + "If a reading is stuck at FILAMENT with nothing in it, "
+                      "the pin needs inverting — add or remove the '!' on that "
+                      "sensor's switch_pin.")
+
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("%s — path %d" % (self._SEN_TITLE[d['group']], path) + NL + NL
+             + readings + NL + NL + body),
+            [("TRY AGAIN", "retry", "primary")],
+            footer=[("STOP", "abort", "error")])
+
+    def _sen_done(self, gcmd):
+        owner = self.owner
+        d     = owner._cal_data
+        path  = d['path']
+        group = d['group']
+        self._sen_disarm()
+        proved = (["It reads CLEAR when empty and FILAMENT when loaded."]
+                  if group == 'entry' else
+                  ["Both read CLEAR when empty.",
+                   "The extruder sensor sees the filament first, then the "
+                   "toolhead sensor — so they are the right way round.",
+                   "Both clear again when it is pulled out."])
+        gcmd.respond_info("SA: %s path %d — all checks passed."
+                          % (self._SEN_TITLE[group], path))
+        self._clear()
+        self._offer_next_path(
+            gcmd, 'entry_sensors' if group == 'entry' else 'toolhead_sensors',
+            path,
+            'SA_TEST_ENTRY_SENSORS TOOL=%d' if group == 'entry'
+            else 'SA_TEST_TOOLHEAD_SENSORS TOOL=%d',
+            self._SEN_TITLE[group])
+
+    def _sen_respond(self, gcmd, state, value):
+        owner = self.owner
+        d     = owner._cal_data
+        if str(value).strip().lower() == 'retry':
+            d['stage'] = 0
+            d['deadline'] = owner.reactor.monotonic() + self._SEN_TIMEOUT
+            owner._cal_state = 'sen_%s_wait' % d['group']
+            self._sen_render(gcmd)
+            self._sen_arm()
+            return
+        self._sen_disarm()
+        self._clear()
+        gcmd.respond_info("SA: sensor test stopped.")
 
     def start_endstop_test(self, gcmd):
         owner = self.owner

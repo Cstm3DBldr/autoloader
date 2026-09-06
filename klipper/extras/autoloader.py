@@ -1293,6 +1293,16 @@ class Autoloader:
             ('SA_ENCSPEED_STEP',
              self._cmd_encspeed_step,
              "Internal: one pass of the encoder speed test."),
+            ('SA_TEST_ENTRY_SENSORS',
+             self._cmd_test_entry_sensors,
+             "Prove a path's entry sensor by hand. [TOOL=N]"),
+            ('SA_TEST_TOOLHEAD_SENSORS',
+             self._cmd_test_toolhead_sensors,
+             "Prove a toolhead's extruder and toolhead sensors by hand, "
+             "Bowden off. [TOOL=N]"),
+            ('SA_SENSOR_POLL',
+             self._cmd_sensor_poll,
+             "Internal: one read during a sensor test."),
             ('SA_ENDSTOP_POLL',
              self._cmd_endstop_poll,
              "Internal: one endstop read for the endstop test."),
@@ -1570,6 +1580,15 @@ class Autoloader:
     def _cmd_encspeed_step(self, gcmd):
         """One pass for the encoder speed sweep's delayed_gcode."""
         self.calibration.encspeed_step(gcmd)
+
+    def _cmd_test_entry_sensors(self, gcmd):
+        self.calibration.test_entry_sensors(gcmd)
+
+    def _cmd_test_toolhead_sensors(self, gcmd):
+        self.calibration.test_toolhead_sensors(gcmd)
+
+    def _cmd_sensor_poll(self, gcmd):
+        self.calibration.sensor_poll(gcmd)
 
     def _cmd_endstop_poll(self, gcmd):
         """One read for the endstop test's delayed_gcode. Not for humans."""
