@@ -735,6 +735,16 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   shown, with every later activation reusing the cached object and looking
   fine. Re-render on `GLib.idle_add` after activate. Same class as the
   sa_macros first-attach history and the carousel centring fix.
+- Do not ask the operator to move filament by hand without releasing the drive
+  motor first. The gear holds the filament and the motor holds the gear, so
+  `servo_engage()` alone locks it solid — engage, then `drive_disable()`, and
+  the knob feeds it. This has now been wrong twice in the same way, in
+  `calibrate_drive` and `calibrate_encoder`. While anything is being measured,
+  re-energise so nothing creeps; release again before the next reposition.
+  Use the gate exit as the datum rather than a mark on the filament: it is
+  already there, it needs no tape or marker, and both calibrations now share
+  it — set the tip flush, feed, measure what is sticking out.
+
 - Do not measure an encoder against the stepper when the question is about
   speed. They are the machine's only two references, so a fault present at
   every speed gets charged to whichever speed is on screen. On T0 a constant

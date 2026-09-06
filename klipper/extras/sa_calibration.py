@@ -1802,15 +1802,21 @@ class SACalibration:
         gcmd.respond_info(
             "SA ENCODER CALIBRATION — Path %d\n"
             "==================================\n"
-            "Feeds until encoder reads 100mm, you measure actual — 3 passes.\n"
+            "Feeds until the encoder reads 100mm, you measure what actually\n"
+            "came out of the gate — 3 passes. No mark or tape needed.\n"
             "\n"
-            "Requirements: filament through drive gear AND encoder for path %d.\n"
-            "~400mm of free filament needed." % (path, path))
+            "Requirements: filament through drive gear AND encoder for path %d,\n"
+            "with ~150mm free past the gate." % (path, path))
 
         gcmd.respond_info("SA CAL: Selecting path %d..." % path)
         self._safe_selector_move(owner.motion, owner._selector_positions[path])
         owner.current_path = path
+
+        # Gear holding, motor released — that is what makes the knob feed the
+        # filament by hand. Engaging without releasing locks it solid, which is
+        # exactly what this step is asking the operator to work against.
         owner.motion.servo_engage()
+        owner.motion.drive_disable()
 
         enc = owner._encoder(path)
         owner._cal_data  = {
@@ -1822,8 +1828,12 @@ class SACalibration:
         owner._cal_state = 'enc_mark_%d' % path
 
         self._prompt(gcmd,
-            "Mark the filament at the encoder exit, then confirm ready.",
-            "SA_RESPOND VALUE=yes")
+            "Set the filament tip flush with the gate exit.",
+            "SA_RESPOND VALUE=yes",
+            detail=("The drive gear is holding the filament and the motor is "
+                    "released, so the knob feeds it by hand." + NL
+                    + "Then it feeds until the encoder reads 100mm and you "
+                      "measure what came out."))
 
     def _enc_respond(self, gcmd, state, value):
         owner  = self.owner
@@ -1891,10 +1901,12 @@ class SACalibration:
             owner._cal_state = 'enc_meas_%d' % path
 
             self._prompt(gcmd,
-                "Servo engaged, drive holding. Measure from the encoder exit "
-                "back to your mark - that is how far the filament travelled "
-                "(target 100mm).",
-                "SA_RESPOND VALUE=100.0  (replace with actual mm)",
+                "How much filament is sticking out of the gate?",
+                "SA_RESPOND VALUE=100.0  (replace with what you measured)",
+                detail=("The gear and motor are both holding, so nothing will "
+                        "move while you measure." + NL
+                        + "The encoder counted %.2fmm. Measure from the gate "
+                          "exit to the tip." % enc_reading),
                 numeric={'value': 100.0, 'unit': 'mm'})
 
         elif state.startswith('enc_meas_'):
@@ -1939,12 +1951,16 @@ class SACalibration:
                     "SA_RESPOND VALUE=yes",
                     "SA_RESPOND VALUE=no")
             else:
-                # Servo still engaged — use knob to re-mark filament position
+                # Motor released just above, gear still holding: the knob
+                # winds it back to the datum for the next pass.
                 owner._cal_state = 'enc_mark_%d' % path
                 self._prompt(gcmd,
-                    "Servo engaged — use knob to reposition filament to new mark, "
-                    "then confirm ready.",
-                    "SA_RESPOND VALUE=yes")
+                    "Wind the filament back until the tip is flush with the "
+                    "gate exit again.",
+                    "SA_RESPOND VALUE=yes",
+                    detail=("The motor is released and the gear is still "
+                            "holding, so the knob does it." + NL
+                            + "Pass %d of 3 next." % (attempt + 1)))
 
         elif state.startswith('enc_save_'):
             new_mpp  = data['best_mpp']
