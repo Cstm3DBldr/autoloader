@@ -47,6 +47,8 @@ if _extras_dir not in sys.path:
     sys.path.insert(0, _extras_dir)
 
 import logging
+
+NL = chr(10)
 import re
 import configparser
 from sa_motion      import SAMotion
@@ -1559,6 +1561,26 @@ class Autoloader:
             "  Watching for %.0fs; every change is reported."
             % (name, "TRIGGERED" if state else "open", duration))
 
+        # Put it on screen too. Everything below this point used to be console
+        # only, so a touchscreen showing the guide reported nothing at all for
+        # the whole test.
+        self._cal_state = 'end_watch'
+
+        def show(now_state, elapsed, changes):
+            self.calibration._emit_ui_prompt(
+                gcmd, self.calibration._ui_title(),
+                ("Endstop test" + NL + NL
+                 + "Reading now: %s" % ("TRIGGERED" if now_state else "open")
+                 + NL + NL
+                 + "Move the selector carriage onto the switch by hand, then "
+                   "off again. Nothing is driven." + NL + NL
+                 + "%.0fs left, %d change%s seen so far."
+                   % (max(0.0, duration - elapsed), changes,
+                      "" if changes == 1 else "s")),
+                [])
+
+        show(state, 0.0, 0)
+
         if state:
             gcmd.respond_info(
                 "SA: NOTE — it reads TRIGGERED already. Either the carriage is "
@@ -1582,14 +1604,17 @@ class Autoloader:
                 seen_triggered = True
             else:
                 seen_open = True
+            elapsed = duration - (end_time - self.reactor.monotonic())
             gcmd.respond_info(
-                "  %5.1fs  -> %s"
-                % (duration - (end_time - self.reactor.monotonic()),
-                   "TRIGGERED" if now else "open"))
+                "  %5.1fs  -> %s" % (elapsed, "TRIGGERED" if now else "open"))
+            # Only on an actual change, so this redraws two or three times in a
+            # run rather than a hundred.
+            show(now, elapsed, changes)
 
         # A switch that only ever reads one way is the failure this exists to
         # catch, and it is indistinguishable from "the operator did not move
         # it" -- so say both rather than declaring a fault.
+        self._cal_state = None
         if seen_open and seen_triggered:
             gcmd.respond_info(
                 "SA: ENDSTOP OK — saw both states (%d change(s)). "

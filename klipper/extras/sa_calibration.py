@@ -395,6 +395,7 @@ class SACalibration:
     # flows, not calibration, and numbering them "step N of 9" would be a lie.
     _STEP_BY_STATE = (
         ("dir_", 1),
+        ("end_", 2),
         ("sel_", 4),
         ("srv_", 5),
         ("drv_", 6),
