@@ -735,17 +735,20 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   shown, with every later activation reusing the cached object and looking
   fine. Re-render on `GLib.idle_add` after activate. Same class as the
   sa_macros first-attach history and the carousel centring fix.
-- Do not size an encoder measurement without checking what the encoder can
-  resolve. These encoders are coarse — `mm_per_pulse` is about 1.9mm, so a
-  100mm pass is only 53 counts and a single miscount is 1.9%. The encoder speed
-  test measured 100mm passes against a 5% tolerance and read exactly 3.8% at
-  every speed on T0: two counts, 3.77%. It looked like slack, and a take-up
-  move changed nothing, which is what ruled slack out. Two counts also predicts
-  3.28% on the 115mm pass at 175mm/s, where 3.2% was observed — so the
-  arithmetic identifies it, not the guess. Size a pass by `_ENC_MIN_PULSES`
-  counts, not by a fixed mm figure, and report error in mm as well as percent:
-  an error that sits at one or two counts regardless of speed is resolution,
-  and real slip is larger and varies between passes.
+- Do not measure an encoder against the stepper when the question is about
+  speed. They are the machine's only two references, so a fault present at
+  every speed gets charged to whichever speed is on screen. On T0 a constant
+  3.8% survived two wrong diagnoses — reversal slack (a take-up move changed
+  nothing) and count quantisation (two counts fitted the numbers exactly) —
+  before doubling the pass length settled it: the percent held while the
+  millimetres went 3.8 → 7.0, tracking distance. A count loss does not do that.
+  It was `mm_per_pulse` 3.7% low. Reference the sweep to its own slowest pass
+  instead: at 25mm/s a state spans about seven 2ms samples so aliasing cannot
+  happen, which makes that pass a pure measure of scale, and everything above
+  it a measure of the encoder falling behind. Report the scale separately —
+  it is real and wants recalibrating — but never inside the speed figure.
+  Report mm alongside percent: varying the distance is what tells a fixed
+  offset from a proportional one, and neither column alone can.
 
 - Do not read a short encoder count as a drive fault without checking it
   against something outside the loop. The encoder and the stepper are the only

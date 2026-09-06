@@ -2359,15 +2359,14 @@ class SACalibration:
         return math.ceil(exact / 50.0) * 50.0
 
     def _encspeed_explain(self):
-        return ("Each pass is long enough both to hold the speed on the label "
-                "and to give the encoder enough counts to resolve it -- these "
-                "encoders step about 1.9mm at a time, so a short pass "
-                "quantises at the same size as the tolerance. The figures "
-                "are how far the encoder count fell short of the distance "
-                "driven, one per pass, with the average in mm. Under 5% "
-                "passes; two of three must pass. An error near one or two "
-                "counts is the encoder's resolution; real slip is larger "
-                "and varies between passes.")
+        return ("The slowest pass is the reference: at that speed the encoder "
+                "cannot alias, so whatever it reads is this path's scale. "
+                "Every later pass is measured against it, which is why the "
+                "figures start at zero -- a mm_per_pulse that is a few "
+                "percent out shows up at every speed and would otherwise "
+                "be charged to whichever one is on screen. What is left is "
+                "the encoder falling behind as the speed rises. Under 5% "
+                "passes; two of three must pass.")
 
     def _encspeed_next(self, gcmd):
         """Run the sweep for the next queued path, then stop on its result."""
@@ -2405,7 +2404,7 @@ class SACalibration:
         motion.servo_engage()
 
         d.update({'at': path, 'si': 0, 'ai': 0, 'errors': [], 'errors_mm': [],
-                  'per_speed': [], 'max_pass': 0})
+                  'per_speed': [], 'max_pass': 0, 'ref_ratio': None})
         owner._cal_state = 'enc_speed_run'
         self._encspeed_show(gcmd)
         self._encspeed_arm()
@@ -2493,10 +2492,20 @@ class SACalibration:
         enc.reset_distance()
         motion.drive_move(dist, speed=float(speed))
         owner.reactor.pause(owner.reactor.monotonic() + 0.15)
-        short = dist - enc.get_distance()
-        err   = abs(short) / dist
+        counted = enc.get_distance()
+        ratio   = (counted / dist) if dist > 0 else 0.0
+
+        # The first pass of a channel is the reference. It runs at the slowest
+        # speed on the ladder, where a state lasts several sample periods and
+        # aliasing cannot happen, so whatever it reads short is scale -- and
+        # scale is present at every speed equally. Comparing later passes to it
+        # rather than to the stepper cancels that out.
+        if d.get('ref_ratio') is None:
+            d['ref_ratio'] = ratio if ratio > 0 else 1.0
+        ref = d['ref_ratio'] or 1.0
+        err = abs(ratio - ref) / ref
         d['errors'].append(err * 100.0)
-        d.setdefault('errors_mm', []).append(short)
+        d.setdefault('errors_mm', []).append((ref - ratio) * dist)
 
         # Give back the take-up as well, so the pass is position-neutral and
         # the filament does not walk down the tube over a fourteen-rung ladder.
@@ -2554,13 +2563,28 @@ class SACalibration:
         motion.servo_disengage()
 
         safe = max_pass * 0.80 if max_pass else 0.0
+        ref  = d.get('ref_ratio') or 1.0
+        scale_off = (1.0 - ref) * 100.0        # +ve = reads low at every speed
         d.setdefault('results', {})[path] = {
-            'max': max_pass, 'safe': safe, 'rows': list(d.get('per_speed', []))}
+            'max': max_pass, 'safe': safe, 'scale': scale_off,
+            'rows': list(d.get('per_speed', []))}
         if max_pass:
             self._save_variable('encoder_max_speed_%d' % path, '%.1f' % safe)
 
         owner._cal_state = 'enc_speed_done'
         more = bool(d.get('queue'))
+        scale_note = ""
+        if abs(scale_off) >= 2.0:
+            scale_note = (NL + NL
+                          + "Note: at the slowest speed, where aliasing cannot "
+                            "happen, this encoder still read %.1f%% %s. That is "
+                            "mm_per_pulse being out, not a speed problem — it "
+                            "is cancelled out of the figures above, but run "
+                            "SA_CALIBRATE_ENCODER TOOL=%d to fix the distances "
+                            "this path reports everywhere else."
+                          % (abs(scale_off), "low" if scale_off > 0 else "high",
+                             path))
+
         verdict = ("Fastest reliable speed: %dmm/s  ->  using %.0fmm/s (80%%)."
                    % (max_pass, safe) if max_pass else
                    "No speed counted accurately, including the slowest. That "
@@ -2575,6 +2599,7 @@ class SACalibration:
              + verdict + NL + NL
              + NL.join("  %3dmm/s  %s" % (sp, txt)
                        for sp, txt in d.get('per_speed', []))
+             + scale_note
              + NL + NL + self._encspeed_explain()),
             buttons,
             footer=[("STOP", "abort", "error")])
