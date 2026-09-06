@@ -979,13 +979,37 @@ class SACalibration:
             steps = self._SPACING_STEPS
 
         d['_preview'] = positions
+
+        # Which path is being watched. Path 0 sits at zero under every scheme,
+        # so it can never show a change; the last path has accumulated the most
+        # and is where an error is easiest to see.
+        watch = d.get('at')
+        if watch is None or not (0 <= int(watch) < len(positions)):
+            watch = len(positions) - 1
+        watch = int(watch)
+        d['at'] = watch
+
+        # Drive there so the alignment moves with the number. Same idea as the
+        # servo screen, which also moves before it renders.
+        moved = ""
+        if positions:
+            try:
+                owner.motion.servo_disengage()
+                owner.motion.selector_move_to(positions[watch])
+            except Exception as e:
+                moved = NL + "Could not move the carriage: %s" % e
+
         buttons = [("%+g" % s,  "adj:%g" % s,  "secondary") for s in steps]
         buttons += [("%+g" % -s, "adj:%g" % -s, "secondary") for s in steps]
+        buttons += [("T%d" % i, "go:%d" % i,
+                     "primary" if i == watch else "secondary")
+                    for i in range(len(positions))]
         buttons.append(("SAVE THESE", "yes", "primary"))
         buttons.append(("BACK", "back", "secondary"))
 
-        pos_lines = NL.join("  Path %d: %.2fmm" % (i, p)
-                            for i, p in enumerate(positions))
+        pos_lines = NL.join(
+            "%s Path %d: %.2fmm" % ("->" if i == watch else "  ", i, p)
+            for i, p in enumerate(positions))
         over = ""
         if positions and positions[-1] > tt + 0.01:
             over = (NL + "WARNING: the last path is beyond the %.2fmm the "
@@ -993,7 +1017,10 @@ class SACalibration:
 
         self._emit_ui_prompt(
             gcmd, "Selector Calibration",
-            head + NL + NL + pos_lines + over,
+            head + NL + NL + pos_lines + over + NL + NL
+            + "Watching path %d — the carriage moves there on every change, "
+              "so you can see it line up. Press another to watch that one "
+              "instead." % watch + moved,
             buttons,
             footer=[("ABORT", "abort", "error")],
             columns=3)
@@ -1003,6 +1030,17 @@ class SACalibration:
         owner = self.owner
         d     = owner._cal_data
         v     = str(value).strip().lower()
+
+        if v.startswith('go:'):
+            # Watch a different path. Changes nothing but where you are looking.
+            try:
+                idx = int(v.split(':', 1)[1])
+            except ValueError:
+                idx = -1
+            if 0 <= idx < int(owner.num_paths):
+                d['at'] = idx
+            self._sel_tune_render(gcmd)
+            return
 
         if v == 'back':
             self._sel_reject_menu(gcmd)
