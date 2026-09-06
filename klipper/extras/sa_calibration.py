@@ -77,6 +77,9 @@ class SACalibration:
                 self._sel_respond(gcmd, state, val)
             elif state.startswith('drv_'):
                 self._drv_respond(gcmd, state, val)
+            # Before the generic enc_ branch: these start with it too.
+            elif state.startswith('enc_speed'):
+                self._encspeed_respond(gcmd, state, val)
             elif state.startswith('enc_'):
                 self._enc_respond(gcmd, state, val)
             elif state.startswith('bow_'):
@@ -1969,69 +1972,89 @@ class SACalibration:
     # ══════════════════════════════════════════════════════════════════════════
 
     def calibrate_encoder_speed(self, gcmd):
-        """Find the max feed speed at which the encoder counts accurately.
+        """Find the fastest feed each encoder still counts accurately.
 
-        Steps through speeds [25, 50, 75, 100, 125, 150, 175, 200] mm/s.
-        Each speed: run 100mm forward, compare encoder reading to commanded
-        distance.  3 tries per speed — need 2/3 within tolerance to pass.
-        Stops at first failing speed.  Saves safe_speed (max_pass * 0.8)
-        to variables.cfg as 'encoder_max_speed'.
+        With no TOOL, every channel is tested in turn. The faults this finds on
+        a fresh build are per channel -- a tight tube, a dirty wheel, a
+        marginal connector -- so testing one says little about the other five,
+        and the comparison between them is what points at the bad one.
         """
         owner  = self.owner
         motion = owner.motion
-        path   = gcmd.get_int('TOOL', 0, minval=0, maxval=owner.num_paths - 1)
 
         if owner._cal_state is not None:
             raise gcmd.error(
                 "SA CAL: Calibration in progress (state=%s). SA_RESPOND VALUE=abort"
                 % owner._cal_state)
 
+        one = gcmd.get_int('TOOL', None, minval=0, maxval=owner.num_paths - 1)
+        queue = [one] if one is not None else list(range(owner.num_paths))
+
         if not owner._selector_homed:
             gcmd.respond_info("SA CAL: Homing selector...")
             motion.selector_home()
 
         gcmd.respond_info(
-            "SA ENCODER SPEED CALIBRATION — Path %d\n"
+            "SA ENCODER SPEED CALIBRATION — %s\n"
             "===========================================\n"
-            "Requires filament through drive gear and encoder.\n"
-            "Tests speeds 25→200mm/s, 3 tries each, 100mm per try.\n"
-            "Stops at first failing speed. Safe speed (80%%) saved."
-            % path)
+            "Requires filament through the drive gear and encoder.\n"
+            "Tests 25→200mm/s, 3 passes each, 100mm per pass."
+            % ("path %d" % one if one is not None
+               else "all %d paths" % owner.num_paths))
+
+        owner._cal_data = {'queue': queue, 'results': {}, 'single': one is not None}
+        self._encspeed_next(gcmd)
+
+    _ENC_SPEEDS = [25, 50, 75, 100, 125, 150, 175, 200]
+
+    def _encspeed_explain(self):
+        return ("Each pass drives 100mm and compares that against what the "
+                "encoder counted. The percentages are how far apart they were "
+                "-- one per pass. Under 5% passes; two of three must pass.")
+
+    def _encspeed_next(self, gcmd):
+        """Run the sweep for the next queued path, then stop on its result."""
+        owner = self.owner
+        d     = owner._cal_data
+        if not d.get('queue'):
+            self._encspeed_summary(gcmd)
+            return
+        path = d['queue'].pop(0)
+        self._encspeed_run(gcmd, path)
+
+    def _encspeed_run(self, gcmd, path):
+        owner  = self.owner
+        motion = owner.motion
+        d      = owner._cal_data
 
         motion.servo_disengage()
         motion.selector_move_to(owner._selector_positions[path])
         owner.current_path = path
         motion.servo_engage()
 
-        enc        = owner._encoder(path)
-        test_dist  = 100.0
-        tolerance  = 0.05   # 5% max error per try
-        test_speeds = [25, 50, 75, 100, 125, 150, 175, 200]
-        retract_speed = 25.0
-        max_pass   = 0
-
-        # Progress on screen, not only in the console. Every pass moves 100mm
-        # out and back, so the slowest speed alone is most of a minute.
+        enc         = owner._encoder(path)
+        test_dist   = 100.0
+        tolerance   = 0.05
+        retract     = 25.0
+        max_pass    = 0
+        per_speed   = []
         owner._cal_state = 'enc_speed_run'
-        results = []
 
         def show(speed, attempt, note=""):
-            done_lines = [("  %3dmm/s  %s" % (sp, txt)) for sp, txt in results]
+            done = ["  %3dmm/s  %s" % (sp, txt) for sp, txt in per_speed]
             self._emit_ui_prompt(
                 gcmd, self._ui_title(),
-                ("Encoder speed test  —  path %d" % path + NL + NL
-                 + "Finds the fastest feed the encoder still counts "
-                   "accurately." + NL
-                 + "Each pass drives 100mm out and back." + NL + NL
-                 + ("Now: %dmm/s, pass %d of 3%s" % (speed, attempt, note)
+                ("Encoder speed test — path %d" % path + NL + NL
+                 + self._encspeed_explain() + NL + NL
+                 + ("Now: %dmm/s, pass %d of 3" % (speed, attempt)
                     if speed else note)
-                 + (NL + NL + NL.join(done_lines) if done_lines else "")),
+                 + (NL + NL + NL.join(done) if done else "")),
                 [])
 
-        show(test_speeds[0], 1)
+        show(self._ENC_SPEEDS[0], 1)
 
-        for speed in test_speeds:
-            trial_errors = []
+        for speed in self._ENC_SPEEDS:
+            errors = []
             passes = 0
             for attempt in range(3):
                 show(speed, attempt + 1)
@@ -2039,65 +2062,139 @@ class SACalibration:
                 enc.reset_distance()
                 motion.drive_move(test_dist, speed=float(speed))
                 owner.reactor.pause(owner.reactor.monotonic() + 0.15)
-                enc_reading = enc.get_distance()
-                error = abs(enc_reading - test_dist) / test_dist
-                trial_errors.append(error * 100.0)
-                if error <= tolerance:
+                err = abs(enc.get_distance() - test_dist) / test_dist
+                errors.append(err * 100.0)
+                if err <= tolerance:
                     passes += 1
-                # Retract at safe low speed — accuracy not needed here
                 enc.set_direction(forward=False)
                 enc.reset_distance()
-                motion.drive_move(-test_dist, speed=retract_speed)
+                motion.drive_move(-test_dist, speed=retract)
                 owner.reactor.pause(owner.reactor.monotonic() + 0.2)
 
-            avg_err = sum(trial_errors) / len(trial_errors)
-            passed  = passes >= 2
+            ok = passes >= 2
             gcmd.respond_info(
-                "  %3dmm/s: %s  (errors: %s  avg %.1f%%)"
-                % (speed,
-                   "PASS" if passed else "FAIL",
-                   [round(e, 1) for e in trial_errors],
-                   avg_err))
-
-            results.append((speed, "PASS  errors %s"
-                            % [round(e, 1) for e in trial_errors]
-                            if passed else
-                            "FAIL  errors %s"
-                            % [round(e, 1) for e in trial_errors]))
-            show(0, 0, "Finished %dmm/s." % speed)
-
-            if passed:
+                "  path %d  %3dmm/s: %s  (off by %s%%  avg %.1f%%)"
+                % (path, speed, "PASS" if ok else "FAIL",
+                   [round(e, 1) for e in errors],
+                   sum(errors) / len(errors)))
+            per_speed.append((speed, "%s  off by %s%%"
+                              % ("PASS" if ok else "FAIL",
+                                 [round(e, 1) for e in errors])))
+            if ok:
                 max_pass = speed
             else:
-                break   # no point testing faster speeds
+                break
 
         motion.servo_disengage()
-        owner._cal_state = None
 
-        if max_pass == 0:
-            gcmd.respond_info(
-                "SA CAL: FAILED at all speeds. Check encoder wiring / mm_per_pulse.")
-            self._emit_ui_prompt(
-                gcmd, self._ui_title(),
-                ("Encoder speed test  —  path %d" % path + NL + NL
-                 + "No speed counted accurately, including the slowest." + NL + NL
-                 + "That points at the encoder rather than the speed: check "
-                   "its wiring, and that mm_per_pulse has been calibrated for "
-                   "this path." + NL + NL
-                 + NL.join("  %3dmm/s  %s" % (sp, txt) for sp, txt in results)),
-                [("TRY AGAIN", "yes", "primary")],
-                footer=[("STOP", "abort", "error")])
-            owner._cal_data  = {'_next_cmd': 'SA_CALIBRATE_ENCODER_SPEED'}
-            owner._cal_state = 'chain_next'
+        safe = max_pass * 0.80 if max_pass else 0.0
+        d['results'][path] = {'max': max_pass, 'safe': safe, 'rows': per_speed}
+        if max_pass:
+            self._save_variable('encoder_max_speed_%d' % path, '%.1f' % safe)
+
+        # Stop here. The numbers are the point of the test, and running on into
+        # the next channel puts them off the screen before they can be read.
+        owner._cal_state = 'enc_speed_done'
+        d['at'] = path
+        more   = bool(d.get('queue'))
+        verdict = ("Fastest reliable speed: %dmm/s  ->  using %.0fmm/s (80%%)."
+                   % (max_pass, safe) if max_pass else
+                   "No speed counted accurately, including the slowest. That "
+                   "points at this channel rather than at the speed: check the "
+                   "encoder wheel, its wiring, and that mm_per_pulse is "
+                   "calibrated for this path.")
+        buttons = []
+        if more:
+            buttons.append(("NEXT PATH", "next", "primary"))
+        else:
+            buttons.append(("SEE ALL RESULTS", "next", "primary"))
+        buttons.append(("REPEAT PATH %d" % path, "again", "secondary"))
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("Encoder speed test — path %d done" % path + NL + NL
+             + verdict + NL + NL
+             + NL.join("  %3dmm/s  %s" % (sp, txt) for sp, txt in per_speed)
+             + NL + NL + self._encspeed_explain()),
+            buttons,
+            footer=[("STOP", "abort", "error")])
+
+    def _encspeed_summary(self, gcmd):
+        """All channels side by side, with a way to redo any of them."""
+        owner = self.owner
+        d     = owner._cal_data
+        res   = d.get('results') or {}
+
+        rows = []
+        for p in sorted(res):
+            r = res[p]
+            rows.append("  T%d  %s" % (
+                p,
+                ("%3dmm/s  (using %.0f)" % (r['max'], r['safe'])) if r['max']
+                else "FAILED at every speed"))
+
+        speeds = [r['max'] for r in res.values() if r['max']]
+        note = ""
+        if speeds and len(speeds) > 1:
+            if min(speeds) < max(speeds) * 0.6:
+                note = (NL + NL
+                        + "T%d is well below the others. That is usually "
+                          "mechanical -- a tight tube, a dirty or slipping "
+                          "encoder wheel, or filament dragging -- rather than "
+                          "the encoder being wrong."
+                        % min(res, key=lambda k: res[k]['max'] or 0))
+            else:
+                note = (NL + NL + "The channels agree closely, which is what a "
+                                  "healthy build looks like.")
+
+        buttons = [("RETEST T%d" % p, "re:%d" % p, "secondary")
+                   for p in sorted(res)]
+        buttons.append(("DONE", "done", "primary"))
+        owner._cal_state = 'enc_speed_all'
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("Encoder speed — all paths" + NL + NL
+             + NL.join(rows) + note + NL + NL
+             + "Inspect, clean or repair a path and retest just that one; the "
+               "others keep their results."),
+            buttons,
+            footer=[("STOP", "abort", "error")],
+            columns=3)
+
+    def _encspeed_respond(self, gcmd, state, value):
+        owner = self.owner
+        d     = owner._cal_data
+        v     = str(value).strip().lower()
+
+        if state == 'enc_speed_done':
+            if v == 'again':
+                self._encspeed_run(gcmd, int(d.get('at', 0)))
+                return
+            self._encspeed_next(gcmd)
             return
 
-        safe_speed = max_pass * 0.80
-        self._save_variable('encoder_max_speed', '%.1f' % safe_speed)
-        gcmd.respond_info(
-            "SA CAL: Max reliable speed %dmm/s → safe speed %.0fmm/s (80%%).\n"
-            "Saved as encoder_max_speed — Bowden cal blast speed updated automatically."
-            % (max_pass, safe_speed))
-        self._offer_next(gcmd, 'enc_speed')
+        if state == 'enc_speed_all':
+            if v.startswith('re:'):
+                try:
+                    p = int(v.split(':', 1)[1])
+                except ValueError:
+                    return
+                self._encspeed_run(gcmd, p)
+                return
+            best = [r['safe'] for r in (d.get('results') or {}).values()
+                    if r.get('safe')]
+            self._clear()
+            if best:
+                # The Bowden blast uses one number for the machine, so the
+                # slowest channel sets it -- the fastest would outrun the worst
+                # path every time it was used.
+                slowest = min(best)
+                self._save_variable('encoder_max_speed', '%.1f' % slowest)
+                gcmd.respond_info(
+                    "SA CAL: encoder_max_speed=%.0fmm/s saved (the slowest "
+                    "channel; a shared speed has to suit the worst path)."
+                    % slowest)
+            self._offer_next(gcmd, 'enc_speed')
+            return
 
     # ══════════════════════════════════════════════════════════════════════════
     # SA_CALIBRATE_BOWDEN
