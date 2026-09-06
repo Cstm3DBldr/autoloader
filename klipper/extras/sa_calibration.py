@@ -820,14 +820,22 @@ class SACalibration:
     ]
 
     def _offer_command(self, gcmd, question, detail, label, cmd,
-                       decline="STOP HERE"):
+                       decline="STOP HERE", path=0):
         """Leave a prompt behind that will run `cmd` if accepted.
 
         Every offer in this file goes through here. The three that existed
         before -- next step, next path, and the endstop retry -- had drifted
         into three copies of the same four lines, and a copy that forgets to
         set _cal_state is an offer whose button does nothing.
+
+        {TOOL} is filled in here rather than by the callers, so a per-path
+        template cannot reach a button unsubstituted. SKIP STEP took the other
+        route and shipped a literal "TOOL={TOOL}" the moment the table stopped
+        hardcoding a zero.
         """
+        tool  = str(int(path))
+        label = (label or '').replace('{TOOL}', tool)
+        cmd   = (cmd or '').replace('{TOOL}', tool)
         self.owner._cal_data  = {'_next_cmd': cmd}
         self.owner._cal_state = 'chain_next'
         head, _, why = str(detail).partition(NL + NL)
@@ -887,13 +895,10 @@ class SACalibration:
             return
 
         _key, done_label, question, why, btn_label, btn_cmd = entry
-        tool = str(int(path))
-        btn_label = btn_label.replace('{TOOL}', tool)
-        btn_cmd   = btn_cmd.replace('{TOOL}', tool)
         self._offer_command(
             gcmd, question,
             ("%s saved." % done_label) + NL + NL + why,
-            btn_label, btn_cmd)
+            btn_label, btn_cmd, path=path)
 
     def _skip_step(self, gcmd):
         """Abandon the phase now waiting and offer the next step.
