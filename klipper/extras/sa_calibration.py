@@ -1879,8 +1879,8 @@ class SACalibration:
             "SA_RESPOND VALUE=yes",
             detail=("The drive gear is holding the filament and the motor is "
                     "released, so the knob feeds it by hand." + NL
-                    + "Then it feeds until the encoder reads 100mm and you "
-                      "measure what came out."))
+                    + "Then it feeds until the encoder reads %.0fmm and you "
+                      "measure what came out." % length))
 
     def _enc_respond(self, gcmd, state, value):
         owner  = self.owner
@@ -1957,7 +1957,8 @@ class SACalibration:
 
             self._prompt(gcmd,
                 "How much filament is sticking out of the gate?",
-                "SA_RESPOND VALUE=100.0  (replace with what you measured)",
+                "SA_RESPOND VALUE=%.0f  (replace with what you measured)"
+                % target,
                 detail=("The gear and motor are both holding, so nothing will "
                         "move while you measure." + NL
                         + "The encoder counted %.2fmm. Measure from the gate "
@@ -2350,7 +2351,9 @@ class SACalibration:
             "SA ENCODER SPEED CALIBRATION — %s\n"
             "===========================================\n"
             "Requires filament through the drive gear and encoder.\n"
-            "Tests 25→200mm/s, 3 passes each, 100mm per pass."
+            "Tests 25→%dmm/s, 3 passes each. Pass length follows the speed "
+            "and this path's encoder resolution."
+            % self._ENC_SPEEDS[-1]
             % ("path %d" % one if one is not None
                else "all %d paths" % owner.num_paths))
 
@@ -2546,7 +2549,10 @@ class SACalibration:
             footer=[("STOP", "abort", "error")])
 
     def encspeed_step(self, gcmd):
-        """One 100mm pass. Called by the delayed_gcode while a sweep runs."""
+        """One pass. Length follows the speed and the encoder's resolution.
+
+        Called by the delayed_gcode while a sweep runs.
+        """
         owner  = self.owner
         motion = owner.motion
         d      = owner._cal_data
