@@ -69,6 +69,10 @@ class SACalibration:
                 self._chain_respond(gcmd, state, val)
             elif state.startswith('srv_'):
                 self._srv_respond(gcmd, state, val)
+            elif state.startswith('end_fixed'):
+                self._end_fixed_respond(gcmd, val)
+            elif state.startswith('end_'):
+                self._end_respond(gcmd, state, val)
             elif state.startswith('dir_'):
                 self._dir_respond(gcmd, state, val)
             elif state.startswith('sel_'):
@@ -1149,6 +1153,198 @@ class SACalibration:
             footer=[("CANCEL", "abort", "error")],
             columns=3)
         owner._cal_prompt = "Servo: %.1f deg" % ang
+
+
+    # ── Endstop: prove the mapping, not just the movement ─────────────────────
+
+    _END_TIMEOUT = 180.0
+
+    def _end_meaning(self, triggered):
+        """What a reading is supposed to mean about the carriage."""
+        return ("the carriage is ON the switch, compressing it" if triggered
+                else "the carriage is OFF the switch, free to move")
+
+    def _end_word(self, triggered):
+        return "TRIGGERED" if triggered else "open"
+
+    def start_endstop_test(self, gcmd):
+        owner = self.owner
+        state, name = owner._selector_endstop_state()
+        if state is None:
+            gcmd.respond_info(
+                "SA: Could not read an endstop for the selector (looked for "
+                "'%s').%s    Check that the selector's manual_stepper has an "
+                "endstop_pin in hardware.cfg." % (name, NL))
+            return
+        owner._cal_data = {
+            'name': name,
+            'first': bool(state),
+            'seen': [],
+            'deadline': owner.reactor.monotonic() + self._END_TIMEOUT,
+        }
+        owner._cal_state = 'end_wait'
+        self._end_render_wait(gcmd)
+        self._end_arm(owner)
+
+    def _end_arm(self, owner, delay=0.25):
+        """Re-arm the poll. A delayed_gcode rather than a loop, so the mutex is
+        free between reads and the buttons below actually work."""
+        try:
+            owner.gcode.run_script_from_command(
+                "UPDATE_DELAYED_GCODE ID=sa_endstop_poll DURATION=%.2f" % delay)
+        except Exception:
+            logging.exception("SA CAL: could not arm the endstop poll")
+
+    def _end_disarm(self, owner):
+        try:
+            owner.gcode.run_script_from_command(
+                "UPDATE_DELAYED_GCODE ID=sa_endstop_poll DURATION=0")
+        except Exception:
+            pass
+
+    def _end_render_wait(self, gcmd):
+        d = self.owner._cal_data
+        now = bool(d['first']) if not d['seen'] else bool(d['seen'][-1])
+        want = not now
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("Endstop test" + NL + NL
+             + "Reading now: %s" % self._end_word(now) + NL
+             + "That should mean %s." % self._end_meaning(now) + NL + NL
+             + "Move the selector carriage by hand until it is %s."
+               % ("ON the switch" if want else "OFF the switch") + NL
+             + "Nothing is driven. This waits for the reading to change."
+             + NL + NL
+             + "If it never changes: check the wiring and the "
+               "SA_SELECTOR_STOP pin."),
+            [],
+            footer=[("STOP", "abort", "error")])
+
+    def poll_endstop(self, gcmd):
+        """One read. Called by the delayed_gcode while the test is running."""
+        owner = self.owner
+        if (owner._cal_state or '') not in ('end_wait',):
+            return
+        d = owner._cal_data
+        now, _name = owner._selector_endstop_state()
+        if now is None:
+            self._end_arm(owner)
+            return
+
+        prev = bool(d['first']) if not d['seen'] else bool(d['seen'][-1])
+        if bool(now) == prev:
+            if owner.reactor.monotonic() > d['deadline']:
+                owner._cal_state = 'end_stuck'
+                self._emit_ui_prompt(
+                    gcmd, self._ui_title(),
+                    ("Endstop test" + NL + NL
+                     + "The reading never changed from %s."
+                       % self._end_word(prev) + NL + NL
+                     + "Either the carriage was not moved onto the switch, or "
+                       "the switch is not reaching the board." + NL + NL
+                     + "Check the wiring and the SA_SELECTOR_STOP pin, then "
+                       "try again."),
+                    [("TRY AGAIN", "restart", "primary")],
+                    footer=[("STOP", "abort", "error")])
+                return
+            self._end_arm(owner)
+            return
+
+        # It changed. Stop and ask what it means.
+        d['seen'].append(bool(now))
+        owner._cal_state = 'end_confirm'
+        self._end_render_confirm(gcmd)
+
+    def _end_render_confirm(self, gcmd):
+        d = self.owner._cal_data
+        now = bool(d['seen'][-1])
+        last = len(d['seen']) >= 2
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("Endstop test  (%d of 2)" % len(d['seen']) + NL + NL
+             + "The reading changed to %s." % self._end_word(now) + NL + NL
+             + "That should mean %s." % self._end_meaning(now) + NL + NL
+             + "Is that where the carriage actually is?" + NL + NL
+             + "If it is the other way round the switch is wired inverted. "
+               "Answering NO writes the correction and tells you what to do."),
+            [("YES, THAT IS RIGHT", "yes", "primary"),
+             ("NO, IT IS BACKWARDS", "no", "warning"),
+             ("START OVER", "restart", "secondary")],
+            footer=[("STOP", "abort", "error")],
+            columns=2)
+        self.owner._cal_prompt = (
+            "Endstop reads %s" % self._end_word(now))
+
+    def _end_respond(self, gcmd, state, value):
+        owner = self.owner
+        v = str(value).strip().lower()
+
+        if v == 'restart':
+            self._end_disarm(owner)
+            self._clear()
+            self.start_endstop_test(gcmd)
+            return
+
+        if state == 'end_stuck':
+            self._end_disarm(owner)
+            self._clear()
+            gcmd.respond_info("SA CAL: Endstop test stopped.")
+            return
+
+        if state != 'end_confirm':
+            return
+
+        if not self._yes(v):
+            # Backwards. The pin polarity is a config value Klipper reads at
+            # startup, so unlike a motor direction this cannot be flipped for
+            # the next move -- it is written down and applied on restart.
+            self._end_disarm(owner)
+            ok, msg = owner.set_endstop_inverted(None)
+            self._clear()
+            gcmd.respond_info(
+                "SA CAL: Endstop polarity %s%s%s"
+                % ("corrected. " if ok else "NOT changed. ", NL, msg))
+            self._emit_ui_prompt(
+                gcmd, self._ui_title(),
+                ("Endstop test" + NL + NL
+                 + ("The switch is wired the other way round. The correction "
+                    "has been written to user.cfg." if ok else
+                    "The correction could not be written automatically.")
+                 + NL + NL + msg + NL + NL
+                 + ("Restart the firmware, then run this test again to "
+                    "confirm." if ok else "")),
+                [("RESTART FIRMWARE", "fwrestart", "primary"),
+                 ("NOT NOW", "abort", "secondary")]
+                if ok else [("OK", "abort", "secondary")])
+            if ok:
+                owner._cal_state = 'end_fixed'
+            return
+
+        # Correct. One state proven; go round for the other, or finish.
+        d = owner._cal_data
+        if len(d['seen']) >= 2:
+            self._end_disarm(owner)
+            self._clear()
+            gcmd.respond_info(
+                "SA CAL: ENDSTOP OK — both states read the right way round.")
+            self._offer_next(gcmd, 'endstop')
+            return
+
+        d['deadline'] = owner.reactor.monotonic() + self._END_TIMEOUT
+        owner._cal_state = 'end_wait'
+        self._end_render_wait(gcmd)
+        self._end_arm(owner)
+
+    def _end_fixed_respond(self, gcmd, value):
+        owner = self.owner
+        self._clear()
+        if str(value).strip().lower() == 'fwrestart':
+            gcmd.respond_info("SA CAL: Restarting firmware...")
+            owner.gcode.run_script_from_command("FIRMWARE_RESTART")
+            return
+        gcmd.respond_info(
+            "SA CAL: Correction saved. It takes effect after a firmware "
+            "restart.")
 
     # ── Motor direction ───────────────────────────────────────────────────────
 

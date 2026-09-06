@@ -47,6 +47,7 @@ if _extras_dir not in sys.path:
     sys.path.insert(0, _extras_dir)
 
 import logging
+import os
 
 NL = chr(10)
 import re
@@ -1272,6 +1273,9 @@ class Autoloader:
              self._cmd_test_endstop,
              "Watch the selector endstop while you move the carriage by hand. "
              "Run this BEFORE SA_HOME. [DURATION=] [INTERVAL=]"),
+            ('SA_ENDSTOP_POLL',
+             self._cmd_endstop_poll,
+             "Internal: one endstop read for the endstop test."),
             ('SA_GUIDE',
              self._cmd_guide,
              "Open, close or page the calibration guide on every UI at once. "
@@ -1530,129 +1534,85 @@ class Autoloader:
                self._guide_step, total))
 
     def _cmd_test_endstop(self, gcmd):
-        """SA_TEST_ENDSTOP [DURATION=] [INTERVAL=] — watch the selector endstop.
+        """SA_TEST_ENDSTOP — prove the endstop reads the right way round.
 
-        Comes BEFORE homing in the calibration order on purpose. SA_HOME drives
-        the carriage at the endstop and trusts it to stop the move; if the
-        switch is not wired, not triggering, or inverted, homing is the moment
-        you find out, and it finds out by driving into the hard stop.
+        Comes BEFORE homing on purpose. SA_HOME drives the carriage at the
+        switch and trusts it to stop the move, so a switch that is not wired,
+        not triggering, or inverted is found out by driving into the hard stop.
 
-        This asks nothing of the motors. The operator moves the carriage by
-        hand while the state is read back live, so a switch that never changes
-        is obvious before anything is driven anywhere.
+        This asks nothing of the motors: the operator moves the carriage, and
+        each change is confirmed against what that reading is supposed to mean.
+        A switch wired backwards changes state perfectly well, which is why
+        watching for movement alone was never enough to catch one.
         """
-        duration = gcmd.get_float('DURATION', 30.0, minval=2.0, maxval=300.0)
-        interval = gcmd.get_float('INTERVAL',  0.3, minval=0.05, maxval=5.0)
+        self.calibration.start_endstop_test(gcmd)
 
-        state, name = self._selector_endstop_state()
-        if state is None:
-            gcmd.respond_info(
-                "SA: Could not read an endstop for the selector (looked for "
-                "'%s').\n"
-                "    Check that the selector's manual_stepper has an "
-                "endstop_pin in hardware.cfg." % name)
-            return
+    def _cmd_endstop_poll(self, gcmd):
+        """One read for the endstop test's delayed_gcode. Not for humans."""
+        self.calibration.poll_endstop(gcmd)
 
-        gcmd.respond_info(
-            "SA ENDSTOP TEST — %s\n"
-            "  Now: %s\n"
-            "  Move the selector carriage BY HAND onto the endstop, then off "
-            "again.\n"
-            "  Watching for %.0fs; every change is reported."
-            % (name, "TRIGGERED" if state else "open", duration))
+    def set_endstop_inverted(self, invert=None):
+        """Write the selector endstop polarity into user.cfg.
 
-        # Put it on screen too. Everything below this point used to be console
-        # only, so a touchscreen showing the guide reported nothing at all for
-        # the whole test.
-        self._cal_state = 'end_watch'
+        Unlike a motor direction, this cannot be applied to the next move: the
+        pin is read by Klipper's homing at the MCU level, so the fix is a
+        config value and takes a restart.
 
-        def show(now_state, elapsed, changes):
-            self.calibration._emit_ui_prompt(
-                gcmd, self.calibration._ui_title(),
-                ("Endstop test" + NL + NL
-                 + "Reading now: %s" % ("TRIGGERED" if now_state else "open")
-                 + NL + NL
-                 + "Move the selector carriage onto the switch by hand, then "
-                   "off again. Nothing is driven." + NL + NL
-                 + "%.0fs left, %d change%s seen so far."
-                   % (max(0.0, duration - elapsed), changes,
-                      "" if changes == 1 else "s")),
-                [])
+        It goes in user.cfg because that file is the operator's and nothing
+        regenerates it -- hardware.cfg is produced by the installer and would
+        lose the change on the next update.
+        """
+        cfg_dir = os.path.join(os.path.expanduser("~"),
+                               "printer_data", "config", "autoloader")
+        user_cfg = os.path.join(cfg_dir, "user.cfg")
+        section = "manual_stepper %s" % self.selector_stepper_name.split()[-1]
+        try:
+            cur = self.printer.lookup_object('configfile').get_status(
+                self.reactor.monotonic())['settings']
+            pin = str(cur.get(section.lower(), {}).get('endstop_pin', ''))
+        except Exception:
+            pin = ''
+        if not pin:
+            return False, ("Could not read the current endstop_pin, so nothing "
+                           "was changed. Edit it by hand in hardware.cfg.")
 
-        show(state, 0.0, 0)
+        bare = pin.replace('!', '')
+        want_inv = (('!' not in pin) if invert is None else bool(invert))
+        new_pin = ('^!' + bare.lstrip('^')) if want_inv else bare
+        if not new_pin.startswith('^'):
+            new_pin = '^' + new_pin.lstrip('^')
 
-        if state:
-            gcmd.respond_info(
-                "SA: NOTE — it reads TRIGGERED already. Either the carriage is "
-                "sitting on the switch, or the polarity is inverted. Move it "
-                "OFF the switch and confirm this flips to 'open'.")
-
-        seen_open      = not state
-        seen_triggered = bool(state)
-        changes        = 0
-        prev           = state
-        end_time       = self.reactor.monotonic() + duration
-
-        while self.reactor.monotonic() < end_time:
-            self.reactor.pause(self.reactor.monotonic() + interval)
-            now, _ = self._selector_endstop_state()
-            if now is None or now == prev:
-                continue
-            changes += 1
-            prev = now
-            if now:
-                seen_triggered = True
+        begin = "# >>> SA-BLOCK: endstop polarity"
+        finish = "# <<< SA-BLOCK: endstop polarity"
+        block = (begin + NL
+                 + "# Written by the endstop test. Delete this block to go back"
+                 + NL + "# to whatever hardware.cfg says." + NL
+                 + "[%s]" % section + NL
+                 + "endstop_pin: %s" % new_pin + NL
+                 + finish + NL)
+        try:
+            existing = ""
+            if os.path.exists(user_cfg):
+                with open(user_cfg, "r", encoding="utf-8") as f:
+                    existing = f.read()
+            if begin in existing and finish in existing:
+                pre = existing.split(begin)[0]
+                post = existing.split(finish, 1)[1]
+                out = pre + block + post.lstrip(NL)
             else:
-                seen_open = True
-            elapsed = duration - (end_time - self.reactor.monotonic())
-            gcmd.respond_info(
-                "  %5.1fs  -> %s" % (elapsed, "TRIGGERED" if now else "open"))
-            # Only on an actual change, so this redraws two or three times in a
-            # run rather than a hundred.
-            show(now, elapsed, changes)
+                out = existing
+                if out and not out.endswith(NL):
+                    out += NL
+                out += NL + block
+            with open(user_cfg, "w", encoding="utf-8", newline=NL) as f:
+                f.write(out)
+        except Exception as e:
+            logging.exception("Autoloader: could not write user.cfg")
+            return False, "Could not write %s (%s)." % (user_cfg, e)
 
-        # A switch that only ever reads one way is the failure this exists to
-        # catch, and it is indistinguishable from "the operator did not move
-        # it" -- so say both rather than declaring a fault.
-        self._cal_state = None
-        if seen_open and seen_triggered:
-            gcmd.respond_info(
-                "SA: ENDSTOP OK — saw both states (%d change(s)). "
-                "Safe to run SA_HOME." % changes)
-            # Only the pass offers to go on. Offering to home after a switch
-            # that never triggered would be offering to drive the carriage
-            # into the hard stop, which is the thing this test exists to
-            # prevent.
-            self.calibration._offer_next(gcmd, 'endstop')
-        elif seen_triggered and not seen_open:
-            gcmd.respond_info(
-                "SA: ENDSTOP NEVER READ OPEN. Either it was pressed the whole "
-                "time, or it is stuck/inverted.\n"
-                "    Do NOT home yet: homing stops on 'triggered', so an "
-                "always-triggered switch makes it stop instantly and call that "
-                "position zero.")
-            self.calibration._offer_retry(
-                gcmd, "Watch it again?",
-                "It never read open. If the carriage was sitting on the "
-                "switch the whole time, move it clear and try again -- that "
-                "looks identical to a switch stuck on, and only another go "
-                "tells them apart.",
-                "WATCH AGAIN", "SA_TEST_ENDSTOP DURATION=%.0f" % duration)
-        elif seen_open and not seen_triggered:
-            gcmd.respond_info(
-                "SA: ENDSTOP NEVER TRIGGERED. Either it was not pressed, or "
-                "the switch/wiring is not reaching the board.\n"
-                "    Do NOT home yet: homing would drive the carriage into the "
-                "hard stop waiting for a signal that never comes.")
-            self.calibration._offer_retry(
-                gcmd, "Watch it again?",
-                "It never triggered. If you did not get the carriage onto the "
-                "switch in time, that reads exactly the same as a switch that "
-                "is not wired -- so try again before believing the wiring is "
-                "at fault.",
-                "WATCH AGAIN", "SA_TEST_ENDSTOP DURATION=%.0f" % duration)
-        else:
-            gcmd.respond_info("SA: No reading obtained. Check the endstop pin.")
+        return True, ("endstop_pin is now %s (was %s), saved in user.cfg. "
+                      "It takes effect after a firmware restart."
+                      % (new_pin, pin))
 
     def _cmd_encoder_watch(self, gcmd):
         tool     = gcmd.get_int(  'TOOL',      -1)

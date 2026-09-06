@@ -735,7 +735,7 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   shown, with every later activation reusing the cached object and looking
   fine. Re-render on `GLib.idle_add` after activate. Same class as the
   sa_macros first-attach history and the carousel centring fix.
-- Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin is always `^!autoloader:SA_SELECTOR_STOP`.
+- Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin ships as `^autoloader:SA_SELECTOR_STOP`. This file used to claim `^!` was mandatory; it is not, and following that would have broken homing. Measured on the machine with the carriage off the switch: `^` reads open (correct), `^!` reads TRIGGERED, which makes homing stop instantly and call that zero. Which polarity is right depends on the switch wiring, so `SA_TEST_ENDSTOP` settles it per printer and writes the answer to user.cfg.
 
 ## Console Output Rules
 
