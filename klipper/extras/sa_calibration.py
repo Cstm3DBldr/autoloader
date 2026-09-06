@@ -13,7 +13,7 @@
 #   enc_zero_N / enc_exit_N
 #   bow_est_N
 
-import sys, os as _os, re
+import sys, os as _os, re, math
 _extras_dir = _os.path.dirname(_os.path.abspath(__file__))
 if _extras_dir not in sys.path:
     sys.path.insert(0, _extras_dir)
@@ -2019,11 +2019,30 @@ class SACalibration:
     _ENC_SPEEDS = [25, 50, 75, 100, 125, 150, 175, 200,
                    250, 300, 350, 400, 450, 500]
 
-    # Longest pass we are willing to drive. The filament has to go somewhere:
-    # this feeds from the gate into the Bowden and comes straight back, so it
-    # stays well inside the shortest tube on the machine.
-    _ENC_MAX_DIST = 800.0
-    _ENC_MIN_DIST = 100.0
+    # How much cruise to buy on top of the ramp. A move that only touches the
+    # speed measures the ramp; holding it for half the ramp again means most of
+    # what the encoder counted happened at the speed on the label.
+    _ENC_CRUISE_FRAC = 0.5
+
+    # Bound on a pass. The filament goes from the gate into the Bowden and
+    # comes straight back, so the tube it is feeding is the real limit -- taken
+    # per path from SA_CALIBRATE_BOWDEN, not guessed at globally.
+    _ENC_BOWDEN_FRAC = 0.70    # leave the last third of the tube alone
+    _ENC_ABS_MAX     = 900.0   # and never more than this, calibrated or not
+    _ENC_MIN_DIST    = 100.0
+
+    def _encspeed_cap(self, path):
+        """Longest pass this path may drive, in mm."""
+        try:
+            bowden = float(self.owner._bowden_lengths[path])
+        except Exception:
+            bowden = 0.0
+        if bowden <= 0.0:
+            # Bowden not calibrated yet: stay short enough to be safe in any
+            # tube worth building.
+            return 400.0
+        return max(self._ENC_MIN_DIST,
+                   min(self._ENC_ABS_MAX, bowden * self._ENC_BOWDEN_FRAC))
 
     def _drive_accel(self):
         """The drive stepper's configured acceleration, mm/s^2."""
@@ -2035,31 +2054,49 @@ class SACalibration:
         except Exception:
             return 0.0
 
-    def _encspeed_distance(self, speed):
-        """How far to drive so *speed* is actually reached.
+    def _encspeed_distance(self, speed, cap):
+        """How far to drive so *speed* is held, not merely touched.
 
-        A move accelerates, maybe cruises, then decelerates. To touch v at all
-        it needs v^2/a of travel; a bit more gives a real cruise phase where the
-        encoder is counting at the speed on the label. Returns None when that
-        does not fit in the cap, so the rung can be reported as untested rather
-        than passed on a motion that never happened.
+        A move ramps up, maybe cruises, then ramps down. Accelerating to v and
+        back costs v^2/a of travel and spends none of it at v. The cruise on top
+        is what the test is actually reading.
+
+        Returns (distance, cruise_mm). Distance is None when it does not fit in
+        *cap*, and the second value is then the distance it would have needed --
+        so the rung is reported as untested rather than passed on a speed the
+        move never reached.
         """
         accel = self._drive_accel()
         if accel <= 0.0:
-            return self._ENC_MIN_DIST      # unknown: behave as before
-        needed = (speed * speed) / accel * 1.25
-        if needed <= self._ENC_MIN_DIST:
-            return self._ENC_MIN_DIST
-        if needed > self._ENC_MAX_DIST:
-            return None
-        return round(needed, 0)
+            return self._ENC_MIN_DIST, 0.0    # accel unknown: behave as before
+        ramp = (speed * speed) / accel        # up and down together
+        want = ramp * (1.0 + self._ENC_CRUISE_FRAC)
+        if want <= self._ENC_MIN_DIST:
+            # The floor already dwarfs the ramp; all the slack is cruise.
+            return self._ENC_MIN_DIST, self._ENC_MIN_DIST - ramp
+        if want > cap:
+            return None, want
+        return round(want, 0), want - ramp
+
+    def _encspeed_accel_for(self, speed, dist):
+        """A practical accel that would fit *speed* into *dist*.
+
+        Rounded up to the next 50: the exact figure sits on the boundary, where
+        the move fits only by floating-point luck, and it is not a number anyone
+        would type into a config anyway.
+        """
+        if dist <= 0.0:
+            return 0.0
+        exact = (speed * speed) * (1.0 + self._ENC_CRUISE_FRAC) / dist
+        return math.ceil(exact / 50.0) * 50.0
 
     def _encspeed_explain(self):
-        return ("Each pass drives far enough to actually reach the speed on "
-                "the label, then compares that distance against what the "
-                "encoder counted. The percentages are how far apart they "
-                "were -- one per pass. Under 5% passes; two of three must "
-                "pass.")
+        return ("Each pass is long enough to reach the speed on the label and "
+                "then hold it, so most of what the encoder counted happened "
+                "at that speed rather than on the way up to it. The "
+                "percentages are how far the encoder count was from the "
+                "distance driven -- one per pass. Under 5% passes; two of "
+                "three must pass.")
 
     def _encspeed_next(self, gcmd):
         """Run the sweep for the next queued path, then stop on its result."""
@@ -2107,7 +2144,11 @@ class SACalibration:
         rows = ["  %3dmm/s  %s" % (sp, txt) for sp, txt in d.get('per_speed', [])]
         si   = d.get('si', 0)
         speed = (self._ENC_SPEEDS[si] if si < len(self._ENC_SPEEDS) else 0)
-        head = (note or ("Now: %dmm/s, pass %d of 3" % (speed, d.get('ai', 0) + 1)))
+        dist, cruise = d.get('dist', 0.0), d.get('cruise', 0.0)
+        geom = ("  (%.0fmm pass, %.0fmm of it at speed)" % (dist, cruise)
+                if dist else "")
+        head = (note or ("Now: %dmm/s, pass %d of 3%s"
+                         % (speed, d.get('ai', 0) + 1, geom)))
         self._emit_ui_prompt(
             self.owner.gcode if gcmd is None else gcmd, self._ui_title(),
             ("Encoder speed test — path %d" % d.get('at', 0) + NL + NL
@@ -2132,15 +2173,17 @@ class SACalibration:
 
         speed = self._ENC_SPEEDS[si]
         path  = d['at']
-        dist  = self._encspeed_distance(speed)
+        cap   = self._encspeed_cap(path)
+        dist, cruise = self._encspeed_distance(speed, cap)
 
         if dist is None:
-            # Cannot reach this speed in the travel we are willing to use.
-            # Saying so beats reporting a pass for a speed never achieved.
-            accel = self._drive_accel()
+            # Will not fit in the tube this path feeds. Say so, and say what
+            # would change it -- the travel needed falls as v^2/a, so accel is
+            # the lever here, not a longer move.
             d['per_speed'].append(
-                (speed, "not tested - needs %.0fmm at accel %.0f"
-                        % ((speed * speed) / accel * 1.25, accel)))
+                (speed, "not tested - needs %.0fmm, this path allows %.0fmm "
+                        "(accel %.0f would fit it)"
+                        % (cruise, cap, self._encspeed_accel_for(speed, cap))))
             d['errors'] = []
             d['ai'] = 0
             d['si'] = si + 1
@@ -2150,6 +2193,9 @@ class SACalibration:
             self._encspeed_show(gcmd)
             self._encspeed_arm()
             return
+
+        d['dist']   = dist
+        d['cruise'] = cruise
 
         enc   = owner._encoder(path)
         enc.set_direction(forward=True)
