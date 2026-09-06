@@ -1234,6 +1234,10 @@ class Autoloader:
             ('SA_CALIBRATE_ENCODER_SPEED',
              self._cmd_calibrate_encoder_speed,
              "Find max reliable encoder speed and save as encoder_max_speed"),
+            ('SA_VERIFY_FEED',
+             self._cmd_verify_feed,
+             "Drive one pass and check it against a ruler. "
+             "[TOOL=N] [SPEED=mm/s] [DIST=mm]"),
             ('SA_ENCODER_QUERY',
              self._cmd_encoder_query,
              "Snapshot all encoder distances. [TOOL=N] [RESET=1]"),
@@ -1664,6 +1668,9 @@ class Autoloader:
 
     def _cmd_calibrate_encoder_speed(self, gcmd):
         self.calibration.calibrate_encoder_speed(gcmd)
+
+    def _cmd_verify_feed(self, gcmd):
+        self.calibration.verify_feed(gcmd)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Command handlers — state management

@@ -75,6 +75,8 @@ class SACalibration:
                 self._dir_respond(gcmd, state, val)
             elif state.startswith('sel_'):
                 self._sel_respond(gcmd, state, val)
+            elif state.startswith('vf_'):
+                self._vf_respond(gcmd, state, val)
             elif state.startswith('drv_'):
                 self._drv_respond(gcmd, state, val)
             # Before the generic enc_ branch: these start with it too.
@@ -1975,6 +1977,215 @@ class SACalibration:
     # SA_CALIBRATE_ENCODER_SPEED
     # ══════════════════════════════════════════════════════════════════════════
 
+    # ══════════════════════════════════════════════════════════════════════
+    # SA_VERIFY_FEED — check a feed speed against a ruler
+    # ══════════════════════════════════════════════════════════════════════
+
+    def verify_feed(self, gcmd):
+        """Drive one pass at a chosen speed and have the operator measure it.
+
+        The speed test can only compare the encoder against the stepper, so a
+        failing pass is ambiguous: a motor losing steps and an encoder missing
+        counts produce the same short reading. A ruler is outside both.
+        """
+        owner  = self.owner
+        motion = owner.motion
+
+        if owner._cal_state is not None:
+            self._busy(gcmd)
+            return
+
+        path = gcmd.get_int('TOOL', None, minval=0, maxval=owner.num_paths - 1)
+        if path is None:
+            path = owner.current_path if owner.current_path >= 0 else 0
+
+        speed = gcmd.get_float('SPEED', None, above=0.)
+        if speed is None:
+            speed = self._vf_default_speed(path)
+
+        cap   = self._encspeed_cap(path)
+        floor = self._encspeed_floor(path)
+        dist  = gcmd.get_float('DIST', None, above=0.)
+        if dist is None:
+            dist, _ = self._encspeed_distance(speed, cap, floor)
+            if dist is None:
+                dist = cap
+        dist = min(dist, cap)
+
+        if not owner._selector_homed:
+            gcmd.respond_info("SA CAL: Selector not homed — homing now...")
+            motion.selector_home()
+
+        gcmd.respond_info(
+            "SA FEED VERIFICATION — path %d at %.0fmm/s\n"
+            "===========================================\n"
+            "The speed test compares the encoder against the stepper, so a\n"
+            "failure could be either one. This measures the filament instead."
+            % (path, speed))
+
+        owner._cal_data = {'path': path, 'speed': speed, 'dist': dist,
+                           'counted': None}
+        motion.servo_disengage()
+        motion.selector_move_to(owner._selector_positions[path])
+        owner.current_path = path
+        self._vf_setup(gcmd)
+
+    def _vf_default_speed(self, path):
+        """The rung above the one this channel passed — the disputed speed.
+
+        Testing at a speed that already passed proves little; the interesting
+        one is the first that did not.
+        """
+        try:
+            sv = self.owner.printer.lookup_object('save_variables', None)
+            safe = float(sv.allVariables.get('encoder_max_speed_%d' % path, 0.0))
+        except Exception:
+            safe = 0.0
+        passed = safe / 0.80 if safe else 0.0
+        for sp in self._ENC_SPEEDS:
+            if sp > passed + 0.5:
+                return float(sp)
+        return float(self._ENC_SPEEDS[-1])
+
+    def _vf_setup(self, gcmd):
+        """Servo holding, motor released: the knob feeds it by hand."""
+        owner  = self.owner
+        motion = owner.motion
+        d      = owner._cal_data
+
+        motion.servo_engage()
+        motion.drive_disable()
+        owner._cal_state = 'vf_setup'
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("Feed check — path %d at %.0fmm/s" % (d['path'], d['speed'])
+             + NL + NL
+             + "The drive gear is holding the filament and the motor is "
+               "released, so the knob feeds it by hand." + NL + NL
+             + "Set the filament tip flush with the gate exit." + NL + NL
+             + "Then it drives %.0fmm at %.0fmm/s and you measure what came "
+               "out. No tape or marker — the gate is the datum."
+               % (d['dist'], d['speed'])),
+            [("FEED IT", "go", "primary")],
+            footer=[("STOP", "abort", "error")])
+
+    def _vf_drive(self, gcmd):
+        """One measured pass at the speed under test."""
+        owner  = self.owner
+        motion = owner.motion
+        d      = owner._cal_data
+        enc    = owner._encoder(d['path'])
+
+        enc.set_direction(forward=True)
+        enc.reset_distance()
+        motion.drive_move(d['dist'], speed=float(d['speed']))
+        owner.reactor.pause(owner.reactor.monotonic() + 0.25)
+        d['counted'] = enc.get_distance()
+
+        gcmd.respond_info(
+            "SA CAL: drove %.1fmm at %.0fmm/s; encoder counted %.1fmm"
+            % (d['dist'], d['speed'], d['counted']))
+
+        owner._cal_state = 'vf_meas'
+        self._prompt(
+            gcmd, "How much filament came out of the gate?",
+            "SA_RESPOND VALUE=<measured mm>",
+            detail=("Drove %.1fmm at %.0fmm/s. The encoder counted %.1fmm."
+                    % (d['dist'], d['speed'], d['counted'])
+                    + NL + "Measure from the gate exit to the tip."),
+            numeric={'value': round(d['dist'], 0), 'unit': 'mm'})
+
+    def _vf_verdict(self, gcmd, measured):
+        """Three numbers, and which of them disagree."""
+        owner = self.owner
+        d     = owner._cal_data
+        cmd_mm  = d['dist']
+        counted = d['counted'] or 0.0
+        path    = d['path']
+
+        try:
+            mpp = float(owner._encoder(path).mm_per_pulse)
+        except Exception:
+            mpp = 0.0
+
+        # The encoder cannot do better than its own resolution; the operator
+        # cannot do better than a couple of mm with a tape measure.
+        enc_tol   = max(2.0 * mpp, cmd_mm * 0.01)
+        ruler_tol = max(3.0, cmd_mm * 0.01)
+
+        moved_ok = abs(measured - cmd_mm) <= ruler_tol
+        enc_ok   = abs(counted - cmd_mm) <= enc_tol
+        enc_matches_ruler = abs(counted - measured) <= enc_tol + ruler_tol
+
+        if moved_ok and enc_ok:
+            verdict = ("Both agree with the ruler. %.0fmm/s is genuinely good "
+                       "on this path." % d['speed'])
+        elif moved_ok and not enc_ok:
+            verdict = ("The filament moved the full distance — the encoder is "
+                       "what fell short. This is an ENCODER ceiling, not a "
+                       "drive one." + NL + NL
+                       + "Feeding faster than this works; reading it does not. "
+                         "Klipper samples that pin every 2ms and this encoder "
+                         "changes state every %.2fmm, so above roughly "
+                         "%.0fmm/s there are too few samples per state to "
+                         "catch them all." % (mpp, mpp / 0.002 / 4.0))
+        elif not moved_ok and enc_matches_ruler:
+            verdict = ("The filament really did not move that far, and the "
+                       "encoder said so. This is a DRIVE ceiling: steps lost "
+                       "at speed, or the gear slipping on the filament."
+                       + NL + NL
+                       + "Lower accel, more run_current, or a lower feed "
+                         "speed. The encoder is reporting honestly.")
+        else:
+            verdict = ("The filament is short and the encoder does not agree "
+                       "with it either. That points at the gear slipping "
+                       "underneath the encoder wheel while the wheel keeps "
+                       "turning — check the wheel's grip and its tension.")
+
+        owner._cal_state = 'vf_done'
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("Feed check — path %d at %.0fmm/s" % (path, d['speed'])
+             + NL + NL
+             + "  commanded   %7.1fmm" % cmd_mm + NL
+             + "  encoder     %7.1fmm   (%+.1fmm)" % (counted, counted - cmd_mm)
+             + NL
+             + "  ruler       %7.1fmm   (%+.1fmm)" % (measured, measured - cmd_mm)
+             + NL + NL + verdict),
+            [("TEST AGAIN", "again", "secondary"),
+             ("DONE", "done", "primary")],
+            footer=[("STOP", "abort", "error")])
+
+    def _vf_respond(self, gcmd, state, value):
+        owner = self.owner
+        v     = str(value).strip().lower()
+
+        if state == 'vf_setup':
+            self._vf_drive(gcmd)
+            return
+
+        if state == 'vf_meas':
+            try:
+                measured = float(value)
+            except (TypeError, ValueError):
+                gcmd.respond_info("SA CAL: Enter the measured length in mm.")
+                return
+            if measured < 0.0:
+                gcmd.respond_info("SA CAL: That cannot be negative.")
+                return
+            self._vf_verdict(gcmd, measured)
+            return
+
+        if state == 'vf_done':
+            if v == 'again':
+                owner._cal_data['counted'] = None
+                self._vf_setup(gcmd)
+                return
+            owner.motion.servo_disengage()
+            self._clear()
+            gcmd.respond_info("SA CAL: Feed check finished.")
+            return
+
     def calibrate_encoder_speed(self, gcmd):
         """Find the fastest feed each encoder still counts accurately.
 
@@ -2031,12 +2242,33 @@ class SACalibration:
     _ENC_ABS_MAX     = 900.0   # and never more than this, calibrated or not
     _ENC_MIN_DIST    = 100.0
 
+    # A pass has to be long enough for the encoder to resolve it. These are
+    # coarse -- around 1.9mm per pulse, so a 100mm pass is 53 counts and a
+    # single miscount is already 1.9% of a 5% tolerance. At 200 counts two
+    # miscounts are 1.0%, which leaves the tolerance measuring slip rather than
+    # quantisation.
+    _ENC_MIN_PULSES = 200
+
+    # Ceiling on the return move. It only has to be safe, not slow, and at
+    # these pass lengths a fixed 25mm/s would have doubled the sweep.
+    _ENC_RETURN_MAX = 100.0
+
     # Driven slowly before each measured pass, and not measured. Every pass
     # follows a reversal, and the gear spends the first few mm taking slack out
     # of the filament rather than feeding it -- charged to the pass as error if
     # the encoder is reset before it happens. Measured at ~3.8mm on a 1270mm
     # tube; 10mm covers that with room for a longer or tighter one.
     _ENC_TAKEUP = 10.0
+
+    def _encspeed_floor(self, path):
+        """Shortest pass that this path's encoder can resolve, in mm."""
+        try:
+            mpp = float(self.owner._encoder(path).mm_per_pulse)
+        except Exception:
+            mpp = 0.0
+        if mpp <= 0.0:
+            return self._ENC_MIN_DIST
+        return max(self._ENC_MIN_DIST, self._ENC_MIN_PULSES * mpp)
 
     def _encspeed_cap(self, path):
         """Longest pass this path may drive, in mm."""
@@ -2061,7 +2293,7 @@ class SACalibration:
         except Exception:
             return 0.0
 
-    def _encspeed_distance(self, speed, cap):
+    def _encspeed_distance(self, speed, cap, floor=None):
         """How far to drive so *speed* is held, not merely touched.
 
         A move ramps up, maybe cruises, then ramps down. Accelerating to v and
@@ -2073,14 +2305,17 @@ class SACalibration:
         so the rung is reported as untested rather than passed on a speed the
         move never reached.
         """
+        if floor is None:
+            floor = self._ENC_MIN_DIST
+        floor = min(floor, cap)               # a short tube still wins
         accel = self._drive_accel()
         if accel <= 0.0:
-            return self._ENC_MIN_DIST, 0.0    # accel unknown: behave as before
+            return floor, 0.0                 # accel unknown: just use the floor
         ramp = (speed * speed) / accel        # up and down together
         want = ramp * (1.0 + self._ENC_CRUISE_FRAC)
-        if want <= self._ENC_MIN_DIST:
-            # The floor already dwarfs the ramp; all the slack is cruise.
-            return self._ENC_MIN_DIST, self._ENC_MIN_DIST - ramp
+        if want <= floor:
+            # The floor already dwarfs the ramp; all the rest is cruise.
+            return round(floor, 0), floor - ramp
         if want > cap:
             return None, want
         return round(want, 0), want - ramp
@@ -2098,13 +2333,15 @@ class SACalibration:
         return math.ceil(exact / 50.0) * 50.0
 
     def _encspeed_explain(self):
-        return ("Each pass takes up the slack first, then drives far enough "
-                "to reach the speed on the label and hold it. The figures "
+        return ("Each pass is long enough both to hold the speed on the label "
+                "and to give the encoder enough counts to resolve it -- these "
+                "encoders step about 1.9mm at a time, so a short pass "
+                "quantises at the same size as the tolerance. The figures "
                 "are how far the encoder count fell short of the distance "
-                "driven -- one per pass, with the average in mm. Under 5% "
-                "passes; two of three must pass. A number that stays the "
-                "same in mm while the percent changes is mechanical slack, "
-                "not slip at speed.")
+                "driven, one per pass, with the average in mm. Under 5% "
+                "passes; two of three must pass. An error near one or two "
+                "counts is the encoder's resolution; real slip is larger "
+                "and varies between passes.")
 
     def _encspeed_next(self, gcmd):
         """Run the sweep for the next queued path, then stop on its result."""
@@ -2155,6 +2392,12 @@ class SACalibration:
         dist, cruise = d.get('dist', 0.0), d.get('cruise', 0.0)
         geom = ("  (%.0fmm pass, %.0fmm of it at speed)" % (dist, cruise)
                 if dist else "")
+        if dist:
+            try:
+                mpp = float(self.owner._encoder(d.get('at', 0)).mm_per_pulse)
+                geom += "  %d encoder counts" % int(dist / mpp)
+            except Exception:
+                pass
         head = (note or ("Now: %dmm/s, pass %d of 3%s"
                          % (speed, d.get('ai', 0) + 1, geom)))
         self._emit_ui_prompt(
@@ -2182,7 +2425,8 @@ class SACalibration:
         speed = self._ENC_SPEEDS[si]
         path  = d['at']
         cap   = self._encspeed_cap(path)
-        dist, cruise = self._encspeed_distance(speed, cap)
+        floor = self._encspeed_floor(path)
+        dist, cruise = self._encspeed_distance(speed, cap, floor)
 
         if dist is None:
             # Will not fit in the tube this path feeds. Say so, and say what
@@ -2209,8 +2453,14 @@ class SACalibration:
         enc   = owner._encoder(path)
         enc.set_direction(forward=True)
 
+        # The fastest speed this channel has already passed is safe to move
+        # at, so the return does not have to crawl. 25 until something passes.
+        back = max(25.0, min(self._ENC_RETURN_MAX, float(d.get('max_pass') or 0)))
+
         # Take the slack out first, slowly, with the encoder not yet reset.
-        # This is the reversal's cost, not this speed's.
+        # Measured at ~0 on this drivetrain -- the 3.8mm turned out to be
+        # encoder quantisation, not slack -- but a reversal is still the wrong
+        # place to start a measurement, and 10mm is cheap on another machine.
         motion.drive_move(self._ENC_TAKEUP, speed=25.0)
         owner.reactor.pause(owner.reactor.monotonic() + 0.1)
 
@@ -2226,7 +2476,7 @@ class SACalibration:
         # the filament does not walk down the tube over a fourteen-rung ladder.
         enc.set_direction(forward=False)
         enc.reset_distance()
-        motion.drive_move(-(dist + self._ENC_TAKEUP), speed=25.0)
+        motion.drive_move(-(dist + self._ENC_TAKEUP), speed=back)
         owner.reactor.pause(owner.reactor.monotonic() + 0.2)
 
         d['ai'] = ai + 1
