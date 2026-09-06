@@ -1072,27 +1072,16 @@ class Autoloader:
             if saved_state in (self.STATE_UNKNOWN, self.STATE_EMPTY,
                                self.STATE_PARTIAL, self.STATE_LOADED):
                 self.path_states[i] = saved_state
-        # Sync drive rotation_distance — patch hardware.cfg if save_variables value
-        # differs from what was loaded at startup (e.g. after a config file reset).
+        # Apply the calibrated drive rotation_distance to the live stepper, the
+        # same way sa_encoder applies its calibrated mm_per_pulse. This used to
+        # rewrite hardware.cfg and ask for another restart, which does not
+        # survive post_update.sh copying the repo's hardware.cfg over it.
         saved_rd = svars.get('drive_rotation_distance', None)
         if saved_rd is not None:
             try:
                 saved_rd = float(saved_rd)
-                drv_obj  = self.printer.lookup_object(self.drive_stepper_name)
-                current_rd = drv_obj.get_steppers()[0].get_rotation_distance()[0]
-                if abs(current_rd - saved_rd) > 0.001:
-                    ok, result = self.calibration._patch_hardware_cfg(
-                        self.drive_stepper_name, 'rotation_distance', '%.4f' % saved_rd)
-                    if ok:
-                        logging.warning(
-                            "Autoloader: hardware.cfg rotation_distance updated "
-                            "to %.4f from save_variables — restart Klipper to apply.",
-                            saved_rd)
-                    else:
-                        logging.warning(
-                            "Autoloader: rotation_distance mismatch "
-                            "(cfg=%.4f saved=%.4f) — could not patch: %s",
-                            current_rd, saved_rd, result)
+                if saved_rd > 0.0:
+                    self.apply_drive_rotation_distance(saved_rd, 'save_variables')
             except Exception as e:
                 logging.warning("Autoloader: rotation_distance sync failed: %s", e)
         logging.info("Autoloader: calibrations restored from save_variables")
@@ -1167,6 +1156,30 @@ class Autoloader:
             return self._encoder(path).mm_per_pulse
         except Exception:
             return None
+
+    def apply_drive_rotation_distance(self, rd, source='calibration'):
+        """Set the live drive stepper's rotation_distance. Returns True if changed.
+
+        Runtime, not a config rewrite: hardware.cfg is replaced by the updater
+        on every pull, so a value written there is lost and the printer runs on
+        the repo's default until someone restarts twice.
+        """
+        try:
+            drv_obj = self.printer.lookup_object(self.drive_stepper_name)
+            steppers = drv_obj.get_steppers()
+            current = steppers[0].get_rotation_distance()[0]
+            if abs(current - rd) <= 0.0001:
+                return False
+            for st in steppers:
+                st.set_rotation_distance(rd)
+            logging.info(
+                "Autoloader: drive rotation_distance %.4f -> %.4f (from %s)",
+                current, rd, source)
+            return True
+        except Exception:
+            logging.exception(
+                "Autoloader: could not apply drive rotation_distance %.4f", rd)
+            return False
 
     def _get_drive_rotation_distance(self):
         try:

@@ -1764,12 +1764,16 @@ class SACalibration:
 
             if self._yes(value):
                 self._save_variable('drive_rotation_distance', '%.4f' % new_rd)
-                ok, result = self._patch_hardware_cfg(
-                    'manual_stepper sa_drive', 'rotation_distance', '%.4f' % new_rd)
+                # Live, and persisted where the updater cannot reach it. Writing
+                # hardware.cfg instead meant the value was lost on the next pull
+                # and the drive quietly ran on the repo's default until a second
+                # restart put it back.
+                self.owner.apply_drive_rotation_distance(new_rd)
+                ok, result = True, ''
                 if ok:
                     gcmd.respond_info(
-                        "SA CAL: rotation_distance=%.4f written to hardware.cfg.\n"
-                        "Restart Klipper — 100mm will equal 100mm." % new_rd)
+                        "SA CAL: rotation_distance=%.4f saved and applied — no "
+                        "restart needed. 100mm now means 100mm." % new_rd)
                 else:
                     gcmd.respond_info(
                         "SA CAL: rotation_distance=%.4f saved to variables.cfg.\n"
