@@ -401,6 +401,9 @@ class SACalibration:
         ("sel_", 4),
         ("srv_", 5),
         ("drv_", 6),
+        # More specific first: the loop takes the first match, and
+        # "enc_speed_run" starts with "enc_" too.
+        ("enc_speed", 7),
         ("enc_", 8),
         ("bow_", 9),
     )
@@ -2007,10 +2010,31 @@ class SACalibration:
         retract_speed = 25.0
         max_pass   = 0
 
+        # Progress on screen, not only in the console. Every pass moves 100mm
+        # out and back, so the slowest speed alone is most of a minute.
+        owner._cal_state = 'enc_speed_run'
+        results = []
+
+        def show(speed, attempt, note=""):
+            done_lines = [("  %3dmm/s  %s" % (sp, txt)) for sp, txt in results]
+            self._emit_ui_prompt(
+                gcmd, self._ui_title(),
+                ("Encoder speed test  —  path %d" % path + NL + NL
+                 + "Finds the fastest feed the encoder still counts "
+                   "accurately." + NL
+                 + "Each pass drives 100mm out and back." + NL + NL
+                 + ("Now: %dmm/s, pass %d of 3%s" % (speed, attempt, note)
+                    if speed else note)
+                 + (NL + NL + NL.join(done_lines) if done_lines else "")),
+                [])
+
+        show(test_speeds[0], 1)
+
         for speed in test_speeds:
             trial_errors = []
             passes = 0
             for attempt in range(3):
+                show(speed, attempt + 1)
                 enc.set_direction(forward=True)
                 enc.reset_distance()
                 motion.drive_move(test_dist, speed=float(speed))
@@ -2035,16 +2059,36 @@ class SACalibration:
                    [round(e, 1) for e in trial_errors],
                    avg_err))
 
+            results.append((speed, "PASS  errors %s"
+                            % [round(e, 1) for e in trial_errors]
+                            if passed else
+                            "FAIL  errors %s"
+                            % [round(e, 1) for e in trial_errors]))
+            show(0, 0, "Finished %dmm/s." % speed)
+
             if passed:
                 max_pass = speed
             else:
                 break   # no point testing faster speeds
 
         motion.servo_disengage()
+        owner._cal_state = None
 
         if max_pass == 0:
             gcmd.respond_info(
                 "SA CAL: FAILED at all speeds. Check encoder wiring / mm_per_pulse.")
+            self._emit_ui_prompt(
+                gcmd, self._ui_title(),
+                ("Encoder speed test  —  path %d" % path + NL + NL
+                 + "No speed counted accurately, including the slowest." + NL + NL
+                 + "That points at the encoder rather than the speed: check "
+                   "its wiring, and that mm_per_pulse has been calibrated for "
+                   "this path." + NL + NL
+                 + NL.join("  %3dmm/s  %s" % (sp, txt) for sp, txt in results)),
+                [("TRY AGAIN", "yes", "primary")],
+                footer=[("STOP", "abort", "error")])
+            owner._cal_data  = {'_next_cmd': 'SA_CALIBRATE_ENCODER_SPEED'}
+            owner._cal_state = 'chain_next'
             return
 
         safe_speed = max_pass * 0.80
