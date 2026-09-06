@@ -379,9 +379,10 @@ class Panel(ScreenPanel):
             box.pack_start(self._status("\u2715 Not calibrated", _AMBER),
                            False, False, 0)
         box.pack_start(self._hint(
-            "Manually load filament through the drive gear. Marks a 100 mm "
-            "reference, drives it, then prompts you to measure actual movement "
-            "to calculate rotation_distance."),
+            "Filament must reach the drive gear. You set its tip flush with "
+            "the gate exit by turning the drive knob, it feeds 100 mm, and you "
+            "measure what is sticking out. No tape or pen -- the gate exit is "
+            "the datum."),
             False, False, 0)
         btn = _sbs.make("CAL DRIVE", "sa-btn")
         btn.connect("clicked", self._send, "SA_CALIBRATE_DRIVE")

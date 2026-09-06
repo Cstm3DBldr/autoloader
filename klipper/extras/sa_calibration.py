@@ -1631,7 +1631,12 @@ class SACalibration:
             gcmd.respond_info("SA CAL: Selecting path %d..." % path)
             self._safe_selector_move(motion, owner._selector_positions[path])
             owner.current_path = path
+            # Gear closed so the knob can feed the filament, motor released so
+            # it is not holding against you. Both are needed to set the tip by
+            # hand, and engaging without releasing is what made the old
+            # instruction impossible to carry out.
             motion.servo_engage()
+            motion.drive_disable()
 
             drive_obj = owner.printer.lookup_object(owner.drive_stepper_name)
             steppers  = drive_obj.get_steppers()
@@ -1644,8 +1649,18 @@ class SACalibration:
             owner._cal_state = 'drv_mark'
 
             self._prompt(gcmd,
-                "Mark the filament at the encoder exit (tape or pen). Then confirm ready.",
-                "SA_RESPOND VALUE=yes")
+                "Set the filament tip flush with the gate exit.",
+                "SA_RESPOND VALUE=yes",
+                detail=(
+                    "Turn the drive knob by hand until the very tip of the "
+                    "filament is level with the exit of the gate -- not "
+                    "protruding, not recessed." + NL + NL
+                    + "The drive gear is holding the filament and the motor is "
+                      "released, so the knob feeds it either way." + NL + NL
+                    + "The gate exit is the measurement datum, so no tape or "
+                      "pen is needed: whatever sticks out afterwards is "
+                      "exactly how far it travelled."),
+                choices=[("TIP IS FLUSH", "yes", "primary")])
 
         elif state == 'drv_mark':
             attempt        = data['attempt'] + 1
@@ -1664,8 +1679,14 @@ class SACalibration:
 
             owner._cal_state = 'drv_meas'
             self._prompt(gcmd,
-                "Measure from the encoder exit back to your mark - that is how far the filament travelled (target: 100mm).",
+                "How much filament is sticking out of the gate?",
                 "SA_RESPOND VALUE=100.0  (replace with actual mm)",
+                detail=(
+                    "Measure from the gate exit to the tip. The tip started "
+                    "flush, so that length is exactly how far the filament "
+                    "travelled." + NL + NL
+                    + "Commanded %.1fmm. Dial in what you measured."
+                      % data.get('last_cmd_mm', 100.0)),
                 numeric={'value': 100.0, 'unit': 'mm'})
 
         elif state == 'drv_meas':
@@ -1709,10 +1730,20 @@ class SACalibration:
                     "SA_RESPOND VALUE=yes",
                     "SA_RESPOND VALUE=no")
             else:
+                # Back to the datum. The previous pass left the tip proud of
+                # the gate, and the motor holding it, so neither the reference
+                # nor the knob is usable until both are reset.
+                motion.drive_disable()
                 owner._cal_state = 'drv_mark'
                 self._prompt(gcmd,
-                    "Re-mark the filament at its new position, then confirm ready.",
-                    "SA_RESPOND VALUE=yes")
+                    "Set the tip flush with the gate exit again.",
+                    "SA_RESPOND VALUE=yes",
+                    detail=(
+                        "Turn the drive knob by hand to pull the filament back "
+                        "until its tip is level with the gate exit." + NL + NL
+                        + "Each pass measures from that same datum, which is "
+                          "what lets the three attempts be compared."),
+                    choices=[("TIP IS FLUSH", "yes", "primary")])
 
         elif state == 'drv_save':
             new_rd   = data['best_rd']
