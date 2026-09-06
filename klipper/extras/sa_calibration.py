@@ -684,16 +684,49 @@ class SACalibration:
             "SA CAL: Total travel %.2fmm → %d paths  spacing %.2fmm\n%s%s%s"
             % (total_travel, n, spacing, offset_note, width_note, pos_lines))
 
-        owner._cal_data  = {'positions': positions, 'total_travel': total_travel}
+        owner._cal_data  = {'positions': positions, 'total_travel': total_travel,
+                            'summary': ("Total travel %.2fmm over %d paths, "
+                                        "spacing %.2fmm"
+                                        % (total_travel, n, spacing)
+                                        + NL + offset_note + width_note),
+                            'at': None}
         owner._cal_state = 'sel_confirm'
+        self._sel_confirm_render(gcmd)
 
-        self._prompt(gcmd,
-            "Accept these positions?",
-            "SA_RESPOND VALUE=yes",
-            "SA_RESPOND VALUE=no",
-            detail=("Total travel %.2fmm over %d paths, spacing %.2fmm"
-                    % (total_travel, n, spacing)
-                    + NL + offset_note + width_note + pos_lines))
+    def _sel_confirm_render(self, gcmd):
+        """Show the computed positions, with a button to drive to each one."""
+        owner     = self.owner
+        d         = owner._cal_data
+        positions = d.get('positions') or []
+        at        = d.get('at')
+
+        lines = []
+        for i, pos in enumerate(positions):
+            lines.append("%s Path %d: %.2fmm"
+                         % ("->" if at == i else "  ", i, pos))
+
+        buttons = [("T%d" % i, "go:%d" % i,
+                    "primary" if at == i else "secondary")
+                   for i in range(len(positions))]
+        buttons.append(("SAVE THESE", "yes", "primary"))
+        buttons.append(("ADJUST", "no", "warning"))
+
+        note = ("Press a path to drive the carriage there and check it lines "
+                "up. The drive gear is released first, so nothing grips the "
+                "filament while you look.")
+        if at is not None:
+            note = ("Carriage is at path %d. Check it is centred, then try "
+                    "another or save." % at)
+
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("Accept these positions?" + NL + NL
+             + str(d.get('summary', '')) + NL.join(lines) + NL + NL
+             + note),
+            buttons,
+            footer=[("ABORT", "abort", "error")],
+            columns=3)
+        owner._cal_prompt = "Accept these positions?"
 
     # ── Chaining one calibration to the next ──────────────────────────────────
     #
@@ -907,7 +940,7 @@ class SACalibration:
         owner._cal_state = 'sel_reject'
         self._prompt(
             gcmd,
-            "What is wrong with them?",
+            "What do you want to change?",
             "SA_RESPOND VALUE=offset",
             "SA_RESPOND VALUE=spacing",
             "SA_RESPOND VALUE=resweep",
@@ -918,11 +951,11 @@ class SACalibration:
                 "instantly." % d.get('total_travel', 0.0) + NL + NL
                 + "END OFFSET  - hold some travel back before dividing, if "
                   "path 0 or the last path sits slightly off." + NL
-                + "SPACING     - set the gap between paths directly, if you "
+                + "GATE WIDTH  - set the gap between paths directly, if you "
                   "know what it should measure." + NL
                 + "SWEEP AGAIN - if the travel measurement itself looks wrong."),
             choices=[("END OFFSET",  "offset",  "primary"),
-                     ("SPACING",     "spacing", "primary"),
+                     ("GATE WIDTH",  "spacing", "primary"),
                      ("SWEEP AGAIN", "resweep", "secondary")],
             columns=3)
 
@@ -941,7 +974,7 @@ class SACalibration:
             steps = self._OFFSET_STEPS
         else:
             positions, spacing = self._sel_compute(tt, n, 0.0, spacing=val)
-            head = "Spacing: %.2fmm  ->  last path at %.2fmm" % (
+            head = "Gate width: %.2fmm  ->  last path at %.2fmm" % (
                 val, positions[-1] if positions else 0.0)
             steps = self._SPACING_STEPS
 
@@ -1443,6 +1476,29 @@ class SACalibration:
             return
 
         if state == 'sel_confirm':
+            v = str(value).strip().lower()
+            if v.startswith('go:'):
+                # Drive to one position so it can be eyeballed. Nothing is
+                # saved by looking, so this stays in the same phase and comes
+                # straight back to the same screen.
+                try:
+                    idx = int(v.split(':', 1)[1])
+                except ValueError:
+                    idx = -1
+                positions = owner._cal_data.get('positions') or []
+                if 0 <= idx < len(positions):
+                    try:
+                        owner.motion.servo_disengage()
+                        owner.motion.selector_move_to(positions[idx])
+                        owner._cal_data['at'] = idx
+                        gcmd.respond_info(
+                            "SA CAL: Moved to path %d (%.2fmm)."
+                            % (idx, positions[idx]))
+                    except Exception as e:
+                        gcmd.respond_info(
+                            "SA CAL: Could not move to path %d: %s" % (idx, e))
+                self._sel_confirm_render(gcmd)
+                return
             if self._yes(value):
                 positions = owner._cal_data['positions']
                 for i, pos in enumerate(positions):
@@ -1451,8 +1507,7 @@ class SACalibration:
                 self._clear()
                 gcmd.respond_info(
                     "SA CAL: Selector positions saved immediately — "
-                    "effective now, no restart needed.\n"
-                    "Run SA_HOME then SA_SELECT TOOL=N to verify each position.")
+                    "effective now, no restart needed.")
                 owner.motion.selector_home()
                 self._offer_next(gcmd, 'selector')
             else:
