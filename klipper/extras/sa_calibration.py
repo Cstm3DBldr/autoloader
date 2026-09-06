@@ -2128,14 +2128,33 @@ class SACalibration:
             verdict = ("Both agree with the ruler. %.0fmm/s is genuinely good "
                        "on this path." % d['speed'])
         elif moved_ok and not enc_ok:
+            # Work the ceiling out from this measurement rather than from the
+            # tooth pitch. The first version assumed the sensor was high for
+            # half of each tooth and produced a figure well below what the
+            # machine had already passed -- the duty cycle is not 50%, and
+            # guessing it is worse than measuring it.
+            #
+            # Klipper samples the pin every SAMPLE seconds, so a state must
+            # last that long to be seen. Missing a fraction L of the counts
+            # puts the active window at (1-L)*SAMPLE, and the speed at which
+            # misses begin is that window divided by SAMPLE again -- which is
+            # just (1-L) times the speed that was tested.
+            SAMPLE = 0.002
+            lost = ((measured - counted) / measured) if measured > 0 else 0.0
+            lost = min(max(lost, 0.0), 0.99)
+            window = (1.0 - lost) * SAMPLE * d['speed']
+            ceiling = (1.0 - lost) * d['speed']
             verdict = ("The filament moved the full distance — the encoder is "
                        "what fell short. This is an ENCODER ceiling, not a "
                        "drive one." + NL + NL
-                       + "Feeding faster than this works; reading it does not. "
-                         "Klipper samples that pin every 2ms and this encoder "
-                         "changes state every %.2fmm, so above roughly "
-                         "%.0fmm/s there are too few samples per state to "
-                         "catch them all." % (mpp, mpp / 0.002 / 4.0))
+                       + "It missed %.1f%% of its counts. Klipper samples that "
+                         "pin every %.0fms, so a state has to last that long "
+                         "to be seen; losing that many puts this sensor's "
+                         "active window at about %.2fmm of travel — so counts "
+                         "start going missing around %.0fmm/s."
+                         % (lost * 100.0, SAMPLE * 1000.0, window, ceiling)
+                       + NL + NL
+                       + "Feeding faster than that works. Reading it does not.")
         elif not moved_ok and enc_matches_ruler:
             verdict = ("The filament really did not move that far, and the "
                        "encoder said so. This is a DRIVE ceiling: steps lost "
