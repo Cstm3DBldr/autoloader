@@ -1954,6 +1954,13 @@ class SACalibration:
             if self._yes(value):
                 enc.mm_per_pulse = new_mpp
                 self._save_variable('encoder_mpp_%d' % path, '%.5f' % new_mpp)
+                # Record which edge counting produced it, so a later change of
+                # mode can tell a measured value from a legacy one.
+                try:
+                    edges = 2 if self.owner._encoder(path).count_both_edges else 1
+                except Exception:
+                    edges = 2
+                self._save_variable('encoder_edges_%d' % path, '%d' % edges)
                 ok, result = self._patch_hardware_cfg(
                     'sa_encoder %d' % path, 'mm_per_pulse', '%.5f' % new_mpp)
                 if ok:
