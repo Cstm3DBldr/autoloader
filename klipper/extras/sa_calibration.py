@@ -806,14 +806,14 @@ class SACalibration:
          "Calibrate encoder mm/pulse next?",
          "Per path. Sets how far one encoder pulse means, which every slip "
          "check and every park depends on.",
-         "CALIBRATE ENCODER T0", "SA_CALIBRATE_ENCODER TOOL=0"),
+         "CALIBRATE ENCODER T{TOOL}", "SA_CALIBRATE_ENCODER TOOL={TOOL}"),
 
         ('encoder',    "Encoder mm/pulse",
          "Calibrate Bowden length next?",
          "Per path. Measures the tube from the drive gear to the toolhead, "
          "which is the distance a load feeds before it expects the filament "
          "to arrive.",
-         "CALIBRATE BOWDEN T0", "SA_CALIBRATE_BOWDEN TOOL=0"),
+         "CALIBRATE BOWDEN T{TOOL}", "SA_CALIBRATE_BOWDEN TOOL={TOOL}"),
 
         ('bowden',     "Bowden length",
          None, None, None, None),
@@ -866,8 +866,14 @@ class SACalibration:
              % (int(path) + 1, int(self.owner.num_paths))),
             "PATH %d" % nxt, cmd_fmt % nxt)
 
-    def _offer_next(self, gcmd, step):
-        """After a calibration completes, offer the one that follows it."""
+    def _offer_next(self, gcmd, step, path=0):
+        """After a calibration completes, offer the one that follows it.
+
+        *path* fills the {TOOL} slot in the per-path entries. It used to be
+        written 0 into the table, so finishing a step on path 3 offered the
+        next one on path 0 -- the tool was dropped at every hand-off between
+        steps, and the button quietly sent you back to the start.
+        """
         entry = None
         for e in self._CHAIN:
             if e[0] == step:
@@ -881,6 +887,9 @@ class SACalibration:
             return
 
         _key, done_label, question, why, btn_label, btn_cmd = entry
+        tool = str(int(path))
+        btn_label = btn_label.replace('{TOOL}', tool)
+        btn_cmd   = btn_cmd.replace('{TOOL}', tool)
         self._offer_command(
             gcmd, question,
             ("%s saved." % done_label) + NL + NL + why,
@@ -2765,6 +2774,11 @@ class SACalibration:
                 return
             best = [r['safe'] for r in (d.get('results') or {}).values()
                     if r.get('safe')]
+            # Carry the path forward before _clear() throws the data away. A
+            # sweep of every channel hands on path 0, because the next step is
+            # its own per-path run from the start; a sweep of one channel hands
+            # on that channel, because that is the one being worked on.
+            nxt_path = int(d.get('at') or 0) if d.get('single') else 0
             self._clear()
             if best:
                 # The Bowden blast uses one number for the machine, so the
@@ -2776,7 +2790,7 @@ class SACalibration:
                     "SA CAL: encoder_max_speed=%.0fmm/s saved (the slowest "
                     "channel; a shared speed has to suit the worst path)."
                     % slowest)
-            self._offer_next(gcmd, 'enc_speed')
+            self._offer_next(gcmd, 'enc_speed', path=nxt_path)
             return
 
     # ══════════════════════════════════════════════════════════════════════════
