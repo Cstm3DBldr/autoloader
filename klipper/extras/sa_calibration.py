@@ -1791,6 +1791,26 @@ class SACalibration:
     # 100mm and 1% of 300mm. 300 still fits a 12in rule.
     _ENC_CAL_LENGTH = 300.0
 
+    # Left sticking out of the gate for the operator to nudge flush by hand.
+    # Enough to see and pinch, little enough to be quick.
+    _ENC_CAL_LEAVE = 10.0
+
+    def _enc_return(self, gcmd, actual):
+        """Drive the filament back to roughly the datum.
+
+        Needs the motor energised, so it must run before drive_disable() --
+        and, on the last pass, before the servo lets go of the filament.
+        """
+        owner = self.owner
+        back  = actual - self._ENC_CAL_LEAVE
+        if back <= 0.0:
+            return 0.0
+        owner.motion.drive_move(-back, speed=owner.feed_speed * 0.5)
+        gcmd.respond_info(
+            "SA CAL: wound back %.0fmm — about %.0fmm left to set by hand."
+            % (back, self._ENC_CAL_LEAVE))
+        return back
+
     def calibrate_encoder(self, gcmd):
         """Phase 0 — select path, engage, release the motor, set the datum."""
         owner = self.owner
@@ -1923,10 +1943,9 @@ class SACalibration:
                 numeric={'value': round(target, 0), 'unit': 'mm'})
 
         elif state.startswith('enc_meas_'):
-            # Release motor torque but keep servo engaged —
-            # user needs grip to reposition filament with the drive knob
-            motion.drive_disable()
-
+            # The motor stays energised for now: it has to drive the filament
+            # back before it can be released. Releasing here, as this used to,
+            # would leave 300mm to wind by hand.
             try:
                 actual = float(value)
             except ValueError:
@@ -1962,6 +1981,7 @@ class SACalibration:
                 # say so rather than handing back a confident-looking mean.
                 spread = (max(ratios) - min(ratios)) * 100.0
                 if spread > 4.0:
+                    self._enc_return(gcmd, actual)
                     motion.drive_disable()
                     data['attempt'] = 0
                     data['ratios']  = []
@@ -1979,9 +1999,15 @@ class SACalibration:
                                   "flush at the gate to start, and the "
                                   "filament bowing rather than lying straight "
                                   "when measured." + NL + NL
-                                + "Wind back flush and run the three again."))
+                                + "It is wound back for you — nudge the last "
+                                  "%.0fmm flush and run the three again."
+                                  % self._ENC_CAL_LEAVE))
                     return
 
+                # Before the gear lets go, or there is nothing to drive it
+                # with and the path is left with 300mm hanging out.
+                self._enc_return(gcmd, actual)
+                motion.drive_disable()
                 motion.servo_disengage()
                 owner._cal_state = 'enc_save_%d' % path
                 self._prompt(gcmd,
@@ -1996,16 +2022,18 @@ class SACalibration:
                             + "Was %.5f, %+.1f%%."
                               % (orig_mpp, (new_mpp / orig_mpp - 1.0) * 100.0)))
             else:
-                # Motor released just above, gear still holding: the knob
-                # winds it back to the datum for the next pass.
+                # Drive it back first, then release so the knob can do the
+                # last few mm against the gate.
+                self._enc_return(gcmd, actual)
+                motion.drive_disable()
                 owner._cal_state = 'enc_mark_%d' % path
                 self._prompt(gcmd,
-                    "Wind the filament back until the tip is flush with the "
-                    "gate exit again.",
+                    "Nudge the last %.0fmm flush with the gate exit."
+                    % self._ENC_CAL_LEAVE,
                     "SA_RESPOND VALUE=yes",
-                    detail=("The motor is released and the gear is still "
-                            "holding, so the knob does it." + NL
-                            + "Pass %d of 3 next." % (attempt + 1)))
+                    detail=("Wound back for you; the motor is released and the "
+                            "gear is still holding, so the knob does the rest."
+                            + NL + "Pass %d of 3 next." % (attempt + 1)))
 
         elif state.startswith('enc_save_'):
             new_mpp  = data['best_mpp']
