@@ -735,6 +735,18 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   shown, with every later activation reusing the cached object and looking
   fine. Re-render on `GLib.idle_add` after activate. Same class as the
   sa_macros first-attach history and the carousel centring fix.
+- Do not fold repeated calibration passes into each other. Three passes are
+  three samples of one quantity, so run them all at the SAME starting value and
+  average the ratios. `SA_CALIBRATE_ENCODER` used to feed each pass the
+  previous pass's answer, which makes a chain rather than a set: measuring 100,
+  107, 95 gave 0.931 because the last pass sets the result and the 95 was 5%
+  low. Show the spread as well as the mean, and refuse to save when the passes
+  disagree by more than a few percent — that is measurement scatter, and
+  averaging it produces a confident-looking number that is still wrong.
+  Size the datum against the human error too: eyeballing a tip flush and
+  reading a rule is a fixed few mm, which is 3% of a 100mm feed and 1% of a
+  300mm one.
+
 - Do not ask the operator to move filament by hand without releasing the drive
   motor first. The gear holds the filament and the motor holds the gear, so
   `servo_engage()` alone locks it solid — engage, then `drive_disable()`, and

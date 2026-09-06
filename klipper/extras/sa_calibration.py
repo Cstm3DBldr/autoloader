@@ -1786,10 +1786,16 @@ class SACalibration:
     # SA_CALIBRATE_ENCODER
     # ══════════════════════════════════════════════════════════════════════════
 
+    # Feed per pass. Long enough that eyeballing the tip flush and reading the
+    # rule -- a fixed few mm either way -- stops dominating: +/-3mm is 3% of
+    # 100mm and 1% of 300mm. 300 still fits a 12in rule.
+    _ENC_CAL_LENGTH = 300.0
+
     def calibrate_encoder(self, gcmd):
-        """Phase 0 — select path, engage, prompt to mark filament."""
+        """Phase 0 — select path, engage, release the motor, set the datum."""
         owner = self.owner
         path  = gcmd.get_int('TOOL', minval=0, maxval=owner.num_paths - 1)
+        length = gcmd.get_float('LENGTH', self._ENC_CAL_LENGTH, minval=50.)
 
         if owner._cal_state is not None:
             self._busy(gcmd)
@@ -1802,11 +1808,12 @@ class SACalibration:
         gcmd.respond_info(
             "SA ENCODER CALIBRATION — Path %d\n"
             "==================================\n"
-            "Feeds until the encoder reads 100mm, you measure what actually\n"
-            "came out of the gate — 3 passes. No mark or tape needed.\n"
+            "Feeds until the encoder reads %.0fmm, you measure what actually\n"
+            "came out of the gate — 3 passes, averaged. No mark or tape needed.\n"
             "\n"
             "Requirements: filament through drive gear AND encoder for path %d,\n"
-            "with ~150mm free past the gate." % (path, path))
+            "with ~%.0fmm free past the gate, and a rule that long."
+            % (path, length, path, length + 50.0))
 
         gcmd.respond_info("SA CAL: Selecting path %d..." % path)
         self._safe_selector_move(owner.motion, owner._selector_positions[path])
@@ -1822,6 +1829,8 @@ class SACalibration:
         owner._cal_data  = {
             'path':         path,
             'attempt':      0,
+            'target':       length,
+            'ratios':       [],
             'best_mpp':     enc.mm_per_pulse,
             'original_mpp': enc.mm_per_pulse,
         }
@@ -1845,13 +1854,16 @@ class SACalibration:
         if state.startswith('enc_mark_'):
             attempt        = data['attempt'] + 1
             data['attempt'] = attempt
-            target         = 100.0
-            max_travel     = 600.0
+            target         = data.get('target') or self._ENC_CAL_LENGTH
+            max_travel     = target * 2.0 + 100.0
             poll_interval  = 0.05   # seconds between encoder checks
             cal_speed      = owner.feed_speed * 0.5
 
-            # Apply current best mm_per_pulse so encoder counts correctly
-            enc.mm_per_pulse = data['best_mpp']
+            # Every pass runs at the SAME scale — the one we started with — so
+            # the three are independent samples of one ratio and can be
+            # averaged. Feeding each pass the previous pass's answer made them
+            # a chain instead, where only the last one really counted.
+            enc.mm_per_pulse = data['original_mpp']
             enc.set_direction(forward=True)
             enc.reset_distance()
 
@@ -1863,14 +1875,15 @@ class SACalibration:
 
             gcmd.respond_info(
                 "SA CAL: Attempt %d/3 — stepping until encoder reads "
-                "%.0fmm (mm_per_pulse=%.5f)..." % (attempt, target, data['best_mpp']))
+                "%.0fmm (mm_per_pulse=%.5f)..."
+                % (attempt, target, data['original_mpp']))
 
             # Step-by-step: motor stops fully between steps so encoder
             # pulses are delivered one-by-one (no CAN batching issue).
             # Fast approach until 80% of target, then 3mm precision steps.
             fast_step     = 10.0
             slow_step     = 3.0
-            slow_threshold = target * 0.8
+            slow_threshold = target - 15.0
             travelled     = 0.0
 
             while enc.get_distance() < target and travelled < max_travel:
@@ -1907,7 +1920,7 @@ class SACalibration:
                         "move while you measure." + NL
                         + "The encoder counted %.2fmm. Measure from the gate "
                           "exit to the tip." % enc_reading),
-                numeric={'value': 100.0, 'unit': 'mm'})
+                numeric={'value': round(target, 0), 'unit': 'mm'})
 
         elif state.startswith('enc_meas_'):
             # Release motor torque but keep servo engaged —
@@ -1923,33 +1936,65 @@ class SACalibration:
                 gcmd.respond_info("SA CAL: Must be > 0.")
                 return
 
-            current_mpp = data['best_mpp']
+            orig_mpp    = data['original_mpp']
             attempt     = data['attempt']
             enc_reading = data['enc_reading']
-            # Use actual enc_reading (not assumed target) so formula is valid
-            # whether motor stopped at target or was halted by max_travel limit
-            new_mpp     = current_mpp * (actual / enc_reading)
-            correction  = abs(new_mpp - current_mpp) / current_mpp * 100.0
+            target      = data.get('target') or self._ENC_CAL_LENGTH
 
+            # One sample, not a correction. enc_reading rather than the target
+            # because the feed steps in 3mm chunks and overshoots slightly.
+            ratio = actual / enc_reading
+            data.setdefault('ratios', []).append(ratio)
+            ratios  = data['ratios']
+            new_mpp = orig_mpp * (sum(ratios) / len(ratios))
             data['best_mpp'] = new_mpp
-            # Apply immediately so next pass uses corrected mpp
-            enc.mm_per_pulse = new_mpp
 
             done = (attempt >= 3)
             gcmd.respond_info(
-                "SA CAL: Pass %d/3 — encoder %.2fmm  actual %.2fmm  "
-                "mpp correction %.2f%%\n"
-                "  mm_per_pulse: %.5f → %.5f%s"
-                % (attempt, enc_reading, actual, correction,
-                   current_mpp, new_mpp, "  ✓ done" if done else ""))
+                "SA CAL: Pass %d/3 — encoder %.2fmm  measured %.2fmm  "
+                "(%.2f%% out)\n"
+                "  running mean of %d: mm_per_pulse %.5f → %.5f%s"
+                % (attempt, enc_reading, actual, (ratio - 1.0) * 100.0,
+                   len(ratios), orig_mpp, new_mpp, "  ✓ done" if done else ""))
 
             if done:
+                # Three numbers that disagree badly are not worth averaging --
+                # say so rather than handing back a confident-looking mean.
+                spread = (max(ratios) - min(ratios)) * 100.0
+                if spread > 4.0:
+                    motion.drive_disable()
+                    data['attempt'] = 0
+                    data['ratios']  = []
+                    owner._cal_state = 'enc_mark_%d' % path
+                    self._prompt(gcmd,
+                        "Those three disagree by %.1f%% — start over?" % spread,
+                        "SA_RESPOND VALUE=yes",
+                        detail=("Measured %s against %.0fmm."
+                                % (", ".join("%.0f" % (r * enc_reading)
+                                             for r in ratios), target)
+                                + NL + NL
+                                + "That is measurement scatter, not encoder "
+                                  "error, and averaging it just hides it. The "
+                                  "usual causes are the tip not being truly "
+                                  "flush at the gate to start, and the "
+                                  "filament bowing rather than lying straight "
+                                  "when measured." + NL + NL
+                                + "Wind back flush and run the three again."))
+                    return
+
                 motion.servo_disengage()
                 owner._cal_state = 'enc_save_%d' % path
                 self._prompt(gcmd,
                     "Save mm_per_pulse=%.5f?" % new_mpp,
                     "SA_RESPOND VALUE=yes",
-                    "SA_RESPOND VALUE=no")
+                    "SA_RESPOND VALUE=no",
+                    detail=("Mean of 3 passes, spread %.1f%%  (%s)"
+                            % ((max(ratios) - min(ratios)) * 100.0,
+                               ", ".join("%+.1f%%" % ((r - 1.0) * 100.0)
+                                         for r in ratios))
+                            + NL
+                            + "Was %.5f, %+.1f%%."
+                              % (orig_mpp, (new_mpp / orig_mpp - 1.0) * 100.0)))
             else:
                 # Motor released just above, gear still holding: the knob
                 # winds it back to the datum for the next pass.
