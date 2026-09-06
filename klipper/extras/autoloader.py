@@ -1273,6 +1273,9 @@ class Autoloader:
              self._cmd_test_endstop,
              "Watch the selector endstop while you move the carriage by hand. "
              "Run this BEFORE SA_HOME. [DURATION=] [INTERVAL=]"),
+            ('SA_ENCSPEED_STEP',
+             self._cmd_encspeed_step,
+             "Internal: one pass of the encoder speed test."),
             ('SA_ENDSTOP_POLL',
              self._cmd_endstop_poll,
              "Internal: one endstop read for the endstop test."),
@@ -1546,6 +1549,10 @@ class Autoloader:
         watching for movement alone was never enough to catch one.
         """
         self.calibration.start_endstop_test(gcmd)
+
+    def _cmd_encspeed_step(self, gcmd):
+        """One pass for the encoder speed sweep's delayed_gcode."""
+        self.calibration.encspeed_step(gcmd)
 
     def _cmd_endstop_poll(self, gcmd):
         """One read for the endstop test's delayed_gcode. Not for humans."""

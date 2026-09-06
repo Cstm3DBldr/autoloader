@@ -101,6 +101,10 @@ class SACalibration:
 
     def _abort(self, gcmd):
         gcmd.respond_info("SA CAL: Calibration aborted.")
+        # Stop anything that re-arms itself, or the sweep keeps running after
+        # the phase it belongs to has been cleared.
+        self._encspeed_disarm()
+        self._end_disarm(self.owner)
         self.owner.motion.servo_disengage()
         self._clear()
 
@@ -2022,7 +2026,22 @@ class SACalibration:
         path = d['queue'].pop(0)
         self._encspeed_run(gcmd, path)
 
+    def _encspeed_arm(self, delay=0.05):
+        try:
+            self.owner.gcode.run_script_from_command(
+                "UPDATE_DELAYED_GCODE ID=sa_encspeed_step DURATION=%.2f" % delay)
+        except Exception:
+            logging.exception("SA CAL: could not arm the encoder speed step")
+
+    def _encspeed_disarm(self):
+        try:
+            self.owner.gcode.run_script_from_command(
+                "UPDATE_DELAYED_GCODE ID=sa_encspeed_step DURATION=0")
+        except Exception:
+            pass
+
     def _encspeed_run(self, gcmd, path):
+        """Begin the sweep for one path. The passes happen one per call."""
         owner  = self.owner
         motion = owner.motion
         d      = owner._cal_data
@@ -2032,88 +2051,117 @@ class SACalibration:
         owner.current_path = path
         motion.servo_engage()
 
-        enc         = owner._encoder(path)
-        test_dist   = 100.0
-        tolerance   = 0.05
-        retract     = 25.0
-        max_pass    = 0
-        per_speed   = []
+        d.update({'at': path, 'si': 0, 'ai': 0, 'errors': [],
+                  'per_speed': [], 'max_pass': 0})
         owner._cal_state = 'enc_speed_run'
+        self._encspeed_show(gcmd)
+        self._encspeed_arm()
 
-        def show(speed, attempt, note=""):
-            done = ["  %3dmm/s  %s" % (sp, txt) for sp, txt in per_speed]
-            self._emit_ui_prompt(
-                gcmd, self._ui_title(),
-                ("Encoder speed test — path %d" % path + NL + NL
-                 + self._encspeed_explain() + NL + NL
-                 + ("Now: %dmm/s, pass %d of 3" % (speed, attempt)
-                    if speed else note)
-                 + (NL + NL + NL.join(done) if done else "")),
-                [])
+    def _encspeed_show(self, gcmd, note=""):
+        d    = self.owner._cal_data
+        rows = ["  %3dmm/s  %s" % (sp, txt) for sp, txt in d.get('per_speed', [])]
+        si   = d.get('si', 0)
+        speed = (self._ENC_SPEEDS[si] if si < len(self._ENC_SPEEDS) else 0)
+        head = (note or ("Now: %dmm/s, pass %d of 3" % (speed, d.get('ai', 0) + 1)))
+        self._emit_ui_prompt(
+            self.owner.gcode if gcmd is None else gcmd, self._ui_title(),
+            ("Encoder speed test — path %d" % d.get('at', 0) + NL + NL
+             + self._encspeed_explain() + NL + NL
+             + head
+             + (NL + NL + NL.join(rows) if rows else "")),
+            [],
+            footer=[("STOP", "abort", "error")])
 
-        show(self._ENC_SPEEDS[0], 1)
+    def encspeed_step(self, gcmd):
+        """One 100mm pass. Called by the delayed_gcode while a sweep runs."""
+        owner  = self.owner
+        motion = owner.motion
+        d      = owner._cal_data
+        if (owner._cal_state or '') != 'enc_speed_run':
+            return                      # aborted, or moved on
 
-        for speed in self._ENC_SPEEDS:
-            errors = []
-            passes = 0
-            for attempt in range(3):
-                show(speed, attempt + 1)
-                enc.set_direction(forward=True)
-                enc.reset_distance()
-                motion.drive_move(test_dist, speed=float(speed))
-                owner.reactor.pause(owner.reactor.monotonic() + 0.15)
-                err = abs(enc.get_distance() - test_dist) / test_dist
-                errors.append(err * 100.0)
-                if err <= tolerance:
-                    passes += 1
-                enc.set_direction(forward=False)
-                enc.reset_distance()
-                motion.drive_move(-test_dist, speed=retract)
-                owner.reactor.pause(owner.reactor.monotonic() + 0.2)
+        si, ai = d.get('si', 0), d.get('ai', 0)
+        if si >= len(self._ENC_SPEEDS):
+            self._encspeed_finish(gcmd)
+            return
 
-            ok = passes >= 2
-            gcmd.respond_info(
-                "  path %d  %3dmm/s: %s  (off by %s%%  avg %.1f%%)"
-                % (path, speed, "PASS" if ok else "FAIL",
-                   [round(e, 1) for e in errors],
-                   sum(errors) / len(errors)))
-            per_speed.append((speed, "%s  off by %s%%"
-                              % ("PASS" if ok else "FAIL",
-                                 [round(e, 1) for e in errors])))
-            if ok:
-                max_pass = speed
-            else:
-                break
+        speed = self._ENC_SPEEDS[si]
+        path  = d['at']
+        enc   = owner._encoder(path)
 
+        enc.set_direction(forward=True)
+        enc.reset_distance()
+        motion.drive_move(100.0, speed=float(speed))
+        owner.reactor.pause(owner.reactor.monotonic() + 0.15)
+        err = abs(enc.get_distance() - 100.0) / 100.0
+        d['errors'].append(err * 100.0)
+        enc.set_direction(forward=False)
+        enc.reset_distance()
+        motion.drive_move(-100.0, speed=25.0)
+        owner.reactor.pause(owner.reactor.monotonic() + 0.2)
+
+        d['ai'] = ai + 1
+        if d['ai'] < 3:
+            self._encspeed_show(gcmd)
+            self._encspeed_arm()
+            return
+
+        errors = d['errors']
+        passes = sum(1 for e in errors if e <= 5.0)
+        ok     = passes >= 2
+        gcmd.respond_info(
+            "  path %d  %3dmm/s: %s  (off by %s%%  avg %.1f%%)"
+            % (path, speed, "PASS" if ok else "FAIL",
+               [round(e, 1) for e in errors], sum(errors) / len(errors)))
+        d['per_speed'].append(
+            (speed, "%s  off by %s%%" % ("PASS" if ok else "FAIL",
+                                         [round(e, 1) for e in errors])))
+        d['errors'] = []
+        d['ai'] = 0
+        if ok:
+            d['max_pass'] = speed
+            d['si'] = si + 1
+            if d['si'] >= len(self._ENC_SPEEDS):
+                self._encspeed_finish(gcmd)
+                return
+            self._encspeed_show(gcmd)
+            self._encspeed_arm()
+        else:
+            self._encspeed_finish(gcmd)
+
+    def _encspeed_finish(self, gcmd):
+        """This path is done: stop, save, and wait to be read."""
+        owner  = self.owner
+        motion = owner.motion
+        d      = owner._cal_data
+        path   = d['at']
+        max_pass = d.get('max_pass', 0)
+
+        self._encspeed_disarm()
         motion.servo_disengage()
 
         safe = max_pass * 0.80 if max_pass else 0.0
-        d['results'][path] = {'max': max_pass, 'safe': safe, 'rows': per_speed}
+        d.setdefault('results', {})[path] = {
+            'max': max_pass, 'safe': safe, 'rows': list(d.get('per_speed', []))}
         if max_pass:
             self._save_variable('encoder_max_speed_%d' % path, '%.1f' % safe)
 
-        # Stop here. The numbers are the point of the test, and running on into
-        # the next channel puts them off the screen before they can be read.
         owner._cal_state = 'enc_speed_done'
-        d['at'] = path
-        more   = bool(d.get('queue'))
+        more = bool(d.get('queue'))
         verdict = ("Fastest reliable speed: %dmm/s  ->  using %.0fmm/s (80%%)."
                    % (max_pass, safe) if max_pass else
                    "No speed counted accurately, including the slowest. That "
                    "points at this channel rather than at the speed: check the "
                    "encoder wheel, its wiring, and that mm_per_pulse is "
                    "calibrated for this path.")
-        buttons = []
-        if more:
-            buttons.append(("NEXT PATH", "next", "primary"))
-        else:
-            buttons.append(("SEE ALL RESULTS", "next", "primary"))
-        buttons.append(("REPEAT PATH %d" % path, "again", "secondary"))
+        buttons = [("NEXT PATH" if more else "SEE ALL RESULTS", "next", "primary"),
+                   ("REPEAT PATH %d" % path, "again", "secondary")]
         self._emit_ui_prompt(
             gcmd, self._ui_title(),
             ("Encoder speed test — path %d done" % path + NL + NL
              + verdict + NL + NL
-             + NL.join("  %3dmm/s  %s" % (sp, txt) for sp, txt in per_speed)
+             + NL.join("  %3dmm/s  %s" % (sp, txt)
+                       for sp, txt in d.get('per_speed', []))
              + NL + NL + self._encspeed_explain()),
             buttons,
             footer=[("STOP", "abort", "error")])
