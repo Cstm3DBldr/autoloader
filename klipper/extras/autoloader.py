@@ -1551,68 +1551,16 @@ class Autoloader:
         """One read for the endstop test's delayed_gcode. Not for humans."""
         self.calibration.poll_endstop(gcmd)
 
-    def set_endstop_inverted(self, invert=None):
-        """Write the selector endstop polarity into user.cfg.
-
-        Unlike a motor direction, this cannot be applied to the next move: the
-        pin is read by Klipper's homing at the MCU level, so the fix is a
-        config value and takes a restart.
-
-        It goes in user.cfg because that file is the operator's and nothing
-        regenerates it -- hardware.cfg is produced by the installer and would
-        lose the change on the next update.
-        """
-        cfg_dir = os.path.join(os.path.expanduser("~"),
-                               "printer_data", "config", "autoloader")
-        user_cfg = os.path.join(cfg_dir, "user.cfg")
+    def selector_endstop_pin(self):
+        """The configured endstop_pin for the selector, as written."""
         section = "manual_stepper %s" % self.selector_stepper_name.split()[-1]
         try:
-            cur = self.printer.lookup_object('configfile').get_status(
+            settings = self.printer.lookup_object('configfile').get_status(
                 self.reactor.monotonic())['settings']
-            pin = str(cur.get(section.lower(), {}).get('endstop_pin', ''))
+            return str(settings.get(section.lower(), {}).get('endstop_pin', ''))
         except Exception:
-            pin = ''
-        if not pin:
-            return False, ("Could not read the current endstop_pin, so nothing "
-                           "was changed. Edit it by hand in hardware.cfg.")
-
-        bare = pin.replace('!', '')
-        want_inv = (('!' not in pin) if invert is None else bool(invert))
-        new_pin = ('^!' + bare.lstrip('^')) if want_inv else bare
-        if not new_pin.startswith('^'):
-            new_pin = '^' + new_pin.lstrip('^')
-
-        begin = "# >>> SA-BLOCK: endstop polarity"
-        finish = "# <<< SA-BLOCK: endstop polarity"
-        block = (begin + NL
-                 + "# Written by the endstop test. Delete this block to go back"
-                 + NL + "# to whatever hardware.cfg says." + NL
-                 + "[%s]" % section + NL
-                 + "endstop_pin: %s" % new_pin + NL
-                 + finish + NL)
-        try:
-            existing = ""
-            if os.path.exists(user_cfg):
-                with open(user_cfg, "r", encoding="utf-8") as f:
-                    existing = f.read()
-            if begin in existing and finish in existing:
-                pre = existing.split(begin)[0]
-                post = existing.split(finish, 1)[1]
-                out = pre + block + post.lstrip(NL)
-            else:
-                out = existing
-                if out and not out.endswith(NL):
-                    out += NL
-                out += NL + block
-            with open(user_cfg, "w", encoding="utf-8", newline=NL) as f:
-                f.write(out)
-        except Exception as e:
-            logging.exception("Autoloader: could not write user.cfg")
-            return False, "Could not write %s (%s)." % (user_cfg, e)
-
-        return True, ("endstop_pin is now %s (was %s), saved in user.cfg. "
-                      "It takes effect after a firmware restart."
-                      % (new_pin, pin))
+            logging.exception("Autoloader: could not read endstop_pin")
+            return ''
 
     def _cmd_encoder_watch(self, gcmd):
         tool     = gcmd.get_int(  'TOOL',      -1)
