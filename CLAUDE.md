@@ -735,6 +735,16 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   shown, with every later activation reusing the cached object and looking
   fine. Re-render on `GLib.idle_add` after activate. Same class as the
   sa_macros first-attach history and the carousel centring fix.
+- Do not reset an encoder before calling `servo_engage()`. It jitters the drive
+  ±0.8mm three times to seat the gear teeth — 4.8mm of travel — and the encoder
+  adds `mm_per_pulse × direction` per pulse regardless of which way the
+  filament actually went, so with the direction already set forward the whole
+  4.8mm counts as feed. `SA_CALIBRATE_ENCODER` did exactly this and read 1.6%
+  low: its +2.0% was really +3.7%, which is what the speed sweep independently
+  measured. Seat first, reset second. And `servo_engage()` on an already-engaged
+  gear seats nothing — it just walks the filament ±0.8mm off whatever datum the
+  operator has set by hand, so it now returns early unless `force_seat=True`.
+
 - Do not fold repeated calibration passes into each other. Three passes are
   three samples of one quantity, so run them all at the SAME starting value and
   average the ratios. `SA_CALIBRATE_ENCODER` used to feed each pass the

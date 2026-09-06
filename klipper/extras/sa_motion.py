@@ -51,7 +51,7 @@ class SAMotion:
     # Servo
     # ══════════════════════════════════════════════════════════════════════════
 
-    def servo_engage(self):
+    def servo_engage(self, force_seat=False):
         """Move servo to engaged angle and jitter drive gear to seat gear teeth.
 
         PWM stays active while engaged — spring-loaded servo returns to disengaged
@@ -59,10 +59,20 @@ class SAMotion:
         Call servo_disengage() or servo_off() to release.
 
         Jitter: ±0.8mm × 3 at 25mm/s, retract-first so final move is always forward.
+
+        The jitter only seats teeth that are not already seated. Called again on
+        an already-engaged gear it seats nothing and simply walks the filament
+        ±0.8mm — which lands on any datum the operator has set by hand, and on
+        any encoder reading taken across it. So an engage that finds the servo
+        already engaged does nothing unless *force_seat* says otherwise.
         """
         owner = self.owner
         sn    = self._owner_srv_name()
         dn    = self._owner_drv_name()
+
+        if getattr(owner, '_servo_is_engaged', False) and not force_seat:
+            logging.debug("SAMotion: already engaged — not re-seating")
+            return
 
         owner.gcode.run_script_from_command(
             "SET_SERVO SERVO=%s ANGLE=%.1f" % (sn, owner.servo_engaged_angle))

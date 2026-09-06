@@ -1884,11 +1884,15 @@ class SACalibration:
             # averaged. Feeding each pass the previous pass's answer made them
             # a chain instead, where only the last one really counted.
             enc.mm_per_pulse = data['original_mpp']
-            enc.set_direction(forward=True)
-            enc.reset_distance()
 
+            # Seat the gear FIRST. servo_engage jitters the drive ±0.8mm three
+            # times, and resetting before that counted all 4.8mm of it as feed
+            # — five counts of distance the filament never travelled, which
+            # made every pass read about 1.6% low.
             dn = owner._drv_name()
             motion.servo_engage()
+            enc.set_direction(forward=True)
+            enc.reset_distance()
             motion._cancel_timeout(dn)
             owner.gcode.run_script_from_command(
                 "MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
