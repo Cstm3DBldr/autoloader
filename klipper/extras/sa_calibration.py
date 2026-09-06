@@ -2353,9 +2353,9 @@ class SACalibration:
             "Requires filament through the drive gear and encoder.\n"
             "Tests 25→%dmm/s, 3 passes each. Pass length follows the speed "
             "and this path's encoder resolution."
-            % self._ENC_SPEEDS[-1]
             % ("path %d" % one if one is not None
-               else "all %d paths" % owner.num_paths))
+               else "all %d paths" % owner.num_paths,
+               self._ENC_SPEEDS[-1]))
 
         owner._cal_data = {'queue': queue, 'results': {}, 'single': one is not None}
         self._encspeed_next(gcmd)
