@@ -276,7 +276,7 @@ class Panel(ScreenPanel):
         box.pack_start(btn, False, False, 0)
         box.pack_start(self._expect(
             "Arm off \u2192 servo moves to the rest angle \u2192 refit the arm "
-            "resting against the selector body, away from the drive gear "
+            "resting against the servo body, away from the drive gear "
             "\u2192 step in 1/5/10\u00b0 until the gear just grips \u2192 save.\n"
             "Effective immediately, no restart."),
             False, False, 0)

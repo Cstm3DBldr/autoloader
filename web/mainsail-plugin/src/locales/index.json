@@ -50,7 +50,7 @@
                 "CalSelectorHint": "Sweeps the full rail using stallguard to find the far end, then homes back to measure total travel and calculate even path spacing.",
                 "CalSelectorWarn": "• Stalls mid-rail → increase selector_stall_threshold in hardware.cfg.\n• Misses the far end → decrease selector_stall_threshold.\n• Spacing is wrong → verify the rail is unobstructed and re-run.",
                 "CalServo": "Calibrate the engage servo",
-                "CalServoExpect": "• Arm off → the servo moves to the rest angle.\n• Refit the arm resting against the selector body, away from the drive gear.\n• Step in 1/5/10° until the gear just grips, then save.\n• Effective immediately, no restart.",
+                "CalServoExpect": "• Arm off → the servo moves to the rest angle.\n• Refit the arm resting against the servo body, away from the drive gear.\n• Step in 1/5/10° until the gear just grips, then save.\n• The arm returns to rest before each move — it needs the run-up.\n• Effective immediately, no restart.",
                 "CalServoHint": "Load filament to the drive gear on the selected path first. You will be asked to REMOVE the servo arm before anything moves, then refit it at the rest position, then step toward the gear until it grips.",
                 "CalServoWarn": "• Take the arm OFF when asked. Fitted at the wrong angle its whole travel is a hard stop, and the gears strip in seconds.\n• Arm moves away from the gear as the angle rises → the servo is reversed; press WRONG WAY.\n• Near the grip point move in 1° steps → past it the arm is pushing on the mechanism.",
                 "Calibrated": "Calibrated",

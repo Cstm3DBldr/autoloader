@@ -1074,7 +1074,7 @@ class SACalibration:
     # fitted at the wrong angle turns the whole travel into one long hard stop.
     # So nothing sweeps until the arm is OFF; the arm goes back on only at the
     # end that is mechanically safe by definition -- resting against the
-    # selector body, away from the drive gear -- and from there only the far
+    # servo body, away from the drive gear -- and from there only the far
     # angle is searched, stepping toward the gear and stopping the moment it
     # grips.
     #
@@ -1097,7 +1097,7 @@ class SACalibration:
             detail=(
                 "TAKE THE SERVO ARM OFF before continuing." + NL + NL
                 + "With the arm fitted, moving the servo can drive it into the "
-                  "selector body and strip the gears -- and if the arm was "
+                  "mechanism and strip the gears -- and if the arm was "
                   "fitted at the wrong angle, its whole travel is a hard stop."
                 + NL + NL
                 + "Undo the arm screw and lift the arm off the spline. Leave "
@@ -1124,7 +1124,7 @@ class SACalibration:
                 detail=(
                     "The servo is now at %.0f deg -- the DISENGAGED end."
                     % d['dis'] + NL + NL
-                    + "Fit the arm so it rests against the selector body, on "
+                    + "Fit the arm so it rests against the servo body, on "
                       "the side AWAY from the drive gear, and tighten the "
                       "screw." + NL + NL
                     + "That position is what 'disengaged' means, so it is not "
@@ -1190,13 +1190,28 @@ class SACalibration:
             return
 
     def _srv_render(self, gcmd):
-        """Re-ask the engage question at the current angle, moving there first."""
+        """Re-ask the engage question at the current angle, moving there first.
+
+        Every angle is approached from the rest position rather than stepped to
+        from the last one. A step of a few degrees does not give the arm enough
+        of a run-up to overcome the torque it needs once it is loaded, so it
+        simply does not arrive and the reading on screen is a lie about where
+        the arm is. Returning to rest first lets it build the momentum to get
+        there.
+        """
         owner = self.owner
         d     = owner._cal_data
         ang   = float(d.get('_np_val', d['dis']))
+        srv   = owner._servo_short_name()
+        rest  = float(d['dis'])
+
+        if abs(ang - rest) > 0.05:
+            owner.gcode.run_script_from_command(
+                "SET_SERVO SERVO=%s ANGLE=%.1f" % (srv, rest))
+            owner.reactor.pause(
+                owner.reactor.monotonic() + owner.servo_move_delay)
         owner.gcode.run_script_from_command(
-            "SET_SERVO SERVO=%s ANGLE=%.1f"
-            % (owner._servo_short_name(), ang))
+            "SET_SERVO SERVO=%s ANGLE=%.1f" % (srv, ang))
 
         toward = "up" if d['eng'] >= d['dis'] else "down"
         buttons = []
@@ -1215,6 +1230,8 @@ class SACalibration:
             + ("Step %s until the drive gear just grips the filament, then "
                "save. Move in small steps: past the grip point the arm is "
                "pushing against the mechanism." % toward) + NL
+            + "The arm returns to rest before each move -- it needs the run-up "
+              "to reach a loaded angle." + NL
             + ("Rest position is %.0f deg; previously saved grip was %.0f deg."
                % (d['dis'], d['eng'])) + NL
             + "If the arm is moving AWAY from the gear, press WRONG WAY.",
