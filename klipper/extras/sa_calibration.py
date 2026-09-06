@@ -2031,6 +2031,13 @@ class SACalibration:
     _ENC_ABS_MAX     = 900.0   # and never more than this, calibrated or not
     _ENC_MIN_DIST    = 100.0
 
+    # Driven slowly before each measured pass, and not measured. Every pass
+    # follows a reversal, and the gear spends the first few mm taking slack out
+    # of the filament rather than feeding it -- charged to the pass as error if
+    # the encoder is reset before it happens. Measured at ~3.8mm on a 1270mm
+    # tube; 10mm covers that with room for a longer or tighter one.
+    _ENC_TAKEUP = 10.0
+
     def _encspeed_cap(self, path):
         """Longest pass this path may drive, in mm."""
         try:
@@ -2091,12 +2098,13 @@ class SACalibration:
         return math.ceil(exact / 50.0) * 50.0
 
     def _encspeed_explain(self):
-        return ("Each pass is long enough to reach the speed on the label and "
-                "then hold it, so most of what the encoder counted happened "
-                "at that speed rather than on the way up to it. The "
-                "percentages are how far the encoder count was from the "
-                "distance driven -- one per pass. Under 5% passes; two of "
-                "three must pass.")
+        return ("Each pass takes up the slack first, then drives far enough "
+                "to reach the speed on the label and hold it. The figures "
+                "are how far the encoder count fell short of the distance "
+                "driven -- one per pass, with the average in mm. Under 5% "
+                "passes; two of three must pass. A number that stays the "
+                "same in mm while the percent changes is mechanical slack, "
+                "not slip at speed.")
 
     def _encspeed_next(self, gcmd):
         """Run the sweep for the next queued path, then stop on its result."""
@@ -2133,7 +2141,7 @@ class SACalibration:
         owner.current_path = path
         motion.servo_engage()
 
-        d.update({'at': path, 'si': 0, 'ai': 0, 'errors': [],
+        d.update({'at': path, 'si': 0, 'ai': 0, 'errors': [], 'errors_mm': [],
                   'per_speed': [], 'max_pass': 0})
         owner._cal_state = 'enc_speed_run'
         self._encspeed_show(gcmd)
@@ -2185,6 +2193,7 @@ class SACalibration:
                         "(accel %.0f would fit it)"
                         % (cruise, cap, self._encspeed_accel_for(speed, cap))))
             d['errors'] = []
+            d['errors_mm'] = []
             d['ai'] = 0
             d['si'] = si + 1
             if d['si'] >= len(self._ENC_SPEEDS):
@@ -2199,14 +2208,25 @@ class SACalibration:
 
         enc   = owner._encoder(path)
         enc.set_direction(forward=True)
+
+        # Take the slack out first, slowly, with the encoder not yet reset.
+        # This is the reversal's cost, not this speed's.
+        motion.drive_move(self._ENC_TAKEUP, speed=25.0)
+        owner.reactor.pause(owner.reactor.monotonic() + 0.1)
+
         enc.reset_distance()
         motion.drive_move(dist, speed=float(speed))
         owner.reactor.pause(owner.reactor.monotonic() + 0.15)
-        err = abs(enc.get_distance() - dist) / dist
+        short = dist - enc.get_distance()
+        err   = abs(short) / dist
         d['errors'].append(err * 100.0)
+        d.setdefault('errors_mm', []).append(short)
+
+        # Give back the take-up as well, so the pass is position-neutral and
+        # the filament does not walk down the tube over a fourteen-rung ladder.
         enc.set_direction(forward=False)
         enc.reset_distance()
-        motion.drive_move(-dist, speed=25.0)
+        motion.drive_move(-(dist + self._ENC_TAKEUP), speed=25.0)
         owner.reactor.pause(owner.reactor.monotonic() + 0.2)
 
         d['ai'] = ai + 1
@@ -2216,16 +2236,24 @@ class SACalibration:
             return
 
         errors = d['errors']
+        mms    = d.get('errors_mm') or [0.0] * len(errors)
         passes = sum(1 for e in errors if e <= 5.0)
         ok     = passes >= 2
+        avg_mm = sum(mms) / len(mms)
         gcmd.respond_info(
-            "  path %d  %3dmm/s: %s  (off by %s%%  avg %.1f%%)"
+            "  path %d  %3dmm/s: %s  (off by %s%%  avg %.1f%%  %.1fmm)"
             % (path, speed, "PASS" if ok else "FAIL",
-               [round(e, 1) for e in errors], sum(errors) / len(errors)))
+               [round(e, 1) for e in errors], sum(errors) / len(errors),
+               avg_mm))
+        # mm as well as percent: a fixed offset -- slack, backlash, a stiff
+        # tube -- stays the same number of mm while the percent moves with the
+        # pass length, which is what tells it apart from real slip.
         d['per_speed'].append(
-            (speed, "%s  off by %s%%" % ("PASS" if ok else "FAIL",
-                                         [round(e, 1) for e in errors])))
+            (speed, "%s  off by %s%%  (%.1fmm)"
+                    % ("PASS" if ok else "FAIL",
+                       [round(e, 1) for e in errors], avg_mm)))
         d['errors'] = []
+        d['errors_mm'] = []
         d['ai'] = 0
         if ok:
             d['max_pass'] = speed
