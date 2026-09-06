@@ -2009,12 +2009,57 @@ class SACalibration:
         owner._cal_data = {'queue': queue, 'results': {}, 'single': one is not None}
         self._encspeed_next(gcmd)
 
-    _ENC_SPEEDS = [25, 50, 75, 100, 125, 150, 175, 200]
+    # 25s to 200 where most machines land, coarser above for the builds
+    # optimised for fast feeds.
+    #
+    # 200 was not an arbitrary ceiling: a 100mm move at the drive's stock
+    # accel of 400mm/s^2 peaks at sqrt(a*D) = 200mm/s exactly, so the old
+    # ladder ended where the old fixed distance ran out. Going higher needs
+    # the distance to grow with the speed, which _encspeed_distance does.
+    _ENC_SPEEDS = [25, 50, 75, 100, 125, 150, 175, 200,
+                   250, 300, 350, 400, 450, 500]
+
+    # Longest pass we are willing to drive. The filament has to go somewhere:
+    # this feeds from the gate into the Bowden and comes straight back, so it
+    # stays well inside the shortest tube on the machine.
+    _ENC_MAX_DIST = 800.0
+    _ENC_MIN_DIST = 100.0
+
+    def _drive_accel(self):
+        """The drive stepper's configured acceleration, mm/s^2."""
+        try:
+            settings = self.owner.printer.lookup_object(
+                'configfile').get_status(self.owner.reactor.monotonic())['settings']
+            name = self.owner.drive_stepper_name.lower()
+            return float(settings.get(name, {}).get('accel', 0.0)) or 0.0
+        except Exception:
+            return 0.0
+
+    def _encspeed_distance(self, speed):
+        """How far to drive so *speed* is actually reached.
+
+        A move accelerates, maybe cruises, then decelerates. To touch v at all
+        it needs v^2/a of travel; a bit more gives a real cruise phase where the
+        encoder is counting at the speed on the label. Returns None when that
+        does not fit in the cap, so the rung can be reported as untested rather
+        than passed on a motion that never happened.
+        """
+        accel = self._drive_accel()
+        if accel <= 0.0:
+            return self._ENC_MIN_DIST      # unknown: behave as before
+        needed = (speed * speed) / accel * 1.25
+        if needed <= self._ENC_MIN_DIST:
+            return self._ENC_MIN_DIST
+        if needed > self._ENC_MAX_DIST:
+            return None
+        return round(needed, 0)
 
     def _encspeed_explain(self):
-        return ("Each pass drives 100mm and compares that against what the "
-                "encoder counted. The percentages are how far apart they were "
-                "-- one per pass. Under 5% passes; two of three must pass.")
+        return ("Each pass drives far enough to actually reach the speed on "
+                "the label, then compares that distance against what the "
+                "encoder counted. The percentages are how far apart they "
+                "were -- one per pass. Under 5% passes; two of three must "
+                "pass.")
 
     def _encspeed_next(self, gcmd):
         """Run the sweep for the next queued path, then stop on its result."""
@@ -2087,17 +2132,35 @@ class SACalibration:
 
         speed = self._ENC_SPEEDS[si]
         path  = d['at']
-        enc   = owner._encoder(path)
+        dist  = self._encspeed_distance(speed)
 
+        if dist is None:
+            # Cannot reach this speed in the travel we are willing to use.
+            # Saying so beats reporting a pass for a speed never achieved.
+            accel = self._drive_accel()
+            d['per_speed'].append(
+                (speed, "not tested - needs %.0fmm at accel %.0f"
+                        % ((speed * speed) / accel * 1.25, accel)))
+            d['errors'] = []
+            d['ai'] = 0
+            d['si'] = si + 1
+            if d['si'] >= len(self._ENC_SPEEDS):
+                self._encspeed_finish(gcmd)
+                return
+            self._encspeed_show(gcmd)
+            self._encspeed_arm()
+            return
+
+        enc   = owner._encoder(path)
         enc.set_direction(forward=True)
         enc.reset_distance()
-        motion.drive_move(100.0, speed=float(speed))
+        motion.drive_move(dist, speed=float(speed))
         owner.reactor.pause(owner.reactor.monotonic() + 0.15)
-        err = abs(enc.get_distance() - 100.0) / 100.0
+        err = abs(enc.get_distance() - dist) / dist
         d['errors'].append(err * 100.0)
         enc.set_direction(forward=False)
         enc.reset_distance()
-        motion.drive_move(-100.0, speed=25.0)
+        motion.drive_move(-dist, speed=25.0)
         owner.reactor.pause(owner.reactor.monotonic() + 0.2)
 
         d['ai'] = ai + 1
