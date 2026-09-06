@@ -735,6 +735,16 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   shown, with every later activation reusing the cached object and looking
   fine. Re-render on `GLib.idle_add` after activate. Same class as the
   sa_macros first-attach history and the carousel centring fix.
+- Do not reset the encoder and immediately measure after a direction reversal.
+  The drive gear spends the first few mm taking slack out of the filament
+  rather than feeding it, and that lands on the measurement as error. It reads
+  as a fixed number of mm, so it looks like a calibration scale error until you
+  vary the distance: on T0 it was 3.8mm, which is 3.8% of a 100mm pass and 3.3%
+  of a 115mm one. It ate 3.8 of the encoder speed test's 5% budget at every
+  speed. Take the slack up with a slow unmeasured move first, and give it back
+  on the return so the pass is position-neutral. Report error in mm as well as
+  percent — a fixed offset is obvious in mm and invisible in percent.
+
 - Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin ships as `^autoloader:SA_SELECTOR_STOP`. This file used to claim `^!` was mandatory; it is not, and following that would have broken homing. Measured on the machine with the carriage off the switch: `^` reads open (correct), `^!` reads TRIGGERED, which makes homing stop instantly and call that zero. Which polarity is right depends on the switch wiring, so `SA_TEST_ENDSTOP` settles it per printer and writes the answer to user.cfg.
 
 ## Console Output Rules
