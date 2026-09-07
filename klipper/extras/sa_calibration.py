@@ -787,7 +787,7 @@ class SACalibration:
         ('entry_sensors', "Entry sensors",
          "Home the selector next?",
          "Drives the carriage to the switch and calls that zero. Everything "
-         "measured in millimetres from home depends on it.",
+         "measured in millimeters from home depends on it.",
          "HOME SELECTOR", "SA_HOME"),
 
         ('home',       "Selector home",
@@ -808,7 +808,7 @@ class SACalibration:
         ('servo',      "Servo engage angle",
          "Calibrate the drive motor next?",
          "Measures how far one motor turn moves filament. Everything that "
-         "feeds or retracts is measured in those millimetres, so nothing "
+         "feeds or retracts is measured in those millimeters, so nothing "
          "downstream is trustworthy until it is set.",
          "CALIBRATE DRIVE", "SA_CALIBRATE_DRIVE"),
 
@@ -827,7 +827,7 @@ class SACalibration:
         ('encoder',    "Encoder mm/pulse",
          "Test the toolhead sensors next?",
          "Per path, and worth doing before the Bowden measurement rather than "
-         "after: that one blasts filament most of a metre at speed and stops "
+         "after: that one blasts filament most of a meter at speed and stops "
          "on the extruder sensor. If the two sensors are crossed or inverted "
          "it stops on one the filament has not reached, at the gears.",
          "TEST TOOLHEAD SENSORS T{TOOL}", "SA_TEST_TOOLHEAD_SENSORS TOOL={TOOL}"),
@@ -1511,7 +1511,7 @@ class SACalibration:
                       "the two connectors, then run this again." % (path, path)
                     + NL + NL
                     + "Worth fixing before the Bowden calibration: it blasts "
-                      "filament most of a metre and stops on the extruder "
+                      "filament most of a meter and stops on the extruder "
                       "sensor. Crossed, it stops on a sensor the filament has "
                       "not reached.")
         else:
