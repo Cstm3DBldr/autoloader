@@ -1712,10 +1712,10 @@ class SACalibration:
 
         homed = st.get('homed_axes') or ''
         if not all(a in homed for a in 'xyz'):
-            raise owner.printer.command_error(
-                "SA: the printer is not homed (%s), so it cannot bring the "
-                "toolhead somewhere you can reach. Home it and run this again."
-                % (homed or "no axes"))
+            # Not a failure, just a thing that has to happen first -- and the
+            # machine can do it. Sending the operator away to run G28 and start
+            # over is a dead end dressed as a safety check.
+            return 'need_home'
 
         amax = st.get('axis_maximum') or []
         try:
@@ -1734,6 +1734,38 @@ class SACalibration:
         owner.gcode.run_script_from_command(
             "G1 X%.1f Y%.1f Z%.1f F6000" % (x, y, z))
         owner.gcode.run_script_from_command("M400")
+
+    def _sen_advance(self, gcmd):
+        """Move to the next stage, which may be another question."""
+        owner = self.owner
+        d     = owner._cal_data
+        d['stage'] += 1
+        d['shown']  = None
+        d['deadline'] = owner.reactor.monotonic() + self._SEN_TIMEOUT
+        # This test asks twice before it reads anything, so the next stage is
+        # not necessarily a watch.
+        nxt = d['plan'][d['stage']]
+        owner._cal_state = ('sen_%s_confirm' % d['group'] if nxt.get('confirm')
+                            else 'sen_%s_wait' % d['group'])
+        self._sen_render(gcmd)
+        self._sen_arm()
+
+    def _sen_ask_home(self, gcmd):
+        """Offer to home rather than sending the operator away to do it."""
+        owner = self.owner
+        d     = owner._cal_data
+        owner._cal_state = 'sen_%s_home' % d['group']
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("%s — path %d" % (self._SEN_TITLE[d['group']], d['path'])
+             + NL + NL
+             + "The printer is not homed, so there is nowhere known to put the "
+               "toolhead." + NL + NL
+             + "Home it now and carry on?" + NL + NL
+             + "This runs G28. The printer is clear — you just said so — so "
+               "there is nothing else to check."),
+            [("HOME", "home", "primary")],
+            footer=[("STOP", "abort", "error")])
 
     def _sen_arm(self, delay=0.25):
         try:
@@ -1998,6 +2030,20 @@ class SACalibration:
                 self._SEN_TITLE[group])
             return
 
+        if state.endswith('_home'):
+            gcmd.respond_info("SA: homing...")
+            owner.gcode.run_script_from_command("G28")
+            owner.gcode.run_script_from_command("M400")
+            path  = d['path']
+            stage = d['plan'][d['stage']]
+            if self._sen_action(gcmd, stage['action'], path) == 'need_home':
+                # G28 ran and the axes still are not homed. Something is wrong
+                # with homing itself, and this test is not the place to chase it.
+                self._sen_ask_home(gcmd)
+                return
+            self._sen_advance(gcmd)
+            return
+
         if state.endswith('_confirm'):
             v = str(value).strip().lower()
             if v not in ('yes', 'y', '1', 'true', 'ok'):
@@ -2013,7 +2059,9 @@ class SACalibration:
             # the readings are judged, because on this test the thing it does
             # is bring the sensors being judged into the room.
             if stage.get('action'):
-                self._sen_action(gcmd, stage['action'], path)
+                if self._sen_action(gcmd, stage['action'], path) == 'need_home':
+                    self._sen_ask_home(gcmd)
+                    return
 
             # The operator says it is empty. Now the reading means something:
             # anything not CLEAR is the sensor being wrong, and this is the
@@ -2024,17 +2072,7 @@ class SACalibration:
                 self._sen_fault(gcmd, 'inverted', now, bad[0])
                 return
 
-            d['stage'] += 1
-            d['shown']  = None
-            d['deadline'] = owner.reactor.monotonic() + self._SEN_TIMEOUT
-            # The next stage may be another question rather than a watch --
-            # this test asks twice before it starts reading anything.
-            nxt = d['plan'][d['stage']]
-            owner._cal_state = ('sen_%s_confirm' % d['group']
-                                if nxt.get('confirm')
-                                else 'sen_%s_wait' % d['group'])
-            self._sen_render(gcmd)
-            self._sen_arm()
+            self._sen_advance(gcmd)
             return
 
         if str(value).strip().lower() == 'retry':
