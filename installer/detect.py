@@ -387,7 +387,7 @@ def main():
             print('    "gcode command STATUS_READY already registered"')
             print("")
             print("Re-run the installer and choose either:")
-            print("  * Filament colour on the logo only — keeps your LEDs, or")
+            print("  * Filament color on the logo only — keeps your LEDs, or")
             print("  * Full, AFTER removing the include for the file above.")
             print("")
             print("Nothing was changed.")
@@ -397,7 +397,7 @@ def main():
             if not family:
                 print("  ! You picked LEDs, but no per-toolhead LED chain family was")
                 print("    found (%s)." % (", ".join(names) if names else "no LED objects at all"))
-                print("    Per-toolhead filament colour needs one chain per tool.")
+                print("    Per-toolhead filament color needs one chain per tool.")
                 print("    Install continues; the LEDs will not light until the chain")
                 print("    names in leds/leds.cfg match your hardware.")
         return 0
@@ -478,7 +478,7 @@ def main():
             proposed["LED_CHAIN_PREFIX"] = '"%s"' % pre
             proposed["LED_CHAIN_SUFFIX"] = '"%s"' % suf
         else:
-            print("                 no per-toolhead family — per-path colour is")
+            print("                 no per-toolhead family — per-path color is")
             print("                 not possible with a single shared chain")
 
     collisions = detect_status_collision(files)
@@ -492,7 +492,7 @@ def main():
         print("    Klipper uppercases macro names, so these register the SAME")
         print("    commands as the autoloader's full LED option. Choosing 'Full'")
         print("    would stop your printer from starting.")
-        print("    Choose 'Filament colour on the logo only' instead — it keeps")
+        print("    Choose 'Filament color on the logo only' instead — it keeps")
         print("    the LEDs you already have.")
         proposed["SA_STATUS_MACROS_EXIST"] = "y"
 

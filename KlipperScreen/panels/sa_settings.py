@@ -363,7 +363,7 @@ class Panel(ScreenPanel):
         return hex_c
 
     def _draw_marker(self, area, cr):
-        """Outline the centre slot. Nothing else marks the selection."""
+        """Outline the center slot. Nothing else marks the selection."""
         w = area.get_allocated_width()
         h = area.get_allocated_height()
         r = 10.0
@@ -478,7 +478,7 @@ class Panel(ScreenPanel):
         return False
 
     def _selected_index(self):
-        """Index of the selected colour's chip in the middle copy."""
+        """Index of the selected color's chip in the middle copy."""
         for n, (btn, idx, h, hv, ac) in enumerate(self._chips):
             if h == self._selected_hex and n >= len(_COLORS):
                 return n
@@ -511,7 +511,7 @@ class Panel(ScreenPanel):
         if landed or self._centre_tries >= 25:
             if not landed:
                 logging.warning(
-                    "sa_settings: carousel could not centre %s (want %.1f, "
+                    "sa_settings: carousel could not center %s (want %.1f, "
                     "got %.1f, upper %.1f)", self._selected_hex, want,
                     adj.get_value(), adj.get_upper())
             self._centring = False
@@ -519,7 +519,7 @@ class Panel(ScreenPanel):
         return True
 
     def _centre_on(self, hex_c, animate=True):
-        """Bring a colour to the centre slot, using its middle-copy chip."""
+        """Bring a color to the center slot, using its middle-copy chip."""
         for n, (btn, idx, h, hv, ac) in enumerate(self._chips):
             if h == hex_c and n >= len(_COLORS):
                 self._scroll_to_n(n)

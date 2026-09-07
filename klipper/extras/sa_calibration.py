@@ -460,7 +460,7 @@ class SACalibration:
          'grid': None,
          'expect': ["Homes, sweeps out until it stalls, homes back.",
                     "Then offers a button per path so you can see each one "
-                    "centred before saving, and adjust gate width or end "
+                    "centered before saving, and adjust gate width or end "
                     "offset with the carriage following as you dial."],
          'warn': ["Stalls mid-rail — raise selector_stall_threshold.",
                   "Misses the far end — lower selector_stall_threshold.",
@@ -926,7 +926,7 @@ class SACalibration:
                 "up. The drive gear is released first, so nothing grips the "
                 "filament while you look.")
         if at is not None:
-            note = ("Carriage is at path %d. Check it is centred, then try "
+            note = ("Carriage is at path %d. Check it is centered, then try "
                     "another or save." % at)
 
         self._emit_ui_prompt(
@@ -1511,7 +1511,7 @@ class SACalibration:
             self._clear()
             move(d['dis'])
             gcmd.respond_info(
-                "SA CAL: Servo calibration cancelled. Returned to %.0f deg."
+                "SA CAL: Servo calibration canceled. Returned to %.0f deg."
                 % d['dis'])
             return
 
@@ -2251,7 +2251,7 @@ class SACalibration:
                       "released, so the knob feeds it either way." + NL + NL
                     + "The gate exit is the measurement datum, so no tape or "
                       "pen is needed: whatever sticks out afterwards is "
-                      "exactly how far it travelled."),
+                      "exactly how far it traveled."),
                 choices=[("TIP IS FLUSH", "yes", "primary")])
 
         elif state == 'drv_mark':
@@ -2276,7 +2276,7 @@ class SACalibration:
                 detail=(
                     "Measure from the gate exit to the tip. The tip started "
                     "flush, so that length is exactly how far the filament "
-                    "travelled." + NL + NL
+                    "traveled." + NL + NL
                     + "Commanded %.1fmm. Dial in what you measured."
                       % data.get('last_cmd_mm', 100.0)),
                 numeric={'value': 100.0, 'unit': 'mm'})
@@ -3262,7 +3262,7 @@ class SACalibration:
                           + "Note: at the slowest speed, where aliasing cannot "
                             "happen, this encoder still read %.1f%% %s. That is "
                             "mm_per_pulse being out, not a speed problem — it "
-                            "is cancelled out of the figures above, but run "
+                            "is canceled out of the figures above, but run "
                             "SA_CALIBRATE_ENCODER TOOL=%d to fix the distances "
                             "this path reports everywhere else."
                           % (abs(scale_off), "low" if scale_off > 0 else "high",
