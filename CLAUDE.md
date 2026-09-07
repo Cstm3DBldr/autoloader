@@ -79,6 +79,44 @@ knows what manual hooks to reapply.
   an unknown command. The pre-edit file
   is preserved on the printer as `toolchanger.cfg.bak.<epoch>`.
 
+## Branching and what counts as a fix
+
+    main     what end users install. Update Manager points here (install.sh
+             writes primary_branch: main). One commit per confirmed fix.
+    dev      where the work happens. Forked from main, so main is its
+             ancestor and a merge is a fast-forward rather than a graft.
+    old-dev  the 505-commit build history from before 2026-09-07.
+
+This printer follows **dev** (`primary_branch: dev` in its moonraker.conf, a
+manual edit). End users follow **main**.
+
+**A commit is a CONFIRMED fix, not an attempted one.** Deploy it, verify it on
+the machine, and only then commit. The message says what was measured, not what
+was intended.
+
+This is not a style preference. On 2026-09-07 three separate "fixes" were
+committed, deployed and reported before anyone checked:
+
+- reversal slack in the encoder measurement — a take-up move was added and
+  changed the reading by nothing at all
+- a two-pulse quantisation theory — the arithmetic fitted both observations
+  exactly and was still wrong; a longer pass showed the error tracked distance
+- every KlipperScreen change for two days — `sudo systemctl restart` over ssh
+  fails without a terminal, so the panels were copied and never loaded
+
+Each one is a commit claiming a fix that was not one, and the last hid three
+other bugs behind it.
+
+**Deploying before committing:** the Python extras and the Moonraker component
+are symlinked from `~/autoloader`, so `scp` a working-tree file straight over
+the checkout and restart the service to test it. The printer's tree is dirty
+until the real pull; `git checkout -- .` then pull once the fix is confirmed
+and pushed. Do not use a commit as the delivery mechanism for something
+untested.
+
+**End of day:** `dev` fast-forwards into `main`. Every commit on it is
+already a confirmed fix, so nothing needs squashing.
+
 ## Operational Permissions (set by user)
 Claude has full autonomous control of this printer and repository. No need to ask
 before deploying or pushing — just do it and report the result.
