@@ -518,7 +518,13 @@ class SACalibration:
                  "per path. Filament must be through the drive gear.",
          'buttons': [("CAL ENCODER SPEED", "SA_CALIBRATE_ENCODER_SPEED")],
          'grid': None,
-         'expect': ["Speed climbs until the encoder falls behind, then stops "
+         'expect': ["The slowest pass is the reference: at that speed the "
+                    "encoder cannot alias, so what it reads is this path's "
+                    "scale. Every later pass is measured against it, which is "
+                    "why the figures start at zero -- a mm_per_pulse a few "
+                    "percent out would otherwise be charged to whichever speed "
+                    "is on screen.",
+                    "Speed climbs until the encoder falls behind, then stops "
                     "and shows the result for that path.",
                     "At the end every path is listed side by side so a slow one "
                     "stands out, and any of them can be retested alone."],
@@ -1681,11 +1687,9 @@ class SACalibration:
                  'confirm': "Path %d is empty" % path,
                  'ask': "Take any filament out of path %d's entry, then "
                         "confirm." % path,
-                 'why': "This is the one reading nothing else can check. Every "
-                        "stage after it needs the sensor to change, which a "
-                        "dead one cannot fake -- but CLEAR looks the same "
-                        "whether the sensor works, is unplugged, or is wired "
-                        "backwards. Your answer is what tells those apart."},
+                 'why': "Nothing else can check this one: CLEAR reads the "
+                        "same whether the sensor works, is unplugged, or is "
+                        "backwards. Your answer is what tells them apart."},
                 {'want': {'entry': True},
                  'ask': "Now push a piece of filament into path %d's entry, "
                         "past the sensor." % path},
@@ -1697,18 +1701,15 @@ class SACalibration:
              'confirm': "Printer is clear",
              'ask': "About to change to toolhead %d and move it to the middle "
                     "of the bed, where you can reach it." % path,
-             'why': "This is a real toolchange and a real move. Check the bed "
-                    "is clear, nothing is mid-print, and no filament or tool "
-                    "is in the way of the gantry."},
+             'why': "A real toolchange and a real move. Check the bed is "
+                    "clear and nothing is in the gantry's way."},
             {'want': {'extruder': False, 'toolhead': False},
              'confirm': "Toolhead %d is empty" % path,
              'ask': "Toolhead %d is in front of you. Detach its Bowden and "
                     "take out any filament, then confirm." % path,
-             'why': "This is the one reading nothing else can check. Every "
-                    "stage after it needs a sensor to change, which a dead one "
-                    "cannot fake -- but CLEAR looks the same whether a sensor "
-                    "works, is unplugged, or is wired backwards. Your answer "
-                    "is what tells those apart."},
+             'why': "Nothing else can check this one: CLEAR reads the same "
+                    "whether a sensor works, is unplugged, or is backwards. "
+                    "Your answer is what tells them apart."},
             {'want': {'extruder': True},
              'wrong_first': 'toolhead',
              'ask': "Push a scrap of filament into the toolhead inlet until it "
@@ -1779,9 +1780,7 @@ class SACalibration:
              + "The printer is not homed, so there is nowhere known to put the "
                "toolhead." + NL + NL
              + "Home it now and carry on?" + NL + NL
-             + "This runs the printer's own homing (G28, and any override it "
-               "defines). The printer is clear — you just said so — so there "
-               "is nothing else to check."),
+             + "Runs G28, and any homing override the printer defines."),
             [("HOME", "home", "primary")],
             footer=[("STOP", "abort", "error")])
 
@@ -1943,42 +1942,30 @@ class SACalibration:
         if kind == 'inverted':
             body = ("You said it is empty, but %s reads FILAMENT."
                     % self._SEN_LABEL[wrong] + NL + NL
-                    + "That is the sensor disagreeing with the machine in front "
-                      "of it, which is the whole reason this step asks rather "
-                      "than just reading." + NL + NL
                     + "Usually the pin polarity: add or remove the '!' on that "
-                      "sensor's switch_pin. If the pin is right, the switch or "
-                      "lever is stuck." + NL + NL
-                    + "Left as it is, the two stages after this would run on "
-                      "filament that was already there and the path would be "
-                      "recorded as proved.")
+                      "sensor's switch_pin." + NL
+                    + "If the pin is right, the switch or lever is stuck."
+                    + NL + NL
+                    + "Left alone, this path would be recorded as proved.")
         elif kind == 'swapped':
             near = [k for k in d['plan'][d['stage']]['want']][0]
-            body = ("%s read FILAMENT before %s did." % (self._SEN_LABEL[wrong],
-                                                         self._SEN_LABEL[near])
+            body = ("%s read FILAMENT first. These two are crossed."
+                    % self._SEN_LABEL[wrong] + NL + NL
+                    + "The filament reaches the near sensor first, so swap the "
+                      "two connectors at the toolhead -- or swap "
+                      "extruder_sensor_%d and toolhead_sensor_%d." % (path, path)
                     + NL + NL
-                    + "The filament reaches the near sensor first, so these two "
-                      "are crossed — either the plugs are swapped at the "
-                      "toolhead, or the two pins are the wrong way round in "
-                      "[autoloader]." + NL + NL
-                    + "Swap extruder_sensor_%d and toolhead_sensor_%d, or swap "
-                      "the two connectors, then run this again." % (path, path)
-                    + NL + NL
-                    + "Worth fixing before the Bowden calibration: it blasts "
-                      "filament most of a meter and stops on the extruder "
-                      "sensor. Crossed, it stops on a sensor the filament has "
-                      "not reached.")
+                    + "Fix this before the Bowden step: it stops on the "
+                      "extruder sensor at speed.")
         else:
             stage = d['plan'][d['stage']]
             body = ("Nothing changed in %.0f seconds." % self._SEN_TIMEOUT
-                    + NL + NL + "Asked for: " + stage['ask'] + NL + NL
-                    + "If the filament did move and the reading did not, the "
-                      "sensor is not seeing it: check the connector at both "
-                      "ends, and that the switch or lever actually moves when "
-                      "filament passes." + NL + NL
-                    + "If a reading is stuck at FILAMENT with nothing in it, "
-                      "the pin needs inverting — add or remove the '!' on that "
-                      "sensor's switch_pin.")
+                    + NL + NL
+                    + "If the filament moved and the reading did not, check "
+                      "the connector at both ends and that the lever actually "
+                      "moves." + NL
+                    + "If it is stuck on FILAMENT while empty, the pin needs "
+                      "inverting.")
 
         self._emit_ui_prompt(
             gcmd, self._ui_title(),
@@ -2194,12 +2181,11 @@ class SACalibration:
                 self._emit_ui_prompt(
                     gcmd, self._ui_title(),
                     ("Endstop test" + NL + NL
-                     + "The reading never changed from %s."
-                       % self._end_word(prev) + NL + NL
-                     + "Either the carriage was not moved onto the switch, or "
-                       "the switch is not reaching the board." + NL + NL
-                     + "Check the wiring and the SA_SELECTOR_STOP pin, then "
-                       "try again."),
+                     + "It stayed on %s the whole time."
+                       % self._end_word(prev).upper() + NL + NL
+                     + "Either the carriage never reached the switch, or the "
+                       "switch is not reaching the board." + NL + NL
+                     + "Check the wiring and the SA_SELECTOR_STOP pin."),
                     [("TRY AGAIN", "restart", "primary")],
                     footer=[("STOP", "abort", "error")])
                 return
@@ -3320,14 +3306,11 @@ class SACalibration:
         return math.ceil(exact / 50.0) * 50.0
 
     def _encspeed_explain(self):
-        return ("The slowest pass is the reference: at that speed the encoder "
-                "cannot alias, so whatever it reads is this path's scale. "
-                "Every later pass is measured against it, which is why the "
-                "figures start at zero -- a mm_per_pulse that is a few "
-                "percent out shows up at every speed and would otherwise "
-                "be charged to whichever one is on screen. What is left is "
-                "the encoder falling behind as the speed rises. Under 5% "
-                "passes; two of three must pass.")
+        # Short because it is repeated on every screen of the sweep. Why the
+        # slowest pass is the reference, and why that cancels a scale error,
+        # is on the guide page for this step where there is room for it.
+        return ("Figures are how far the encoder was from the distance "
+                "driven. Under 5% passes; two of three must pass.")
 
     def _encspeed_next(self, gcmd):
         """Run the sweep for the next queued path, then stop on its result."""

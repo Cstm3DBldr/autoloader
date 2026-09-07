@@ -829,6 +829,32 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
 
 - Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin ships as `^autoloader:SA_SELECTOR_STOP`. This file used to claim `^!` was mandatory; it is not, and following that would have broken homing. Measured on the machine with the carriage off the switch: `^` reads open (correct), `^!` reads TRIGGERED, which makes homing stop instantly and call that zero. Which polarity is right depends on the switch wiring, so `SA_TEST_ENDSTOP` settles it per printer and writes the answer to user.cfg.
 
+## Prompt Wording Rules
+
+The guide explains; the prompt asks. A prompt is read standing at the machine
+on a 480px screen, where the buttons leave room for three or four lines — so
+anything above that is invisible, and what survives is whichever paragraph
+happens to be last. That is how a yes/no question came to show only its
+footnote about what to do when the answer is no.
+
+- **Lead with the instruction**, not the reading and not the diagnosis. Nothing
+  has gone wrong yet, and text about what to check when it does reads as though
+  something has.
+- **Budget roughly 150 characters** with two buttons, and less with four. The
+  measured offenders were 483, 431, 362 and 299 — eight or nine lines each.
+- **Put the reasoning on the guide page** for that step. It scrolls, it has
+  room, the operator is returned to it between steps, and it says the same
+  thing on both screens.
+- **One line for the consequence** where it is the point of the check — "Left
+  alone, this path would be recorded as proved" earns its place; three
+  paragraphs explaining the mechanism do not.
+- **Say what the reading means**, not just what it is. "It now reads TRIGGERED.
+  That means the carriage is ON the switch." — a yes/no question needs its
+  answer visible or it cannot be answered.
+- **Never describe behaviour the machine no longer has.** The endstop confirm
+  advertised "answering NO writes the correction" for weeks after that was
+  changed to explaining the fix instead.
+
 ## Console Output Rules
 
 - **Every command must be in its own individual code block** — never combine multiple commands in one block.
