@@ -378,6 +378,196 @@ class SACalibration:
     # prefix; a chain offer maps by the command it is about to run, so the
     # offer already shows the step you are going TO.
 
+    # ══════════════════════════════════════════════════════════════════════
+    # The guide. One definition; every UI renders from it.
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # Keys:
+    #   title    heading
+    #   status   which live line to resolve, or None
+    #   hint     what this step does, in a sentence or two
+    #   buttons  [(label, gcode)] -- plain, run as-is
+    #   grid     (status_field | None, fmt, gcode) -- a per-path row of
+    #            buttons; {t} in the gcode is the path number
+    #   expect   what should happen
+    #   warn     what to do when it does not
+    _GUIDE = [
+        {'title': "Test Motors", 'status': 'motors',
+         'hint': "Buzz each motor and answer which way it moved. Answering "
+                 "'wrong way' flips that motor in software, saves it, and "
+                 "buzzes again so you can check the fix.",
+         'buttons': [("BUZZ DRIVE", "SA_BUZZ_CHECK MOTOR=drive"),
+                     ("BUZZ SELECTOR", "SA_BUZZ_CHECK MOTOR=selector")],
+         'grid': None,
+         'expect': ["Drive: first move pushes filament toward the toolhead.",
+                    "Selector: first move travels away from the endstop, "
+                    "toward higher path numbers.",
+                    "Both buzz, return to where they started, then ask which "
+                    "way they went."],
+         'warn': ["No movement — check motor wiring and driver power.",
+                  "Wrong direction — answer WRONG WAY; no rewiring needed.",
+                  "Very weak — raise run_current in hardware.cfg."]},
+
+        {'title': "Test Endstop", 'status': None,
+         'hint': "Move the selector carriage by hand onto the endstop and off "
+                 "again while this watches. Nothing is driven.",
+         'buttons': [("TEST ENDSTOP", "SA_TEST_ENDSTOP DURATION=30")],
+         'grid': None,
+         'expect': ["Reads open off the switch and TRIGGERED on it, reporting "
+                    "every change.",
+                    "It ends with ENDSTOP OK only after seeing BOTH states, so "
+                    "a switch stuck either way fails rather than passing."],
+         'warn': ["Never triggers — check wiring and the SA_SELECTOR_STOP pin.",
+                  "Always triggered — polarity is inverted; check the '^' or "
+                  "'^!' on the endstop pin.",
+                  "Do not run HOME until this passes: homing is the first "
+                  "thing that trusts the switch, and it finds out by driving "
+                  "the carriage at it."]},
+
+        {'title': "Test Entry Sensors", 'status': None,
+         'hint': "Per path. Push filament into the entry by hand and pull it "
+                 "out again. Nothing is driven.",
+         'buttons': [],
+         'grid': (None, "", "SA_TEST_ENTRY_SENSORS TOOL={t}"),
+         'expect': ["Empty reads CLEAR, filament reads FILAMENT, and it clears "
+                    "again when you pull it out.",
+                    "All three have to happen — a sensor stuck on is as bad as "
+                    "one that never triggers."],
+         'warn': ["Reads FILAMENT while empty — the pin is inverted; add or "
+                  "remove the '!' on that sensor's switch_pin.",
+                  "Never changes — check the connector, and that the lever "
+                  "actually moves when filament passes.",
+                  "A load waits on this sensor and a runout is declared by it, "
+                  "so a bad one means a path that never starts or never stops."]},
+
+        {'title': "Home Selector", 'status': 'homed',
+         'hint': "Moves the selector to the physical endstop and zeros its "
+                 "position. Required before any selector movement.",
+         'buttons': [("HOME SELECTOR", "SA_HOME")],
+         'grid': None,
+         'expect': ["Moves toward the endstop, slows, touches, backs off and "
+                    "touches again to confirm."],
+         'warn': ["Moves away from the endstop — go back to step 1 and answer "
+                  "WRONG WAY for the selector.",
+                  "Never triggers — check the endstop wiring and pin.",
+                  "Slams hard — reduce selector_homing_speed."]},
+
+        {'title': "Calibrate Selector", 'status': 'selector',
+         'hint': "Sweeps the rail using stallguard to find the far end, homes "
+                 "back to measure total travel, and divides it into even path "
+                 "positions. You confirm each one before it saves.",
+         'buttons': [("CAL SELECTOR", "SA_CALIBRATE_SELECTOR")],
+         'grid': None,
+         'expect': ["Homes, sweeps out until it stalls, homes back.",
+                    "Then offers a button per path so you can see each one "
+                    "centred before saving, and adjust gate width or end "
+                    "offset with the carriage following as you dial."],
+         'warn': ["Stalls mid-rail — raise selector_stall_threshold.",
+                  "Misses the far end — lower selector_stall_threshold.",
+                  "Spacing wrong — check the rail is unobstructed and re-run."]},
+
+        {'title': "Calibrate Servo", 'status': 'servo',
+         'hint': "Load filament to the drive gear first. You will be asked to "
+                 "REMOVE the servo arm before anything moves, refit it at the "
+                 "rest position, then step toward the gear until it grips.",
+         'buttons': [("CAL SERVO", "SA_CALIBRATE_SERVO")],
+         'grid': None,
+         'expect': ["Arm off, servo moves to rest, refit the arm resting "
+                    "against the servo body and away from the drive gear.",
+                    "Then step in 1/5/10° until the gear just grips, and save. "
+                    "Effective immediately, no restart."],
+         'warn': ["Take the arm OFF when asked. Fitted at the wrong angle its "
+                  "whole travel is a hard stop and the gears strip in seconds.",
+                  "Arm moves away from the gear as the angle rises — the servo "
+                  "is reversed; press WRONG WAY.",
+                  "Near the grip point move in 1° steps."]},
+
+        {'title': "Calibrate Drive Motor", 'status': 'drive',
+         'hint': "Filament must reach the drive gear. The gear holds it and "
+                 "the motor is released, so the knob feeds it: set the tip "
+                 "flush with the gate exit, it feeds, and you measure what is "
+                 "sticking out. No tape or marker.",
+         'buttons': [("CAL DRIVE", "SA_CALIBRATE_DRIVE")],
+         'grid': None,
+         'expect': ["Three passes, averaged. Measure from the gate exit to the "
+                    "tip each time and enter what you read."],
+         'warn': ["No movement — check the gear grips and the servo is engaged.",
+                  "Filament slips — tighten the idler, or re-run the servo step "
+                  "for a firmer engage angle.",
+                  "Passes disagree by more than a few percent — that is "
+                  "measurement scatter, not the machine; re-seat and repeat."]},
+
+        {'title': "Calibrate Encoder Speed", 'status': 'enc_speed',
+         'hint': "Finds the fastest feed each encoder still counts accurately. "
+                 "Tests every path in turn, because the faults this finds are "
+                 "per path. Filament must be through the drive gear.",
+         'buttons': [("CAL ENCODER SPEED", "SA_CALIBRATE_ENCODER_SPEED")],
+         'grid': None,
+         'expect': ["Speed climbs until the encoder falls behind, then stops "
+                    "and shows the result for that path.",
+                    "At the end every path is listed side by side so a slow one "
+                    "stands out, and any of them can be retested alone."],
+         'warn': ["One path far below the others — usually mechanical: a tight "
+                  "tube, a dirty or slipping encoder wheel.",
+                  "Fails at the slowest speed too — that is the channel, not "
+                  "the speed. Check the wheel and its wiring.",
+                  "The shared speed is the slowest path's, so fix a bad path "
+                  "rather than accepting the number it produces."]},
+
+        {'title': "Calibrate Encoder (mm/pulse)", 'status': None,
+         'hint': "Per path. Sets how far one encoder count means. Feeds until "
+                 "the encoder reads the datum, you measure what came out of "
+                 "the gate, three times, averaged.",
+         'buttons': [],
+         'grid': ('encoder_mpp', "%.4f", "SA_CALIBRATE_ENCODER TOOL={t}"),
+         'expect': ["Three passes at the same starting value, so they are "
+                    "three samples rather than a chain.",
+                    "The spread is shown next to the mean; passes disagreeing "
+                    "by more than a few percent are refused rather than "
+                    "averaged into a confident wrong answer."],
+         'warn': ["Value near zero — the encoder is not counting; check the "
+                  "wiring and pin.",
+                  "Paths differ by more than about 1% — the odd one out is "
+                  "worth looking at rather than accepting.",
+                  "Every distance downstream is measured in these units, so "
+                  "Bowden lengths must be re-measured after this changes."]},
+
+        {'title': "Test Toolhead Sensors", 'status': None,
+         'hint': "Per path, Bowden detached, with a scrap of filament. Push it "
+                 "into the toolhead inlet, feed it past the gears with the "
+                 "extruder knob, then pull it out. Nothing is driven.",
+         'buttons': [],
+         'grid': (None, "", "SA_TEST_TOOLHEAD_SENSORS TOOL={t}"),
+         'expect': ["Both read CLEAR when empty.",
+                    "The extruder sensor sees the filament BEFORE the toolhead "
+                    "one — that ordering is the point of the test.",
+                    "Both clear again on the way out."],
+         'warn': ["The far sensor triggers first — they are crossed. Swap the "
+                  "two connectors or the two pins.",
+                  "Reads FILAMENT while empty — that pin is inverted.",
+                  "Do this before the Bowden step: that one blasts filament "
+                  "most of a meter at speed and stops on the extruder sensor. "
+                  "Crossed, it stops on a sensor the filament has not reached, "
+                  "at the gears."]},
+
+        {'title': "Calibrate Bowden Length", 'status': None,
+         'hint': "Per path. Feeds from the drive gear until the extruder "
+                 "sensor triggers and records the distance. Needs the encoder "
+                 "calibrated and the toolhead sensors proven first.",
+         'buttons': [],
+         'grid': ('bowden_lengths', "%.0fmm", "SA_CALIBRATE_BOWDEN TOOL={t}"),
+         'expect': ["Filament loads until the extruder sensor triggers; the "
+                    "distance is saved per path.",
+                    "Paths should agree to within about 10mm unless the tubes "
+                    "are genuinely different lengths."],
+         'warn': ["Sensor never triggers — go back and run the toolhead sensor "
+                  "test.",
+                  "Distance too short — the filament may have buckled; check "
+                  "the tube routing.",
+                  "This is stored in encoder millimeters, so re-measure it "
+                  "whenever mm/pulse changes."]},
+    ]
+
     _STEP_TOTAL = 11
     _STEP_NAMES = {
         1: "Motor direction",
@@ -842,6 +1032,92 @@ class SACalibration:
         ('bowden',     "Bowden length",
          None, None, None, None),
     ]
+
+    def _guide_status(self, key, st):
+        """The live one-liner for a page: (text, tone).
+
+        Resolved here rather than in each UI, so both screens answer "is this
+        done yet" the same way. tone is 'ok' | 'warn' | 'idle'.
+        """
+        owner = self.owner
+        if key == 'motors':
+            drv = bool(st.get('drive_dir_invert'))
+            sel = bool(st.get('selector_dir_invert'))
+            return ("Direction: drive %s · selector %s"
+                    % ("INVERTED" if drv else "normal",
+                       "INVERTED" if sel else "normal"),
+                    'warn' if (drv or sel) else 'idle')
+        if key == 'homed':
+            ok = bool(owner._selector_homed)
+            return ("Homed" if ok else "Not homed", 'ok' if ok else 'warn')
+        if key == 'selector':
+            pos = list(st.get('selector_positions') or [])
+            done = bool(pos) and any(abs(pos[i] - i * 21.0) > 1.0
+                                     for i in range(len(pos)))
+            if not done:
+                return ("Using defaults — run to calibrate", 'warn')
+            return ("  ".join("T%d %.1f" % (i, pos[i])
+                              for i in range(len(pos))), 'ok')
+        if key == 'servo':
+            return ("Engaged %.0f°   Disengaged %.0f°"
+                    % (float(st.get('servo_engaged_angle') or 0.0),
+                       float(st.get('servo_disengaged_angle') or 0.0)), 'idle')
+        if key == 'drive':
+            rd = float(st.get('drive_rotation_distance') or 0.0)
+            return (("rotation_distance %.4f" % rd) if rd > 0
+                    else "Not calibrated", 'ok' if rd > 0 else 'warn')
+        if key == 'enc_speed':
+            mx = float(st.get('encoder_max_speed') or 0.0)
+            if mx <= 0:
+                return ("Not calibrated — blast defaults to 75mm/s", 'warn')
+            return ("Max %.0fmm/s   blast %.0fmm/s" % (mx, mx * 0.75), 'ok')
+        return ("", 'idle')
+
+    def guide_pages(self, st):
+        """The whole guide, resolved, for whichever UI is asking.
+
+        Rebuilt only when something it displays has changed -- this is read on
+        every status query and the text does not move between calibrations.
+        """
+        sig = (len(self._GUIDE),
+               tuple(st.get('selector_positions') or ()),
+               tuple(st.get('encoder_mpp') or ()),
+               tuple(st.get('bowden_lengths') or ()),
+               st.get('drive_rotation_distance'), st.get('encoder_max_speed'),
+               st.get('servo_engaged_angle'), st.get('servo_disengaged_angle'),
+               st.get('drive_dir_invert'), st.get('selector_dir_invert'),
+               bool(self.owner._selector_homed), int(st.get('num_paths') or 0))
+        if getattr(self, '_guide_sig', None) == sig:
+            return self._guide_cache
+
+        num   = int(st.get('num_paths') or 0)
+        pages = []
+        for i, g in enumerate(self._GUIDE):
+            text, tone = self._guide_status(g['status'], st)
+            grid = None
+            if g['grid'] is not None:
+                field, fmt, cmd = g['grid']
+                vals = list(st.get(field) or []) if field else []
+                cells = []
+                for t in range(num):
+                    v = vals[t] if t < len(vals) else None
+                    cells.append({
+                        'tool': t,
+                        'value': (fmt % v) if (field and v) else "",
+                        'done': bool(field and v),
+                        'gcode': cmd.replace('{t}', str(t)),
+                    })
+                grid = cells
+            pages.append({
+                'n': i + 1, 'title': g['title'],
+                'status': text, 'tone': tone, 'hint': g['hint'],
+                'buttons': [{'label': l, 'gcode': c} for l, c in g['buttons']],
+                'grid': grid,
+                'expect': list(g['expect']), 'warn': list(g['warn']),
+            })
+        self._guide_sig   = sig
+        self._guide_cache = pages
+        return pages
 
     def _offer_command(self, gcmd, question, detail, label, cmd,
                        decline="STOP HERE", path=0):

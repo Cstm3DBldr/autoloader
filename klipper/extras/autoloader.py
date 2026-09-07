@@ -1909,7 +1909,7 @@ class Autoloader:
         sel_pos = (self._selector_positions[self.current_path]
                    if self.current_path >= 0 else -1.0)
 
-        return {
+        status = {
             'num_paths'          : self.num_paths,
             'current_path'       : self.current_path,
             'servo_engaged'      : self._servo_is_engaged,
@@ -1967,6 +1967,12 @@ class Autoloader:
             'cal_path'                : self._cal_data.get('path', -1),
             'cal_prompt'              : self._cal_prompt or '',
         }
+        # Built from the status just assembled, because the pages show live
+        # values that live in it. Every UI renders this rather than keeping its
+        # own copy of the steps -- which is how two wizards came to show nine
+        # when the chain had eleven.
+        status['guide_pages'] = self.calibration.guide_pages(status)
+        return status
 
     # ══════════════════════════════════════════════════════════════════════════
     # Klipper entry point
