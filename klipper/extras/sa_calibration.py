@@ -548,13 +548,17 @@ class SACalibration:
                   "Bowden lengths must be re-measured after this changes."]},
 
         {'title': "Toolhead sensor check (per tool)", 'status': None,
-         'hint': "Per path, Bowden detached, with a scrap of filament. Push it "
-                 "into the toolhead inlet, feed it past the gears with the "
-                 "extruder knob, then pull it out. Nothing is driven.",
+         'hint': "Per path. It changes to that toolhead and brings it to the "
+                 "middle of the bed first, so pick a path only when the "
+                 "printer is clear. Then, with the Bowden off: push a scrap of "
+                 "filament into the inlet, feed it past the gears by hand, and "
+                 "pull it out.",
          'buttons': [],
          'grid': ('toolhead_sensor_ok', "proved",
                   "SA_TEST_TOOLHEAD_SENSORS TOOL={t}"),
-         'expect': ["Both read CLEAR when empty.",
+         'expect': ["It asks before the toolchange, and does nothing until "
+                    "you say the printer is clear.",
+                    "Both read CLEAR when empty.",
                     "The extruder sensor sees the filament BEFORE the toolhead "
                     "one — that ordering is the point of the test.",
                     "Both clear again on the way out."],
@@ -1672,10 +1676,17 @@ class SACalibration:
                  'ask': "Now pull it back out."},
             ]
         return [
+            {'want': {}, 'action': 'toolchange',
+             'confirm': "Printer is clear",
+             'ask': "About to change to toolhead %d and move it to the middle "
+                    "of the bed, where you can reach it." % path,
+             'why': "This is a real toolchange and a real move. Check the bed "
+                    "is clear, nothing is mid-print, and no filament or tool "
+                    "is in the way of the gantry."},
             {'want': {'extruder': False, 'toolhead': False},
              'confirm': "Toolhead %d is empty" % path,
-             'ask': "Detach the Bowden from toolhead %d and take out any "
-                    "filament, then confirm." % path,
+             'ask': "Toolhead %d is in front of you. Detach its Bowden and "
+                    "take out any filament, then confirm." % path,
              'why': "This is the one reading nothing else can check. Every "
                     "stage after it needs a sensor to change, which a dead one "
                     "cannot fake -- but CLEAR looks the same whether a sensor "
@@ -1690,6 +1701,39 @@ class SACalibration:
             {'want': {'extruder': False, 'toolhead': False},
              'ask': "Now pull the filament back out."},
         ]
+
+    def _sen_action(self, gcmd, name, path):
+        """Run whatever a confirmed stage asked for. Raises on refusal."""
+        if name != 'toolchange':
+            return
+        owner = self.owner
+        th    = owner.printer.lookup_object('toolhead')
+        st    = th.get_status(owner.reactor.monotonic())
+
+        homed = st.get('homed_axes') or ''
+        if not all(a in homed for a in 'xyz'):
+            raise owner.printer.command_error(
+                "SA: the printer is not homed (%s), so it cannot bring the "
+                "toolhead somewhere you can reach. Home it and run this again."
+                % (homed or "no axes"))
+
+        amax = st.get('axis_maximum') or []
+        try:
+            x = float(amax[0]) / 2.0
+            y = float(amax[1]) / 2.0
+        except Exception:
+            raise owner.printer.command_error(
+                "SA: could not read the bed size, so there is nowhere known to "
+                "put the toolhead. Check the printer's stepper limits.")
+        z = float(owner.load_park_z)
+
+        gcmd.respond_info("SA: changing to T%d and moving to %.0f, %.0f at Z%.0f..."
+                          % (path, x, y, z))
+        owner.gcode.run_script_from_command("T%d" % path)
+        owner.gcode.run_script_from_command("G90")
+        owner.gcode.run_script_from_command(
+            "G1 X%.1f Y%.1f Z%.1f F6000" % (x, y, z))
+        owner.gcode.run_script_from_command("M400")
 
     def _sen_arm(self, delay=0.25):
         try:
@@ -1962,13 +2006,20 @@ class SACalibration:
                 self._sen_arm()
                 return
 
+            path  = d['path']
+            stage = d['plan'][d['stage']]
+
+            # Some stages do something once permission is given. It runs before
+            # the readings are judged, because on this test the thing it does
+            # is bring the sensors being judged into the room.
+            if stage.get('action'):
+                self._sen_action(gcmd, stage['action'], path)
+
             # The operator says it is empty. Now the reading means something:
             # anything not CLEAR is the sensor being wrong, and this is the
             # only moment in the test when that can be established.
-            path  = d['path']
-            now   = dict((k, self._sen_read(path, k)[1]) for k in d['keys'])
-            stage = d['plan'][d['stage']]
-            bad   = [k for k, want in stage['want'].items() if now.get(k) != want]
+            now = dict((k, self._sen_read(path, k)[1]) for k in d['keys'])
+            bad = [k for k, want in stage['want'].items() if now.get(k) != want]
             if bad:
                 self._sen_fault(gcmd, 'inverted', now, bad[0])
                 return
@@ -1976,7 +2027,12 @@ class SACalibration:
             d['stage'] += 1
             d['shown']  = None
             d['deadline'] = owner.reactor.monotonic() + self._SEN_TIMEOUT
-            owner._cal_state = 'sen_%s_wait' % d['group']
+            # The next stage may be another question rather than a watch --
+            # this test asks twice before it starts reading anything.
+            nxt = d['plan'][d['stage']]
+            owner._cal_state = ('sen_%s_confirm' % d['group']
+                                if nxt.get('confirm')
+                                else 'sen_%s_wait' % d['group'])
             self._sen_render(gcmd)
             self._sen_arm()
             return
