@@ -392,7 +392,7 @@ class SACalibration:
     #   expect   what should happen
     #   warn     what to do when it does not
     _GUIDE = [
-        {'title': "Test Motors", 'status': 'motors',
+        {'title': "Motor direction check", 'status': 'motors',
          'hint': "Buzz each motor and answer which way it moved. Answering "
                  "'wrong way' flips that motor in software, saves it, and "
                  "buzzes again so you can check the fix.",
@@ -408,7 +408,7 @@ class SACalibration:
                   "Wrong direction — answer WRONG WAY; no rewiring needed.",
                   "Very weak — raise run_current in hardware.cfg."]},
 
-        {'title': "Test Endstop", 'status': None,
+        {'title': "Test the selector endstop", 'status': None,
          'hint': "Move the selector carriage by hand onto the endstop and off "
                  "again while this watches. Nothing is driven.",
          'buttons': [("TEST ENDSTOP", "SA_TEST_ENDSTOP DURATION=30")],
@@ -424,7 +424,7 @@ class SACalibration:
                   "thing that trusts the switch, and it finds out by driving "
                   "the carriage at it."]},
 
-        {'title': "Test Entry Sensors", 'status': None,
+        {'title': "Entry sensor check (per tool)", 'status': None,
          'hint': "Per path. Push filament into the entry by hand and pull it "
                  "out again. Nothing is driven.",
          'buttons': [],
@@ -440,7 +440,7 @@ class SACalibration:
                   "A load waits on this sensor and a runout is declared by it, "
                   "so a bad one means a path that never starts or never stops."]},
 
-        {'title': "Home Selector", 'status': 'homed',
+        {'title': "Home the selector", 'status': 'homed',
          'hint': "Moves the selector to the physical endstop and zeros its "
                  "position. Required before any selector movement.",
          'buttons': [("HOME SELECTOR", "SA_HOME")],
@@ -452,7 +452,7 @@ class SACalibration:
                   "Never triggers — check the endstop wiring and pin.",
                   "Slams hard — reduce selector_homing_speed."]},
 
-        {'title': "Calibrate Selector", 'status': 'selector',
+        {'title': "Calibrate selector positions", 'status': 'selector',
          'hint': "Sweeps the rail using stallguard to find the far end, homes "
                  "back to measure total travel, and divides it into even path "
                  "positions. You confirm each one before it saves.",
@@ -466,7 +466,7 @@ class SACalibration:
                   "Misses the far end — lower selector_stall_threshold.",
                   "Spacing wrong — check the rail is unobstructed and re-run."]},
 
-        {'title': "Calibrate Servo", 'status': 'servo',
+        {'title': "Calibrate the engage servo", 'status': 'servo',
          'hint': "Load filament to the drive gear first. You will be asked to "
                  "REMOVE the servo arm before anything moves, refit it at the "
                  "rest position, then step toward the gear until it grips.",
@@ -482,7 +482,7 @@ class SACalibration:
                   "is reversed; press WRONG WAY.",
                   "Near the grip point move in 1° steps."]},
 
-        {'title': "Calibrate Drive Motor", 'status': 'drive',
+        {'title': "Calibrate drive rotation distance", 'status': 'drive',
          'hint': "Filament must reach the drive gear. The gear holds it and "
                  "the motor is released, so the knob feeds it: set the tip "
                  "flush with the gate exit, it feeds, and you measure what is "
@@ -497,7 +497,7 @@ class SACalibration:
                   "Passes disagree by more than a few percent — that is "
                   "measurement scatter, not the machine; re-seat and repeat."]},
 
-        {'title': "Calibrate Encoder Speed", 'status': 'enc_speed',
+        {'title': "Encoder max speed", 'status': 'enc_speed',
          'hint': "Finds the fastest feed each encoder still counts accurately. "
                  "Tests every path in turn, because the faults this finds are "
                  "per path. Filament must be through the drive gear.",
@@ -514,7 +514,7 @@ class SACalibration:
                   "The shared speed is the slowest path's, so fix a bad path "
                   "rather than accepting the number it produces."]},
 
-        {'title': "Calibrate Encoder (mm/pulse)", 'status': None,
+        {'title': "Encoder mm/pulse (per tool)", 'status': None,
          'hint': "Per path. Sets how far one encoder count means. Feeds until "
                  "the encoder reads the datum, you measure what came out of "
                  "the gate, three times, averaged.",
@@ -532,7 +532,7 @@ class SACalibration:
                   "Every distance downstream is measured in these units, so "
                   "Bowden lengths must be re-measured after this changes."]},
 
-        {'title': "Test Toolhead Sensors", 'status': None,
+        {'title': "Toolhead sensor check (per tool)", 'status': None,
          'hint': "Per path, Bowden detached, with a scrap of filament. Push it "
                  "into the toolhead inlet, feed it past the gears with the "
                  "extruder knob, then pull it out. Nothing is driven.",
@@ -550,7 +550,7 @@ class SACalibration:
                   "Crossed, it stops on a sensor the filament has not reached, "
                   "at the gears."]},
 
-        {'title': "Calibrate Bowden Length", 'status': None,
+        {'title': "Bowden tube length (per tool)", 'status': None,
          'hint': "Per path. Feeds from the drive gear until the extruder "
                  "sensor triggers and records the distance. Needs the encoder "
                  "calibrated and the toolhead sensors proven first.",
