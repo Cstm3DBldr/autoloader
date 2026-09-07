@@ -301,11 +301,19 @@ class Panel(ScreenPanel):
         outer.pack_start(self._section_row(_DIAG, btn_h=touch), True, True, 0)
 
         outer.pack_start(self._section_header("CALIBRATION"), False, False, 0)
+        # Sized like every other section button: a floor plus vexpand, so it
+        # grows into spare space and shrinks to the floor on a small screen.
+        # Packed with fill=False so it cannot balloon to swallow whatever the
+        # rows above did not use -- which is what a lone expanding child in an
+        # expanding box does.
         cal_btn = _sbs.make("OPEN CALIBRATION GUIDE", "sa-btn")
+        cal_btn.set_size_request(-1, touch)
+        cal_btn.set_vexpand(False)
         cal_btn.connect("clicked", self._open_cal_guide)
         cal_row = Gtk.Box(spacing=self._gap())
-        cal_row.pack_start(cal_btn, True, True, 0)
-        outer.pack_start(cal_row, True, True, 0)
+        cal_row.set_homogeneous(True)
+        cal_row.pack_start(cal_btn, True, False, 0)
+        outer.pack_start(cal_row, False, False, 0)
 
         # No trailing vexpand spacer any more. It existed because every
         # child was packed non-expanding, which left the Box's natural height

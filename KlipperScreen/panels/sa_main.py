@@ -129,10 +129,17 @@ class Panel(ScreenPanel):
         scroll = self._gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
-        # CENTER rather than START: with few toolheads the row cap leaves the
-        # table shorter than the viewport, and centring reads as deliberate
-        # where top-aligned reads as a page that failed to fill.
-        center_box = Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER)
+        # Horizontally centred, vertically START. It used to centre both ways,
+        # which reads well while the table is shorter than the viewport and
+        # clips it at BOTH ends the moment it is not: a centred child inside a
+        # scrolled viewport is positioned above the scroll origin, so the top
+        # rows go off the display and cannot be scrolled back to. Six paths
+        # plus a header plus the status row is enough to cross that line on a
+        # 480px screen.
+        #
+        # Top-aligned never clips, and the cost is a short table sitting high
+        # rather than centred -- which is the trade the other way round.
+        center_box = Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.START)
         self._grid = Gtk.Grid(row_spacing=2, column_spacing=14, margin=8,
                               row_homogeneous=True)
         self._grid.set_halign(Gtk.Align.CENTER)
@@ -173,8 +180,8 @@ class Panel(ScreenPanel):
     def _build_status_row(self):
         """Four labelled readings across the top, as the web panel has."""
         row = Gtk.Grid(column_spacing=self._gap(), row_spacing=0,
-                       margin_start=8, margin_end=8, margin_top=6,
-                       column_homogeneous=True)
+                       margin_start=8, margin_end=8, margin_top=2,
+                       margin_bottom=2, column_homogeneous=True)
         self._status_val = {}
         self._status_sub = {}
         for col, (key, heading) in enumerate(self._STATUS_ITEMS):
@@ -188,6 +195,10 @@ class Panel(ScreenPanel):
             sub = Gtk.Label(halign=Gtk.Align.CENTER)
             sub.set_ellipsize(3)
             sub.set_max_width_chars(14)
+            # An empty label still claims a line of height. On a 480px screen
+            # four of those is most of a table row, so it is hidden until it
+            # has something to say.
+            sub.set_no_show_all(True)
             box.pack_start(cap, False, False, 0)
             box.pack_start(val, False, False, 0)
             box.pack_start(sub, False, False, 0)
@@ -204,8 +215,13 @@ class Panel(ScreenPanel):
         colour = "#4CAF50" if accent else "#FFFFFF"
         val.set_markup('<span font="13" weight="bold" foreground="%s">%s</span>'
                        % (colour, _esc(value)))
-        self._status_sub[key].set_markup(
-            '<span font="9" foreground="#9E9E9E">%s</span>' % _esc(sub))
+        lbl = self._status_sub[key]
+        if sub:
+            lbl.set_markup('<span font="9" foreground="#9E9E9E">%s</span>'
+                           % _esc(sub))
+            lbl.show()
+        else:
+            lbl.hide()
 
     def _apply_status_row(self, sa):
         """Fill it from the same fields the web panel reads.
