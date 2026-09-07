@@ -4,6 +4,7 @@ from gi.repository import Gtk, Gdk, GLib
 import logging
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from xml.sax.saxutils import escape as _esc
 import sa_button_style as _sbs
 import sa_subscription as _sasub
 from ks_includes.screen_panel import ScreenPanel
@@ -118,6 +119,13 @@ class Panel(ScreenPanel):
 
         _sbs.apply(min_height=self._touch())
 
+        # The same four readings the Mainsail panel puts above its table, in
+        # the same order and with the same words. Packed on self.content above
+        # the scroller so they stay put while the table scrolls under them --
+        # a status line that scrolls away is a status line you have to go
+        # looking for.
+        self.content.pack_start(self._build_status_row(), False, False, 0)
+
         scroll = self._gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
 
@@ -156,6 +164,81 @@ class Panel(ScreenPanel):
             return ["#", "STATE", "TEMP", "EN EX TH", "MATERIAL"]
         return ["#", "STATE", "TEMP", "EN", "EX", "TH",
                 "ENCODER", "MATERIAL", "COLOR"]
+
+    _STATUS_ITEMS = (("selector", "SELECTOR"),
+                     ("drive",    "DRIVE GEAR"),
+                     ("active",   "ACTIVE TOOL"),
+                     ("cal",      "CALIBRATION"))
+
+    def _build_status_row(self):
+        """Four labelled readings across the top, as the web panel has."""
+        row = Gtk.Grid(column_spacing=self._gap(), row_spacing=0,
+                       margin_start=8, margin_end=8, margin_top=6,
+                       column_homogeneous=True)
+        self._status_val = {}
+        self._status_sub = {}
+        for col, (key, heading) in enumerate(self._STATUS_ITEMS):
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            cap = Gtk.Label(halign=Gtk.Align.CENTER)
+            cap.set_markup('<span font="9" foreground="#9E9E9E">%s</span>'
+                           % heading)
+            val = Gtk.Label(halign=Gtk.Align.CENTER)
+            val.set_ellipsize(3)
+            val.set_max_width_chars(14)
+            sub = Gtk.Label(halign=Gtk.Align.CENTER)
+            sub.set_ellipsize(3)
+            sub.set_max_width_chars(14)
+            box.pack_start(cap, False, False, 0)
+            box.pack_start(val, False, False, 0)
+            box.pack_start(sub, False, False, 0)
+            self._status_val[key] = val
+            self._status_sub[key] = sub
+            row.attach(box, col, 0, 1, 1)
+        self._status_row = row
+        return row
+
+    def _set_status_cell(self, key, value, sub="", accent=False):
+        val = self._status_val.get(key)
+        if val is None:
+            return
+        colour = "#4CAF50" if accent else "#FFFFFF"
+        val.set_markup('<span font="13" weight="bold" foreground="%s">%s</span>'
+                       % (colour, _esc(value)))
+        self._status_sub[key].set_markup(
+            '<span font="9" foreground="#9E9E9E">%s</span>' % _esc(sub))
+
+    def _apply_status_row(self, sa):
+        """Fill it from the same fields the web panel reads.
+
+        Every empty case is decided here rather than left to render as a stale
+        number: an unhomed selector has no position, and a machine with no tool
+        mounted has no temperature.
+        """
+        path = sa.get("current_path", -1)
+        if isinstance(path, int) and path >= 0:
+            pos = sa.get("selector_position")
+            self._set_status_cell(
+                "selector", "T%d" % path,
+                ("%.2f mm" % pos) if isinstance(pos, (int, float)) else "")
+        else:
+            self._set_status_cell("selector", "Unhomed")
+
+        engaged = bool(sa.get("servo_engaged"))
+        self._set_status_cell("drive", "Engaged" if engaged else "Neutral",
+                              accent=engaged)
+
+        act = self._active_tool
+        if isinstance(act, int) and act >= 0:
+            t = self._extruder_temp(act)
+            self._set_status_cell(
+                "active", "T%d" % act,
+                ("%.1f °C" % t) if isinstance(t, (int, float)) else "")
+        else:
+            self._set_status_cell("active", "\u2014")
+
+        cal = (sa.get("cal_state") or "").strip()
+        self._set_status_cell("cal", "Running" if cal else "Idle",
+                              sub=cal[:14], accent=bool(cal))
 
     def _build_header(self):
         for child in self._grid.get_children():
@@ -510,6 +593,11 @@ class Panel(ScreenPanel):
         GLib.idle_add(self._redraw)
 
     def _redraw(self):
+        try:
+            self._apply_status_row(self._last_sa or {})
+        except Exception:
+            logging.exception("sa_main: could not draw the status row")
+
         self._apply_sa(self._last_sa)
         self._apply_encoders()
         return False

@@ -89,34 +89,23 @@ _DAILY = [
 
 _DIAG = [
     ("STATUS REPORT",   "SA_STATUS",                        False),
-    ("BUZZ DRIVE",      "SA_BUZZ_DRIVE",                    False),
-    ("BUZZ SELECTOR",   "SA_BUZZ_SELECTOR",                 False),
+    # BUZZ_CHECK, not the bare BUZZ: it buzzes and then asks which way it
+    # went, and answering "wrong way" flips that motor in software, saves it,
+    # and buzzes again so the fix is checked rather than assumed. The bare
+    # SA_BUZZ_* still exist for a poke from the console.
+    ("BUZZ DRIVE",      "SA_BUZZ_CHECK MOTOR=drive",        False),
+    ("BUZZ SELECTOR",   "SA_BUZZ_CHECK MOTOR=selector",     False),
 ]
 
-# CALIBRATION is laid out as TWO rows under one section header:
-#   row 1 (globals, 3 buttons)
-#   row 2 (per-tool, 2 buttons — both open the tool picker on click)
+# CALIBRATION is one button now: it opens the guide.
 #
-# Encoder cals are TWO different things despite the similar names:
-#   SA_CALIBRATE_ENCODER_SPEED  - global, finds max reliable feed
-#                                 speed before the encoder slips
-#   SA_CALIBRATE_ENCODER TOOL=N - per-tool, measures mm-per-pulse
-#                                 calibration for one path
-# Don't merge them.
-#
-# Labels stack on two lines via embedded \n for visual consistency
-# across both rows. The 3-column row 1 has enough width for the full
-# "Encoder Speed" label; the 5-column variant had to abbreviate to
-# "Enc Speed".
-_CAL_GLOBAL = [
-    ("Calibrate\nSelector",      "SA_CALIBRATE_SELECTOR",        False),
-    ("Calibrate\nDrive",         "SA_CALIBRATE_DRIVE",           False),
-    ("Calibrate\nEncoder Speed", "SA_CALIBRATE_ENCODER_SPEED",   False),
-]
-_CAL_PERTOOL = [
-    ("Calibrate\nEncoder",       "SA_CALIBRATE_ENCODER TOOL={t}", True),
-    ("Calibrate\nBowden",        "SA_CALIBRATE_BOWDEN TOOL={t}",  True),
-]
+# It used to list five of the eleven steps here, which made this the fourth
+# place the calibration order was written down -- and the fourth to go stale.
+# The guide holds all of them, in order, with each step's current value and
+# what to check when it misbehaves, and it is the same guide the Mainsail panel
+# renders. A shortcut that lists a subset is worse than a door to the whole
+# thing: it looks complete.
+_CAL_PANEL = ("sa_calibration_guide", "Autoloader Calibration")
 
 
 class Panel(ScreenPanel):
@@ -312,10 +301,11 @@ class Panel(ScreenPanel):
         outer.pack_start(self._section_row(_DIAG, btn_h=touch), True, True, 0)
 
         outer.pack_start(self._section_header("CALIBRATION"), False, False, 0)
-        outer.pack_start(self._section_row(_CAL_GLOBAL, btn_h=touch),
-                         True, True, 0)
-        outer.pack_start(self._section_row(_CAL_PERTOOL, btn_h=touch),
-                         True, True, 0)
+        cal_btn = _sbs.make("OPEN CALIBRATION GUIDE", "sa-btn")
+        cal_btn.connect("clicked", self._open_cal_guide)
+        cal_row = Gtk.Box(spacing=self._gap())
+        cal_row.pack_start(cal_btn, True, True, 0)
+        outer.pack_start(cal_row, True, True, 0)
 
         # No trailing vexpand spacer any more. It existed because every
         # child was packed non-expanding, which left the Box's natural height
@@ -365,6 +355,10 @@ class Panel(ScreenPanel):
         self._tool_grid.show_all()
 
     # ── Handlers ──────────────────────────────────────────────────────────
+
+    def _open_cal_guide(self, widget):
+        """Hand over to the guide rather than duplicating a slice of it."""
+        self._screen.show_panel(_CAL_PANEL[0], _CAL_PANEL[1])
 
     def _send(self, widget, gcode):
         self._screen._ws.klippy.gcode_script(gcode)
