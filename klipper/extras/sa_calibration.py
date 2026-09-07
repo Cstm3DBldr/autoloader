@@ -1191,6 +1191,21 @@ class SACalibration:
         self._offer_command(gcmd, question, detail, label, cmd,
                             decline="NOT NOW")
 
+    def _to_guide(self, gcmd, step_n, note=""):
+        """Put the guide on *step_n* and show it, on every UI at once.
+
+        Replaces the "shall I run X next?" prompt. The guide page is the same
+        content with more of it, and it is where the operator was before the
+        step started.
+        """
+        if note:
+            gcmd.respond_info(note)
+        try:
+            self.owner.gcode.run_script_from_command(
+                "SA_GUIDE OPEN=1 STEP=%d" % int(step_n))
+        except Exception:
+            logging.exception("SA CAL: could not return to the guide")
+
     def _offer_next_path(self, gcmd, kind, path, cmd_fmt, label):
         """Offer the same calibration on the next path, else move on.
 
@@ -1203,13 +1218,17 @@ class SACalibration:
         if nxt >= int(self.owner.num_paths):
             self._offer_next(gcmd, kind)
             return
-        self._offer_command(
-            gcmd,
-            "%s done. Do path %d next?" % (label, nxt),
-            ("Path %d of %d complete. Each path is measured separately "
-             "-- the remaining ones still hold their old values."
-             % (int(path) + 1, int(self.owner.num_paths))),
-            "PATH %d" % nxt, cmd_fmt % nxt)
+
+        # Back to this step's own page rather than a prompt naming the next
+        # path. That page carries a button per path and marks the ones already
+        # done, which answers "what is left" better than a sentence can.
+        step_n = self._step_for_command(cmd_fmt % nxt)
+        self._clear()
+        self._to_guide(
+            gcmd, step_n or 1,
+            "SA CAL: %s done for path %d of %d. The guide shows which paths "
+            "are still to do." % (label, int(path) + 1,
+                                  int(self.owner.num_paths)))
 
     def _offer_next(self, gcmd, step, path=0):
         """After a calibration completes, offer the one that follows it.
@@ -1232,10 +1251,10 @@ class SACalibration:
             return
 
         _key, done_label, question, why, btn_label, btn_cmd = entry
-        self._offer_command(
-            gcmd, question,
-            ("%s saved." % done_label) + NL + NL + why,
-            btn_label, btn_cmd, path=path)
+        step_n = self._step_for_command(
+            btn_cmd.replace('{TOOL}', str(int(path))))
+        self._clear()
+        self._to_guide(gcmd, step_n or 1, "SA CAL: %s saved." % done_label)
 
     def _skip_step(self, gcmd):
         """Abandon the phase now waiting and offer the next step.
@@ -1253,9 +1272,7 @@ class SACalibration:
         if entry is None:
             gcmd.respond_info("SA CAL: That was the last step.")
             return
-        self._offer_command(
-            gcmd, entry[2] or ("Run %s next?" % entry[1]),
-            entry[3] or "", entry[4] or "CONTINUE", entry[5])
+        self._to_guide(gcmd, (step_n or 0) + 1)
 
     def _chain_respond(self, gcmd, state, value):
         owner = self.owner
