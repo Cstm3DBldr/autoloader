@@ -1627,8 +1627,8 @@ class SACalibration:
 
     def _end_meaning(self, triggered):
         """What a reading is supposed to mean about the carriage."""
-        return ("the carriage is ON the switch, compressing it" if triggered
-                else "the carriage is OFF the switch, free to move")
+        return ("the carriage is ON the switch" if triggered
+                else "the carriage is OFF the switch")
 
     def _end_word(self, triggered):
         return "TRIGGERED" if triggered else "open"
@@ -2217,12 +2217,15 @@ class SACalibration:
         last = len(d['seen']) >= 2
         self._emit_ui_prompt(
             gcmd, self._ui_title(),
+            # Short on purpose. Four buttons leave a few lines of room on a
+            # 480px screen, and this used to run long enough that the part
+            # saying what the reading MEANS scrolled off the top -- leaving a
+            # yes/no question with the answer above the fold. What to do when
+            # it is backwards has its own screen; it does not belong here.
             ("Endstop test  (%d of 2)" % len(d['seen']) + NL + NL
-             + "The reading changed to %s." % self._end_word(now) + NL + NL
-             + "That should mean %s." % self._end_meaning(now) + NL + NL
-             + "Is that where the carriage actually is?" + NL + NL
-             + "If it is the other way round the switch is wired inverted. "
-               "Answering NO writes the correction and tells you what to do."),
+             + "It now reads %s." % self._end_word(now).upper() + NL
+             + "That means %s." % self._end_meaning(now) + NL + NL
+             + "Is it?"),
             [("YES, THAT IS RIGHT", "yes", "primary"),
              ("NO, IT IS BACKWARDS", "no", "warning"),
              ("START OVER", "restart", "secondary")],
