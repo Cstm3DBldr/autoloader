@@ -1834,16 +1834,21 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     @Watch('promptWaiting')
     onPromptWaitingChange(waiting: boolean): void {
         if (waiting) {
-            // Step aside locally only. The printer's guide_open stays true --
-            // this screen is hiding its copy behind the prompt, not closing
-            // the guide for everyone.
-            if (this.calOpen) {
-                this.calYielded = true
-                this.calOpen = false
-            }
+            /*
+             * Stay open. Calibration prompts are generic ones, which this
+             * plugin does not render -- Mainsail's own prompt dialog does, and
+             * it stacks above this one. Closing first meant guide out,
+             * dashboard visible, prompt in: three states and a flash, to hand
+             * over to a dialog that was going to cover this one anyway.
+             *
+             * Leaving it up also keeps the step you are on readable behind the
+             * question being asked about it.
+             */
             return
         }
         if (this.calYielded) {
+            // Only reached for a guide that yielded under the old behaviour
+            // and is still waiting to come back.
             this.calYielded = false
             this.syncCalStep()
             this.calOpen = !!this.saStatus.guide_open

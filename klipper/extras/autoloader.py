@@ -121,6 +121,11 @@ class Autoloader:
 
         # ── Per-path config ───────────────────────────────────────────────────
         self._encoder_names         = []
+        # Which paths have had their sensors proved by hand. Not derived from
+        # anything -- a sensor reading CLEAR is indistinguishable from one that
+        # is not wired, which is exactly what the test exists to tell apart.
+        self._entry_sensor_ok       = []
+        self._toolhead_sensor_ok    = []
         self._entry_sensor_names    = []
         self._toolhead_sensor_names = []
         self._extruder_sensor_names = []
@@ -132,6 +137,8 @@ class Autoloader:
             self._encoder_names.append(
                 config.get('encoder_%d' % i, 'sa_encoder %d' % i))
 
+            self._entry_sensor_ok.append(False)
+            self._toolhead_sensor_ok.append(False)
             self._entry_sensor_names.append(
                 config.get('entry_sensor_%d' % i, None))
 
@@ -1049,6 +1056,10 @@ class Autoloader:
                 self._selector_positions[i] = float(svars['selector_position_%d' % i])
             if ('bowden_length_%d' % i) in svars:
                 self._bowden_lengths[i] = float(svars['bowden_length_%d' % i])
+            self._entry_sensor_ok[i] = bool(
+                svars.get('entry_sensor_ok_%d' % i, False))
+            self._toolhead_sensor_ok[i] = bool(
+                svars.get('toolhead_sensor_ok_%d' % i, False))
         for i in range(self.num_paths):
             self.path_materials[i]     = svars.get('sa_material_%d'      % i, '')
             self.path_brands[i]        = svars.get('sa_brand_%d'         % i, '')
@@ -1971,6 +1982,8 @@ class Autoloader:
             'tip_form_cooling_moves'  : self.tip_form_cooling_moves,
             'encoder_max_speed'       : self._get_encoder_max_speed(),
             'bowden_lengths'          : list(self._bowden_lengths),
+            'entry_sensor_ok'         : list(self._entry_sensor_ok),
+            'toolhead_sensor_ok'      : list(self._toolhead_sensor_ok),
             'selector_positions'      : list(self._selector_positions),
             'encoder_mpp'             : [self._encoder_mm_per_pulse(i) or 0.0
                                          for i in range(self.num_paths)],

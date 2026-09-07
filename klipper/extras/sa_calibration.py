@@ -443,7 +443,7 @@ class SACalibration:
          'hint': "Per path. Push filament into the entry by hand and pull it "
                  "out again. Nothing is driven.",
          'buttons': [],
-         'grid': (None, "", "SA_TEST_ENTRY_SENSORS TOOL={t}"),
+         'grid': ('entry_sensor_ok', "proved", "SA_TEST_ENTRY_SENSORS TOOL={t}"),
          'expect': ["Empty reads CLEAR, filament reads FILAMENT, and it clears "
                     "again when you pull it out.",
                     "All three have to happen — a sensor stuck on is as bad as "
@@ -552,7 +552,8 @@ class SACalibration:
                  "into the toolhead inlet, feed it past the gears with the "
                  "extruder knob, then pull it out. Nothing is driven.",
          'buttons': [],
-         'grid': (None, "", "SA_TEST_TOOLHEAD_SENSORS TOOL={t}"),
+         'grid': ('toolhead_sensor_ok', "proved",
+                  "SA_TEST_TOOLHEAD_SENSORS TOOL={t}"),
          'expect': ["Both read CLEAR when empty.",
                     "The extruder sensor sees the filament BEFORE the toolhead "
                     "one — that ordering is the point of the test.",
@@ -1098,6 +1099,8 @@ class SACalibration:
                tuple(st.get('selector_positions') or ()),
                tuple(st.get('encoder_mpp') or ()),
                tuple(st.get('bowden_lengths') or ()),
+               tuple(st.get('entry_sensor_ok') or ()),
+               tuple(st.get('toolhead_sensor_ok') or ()),
                st.get('drive_rotation_distance'), st.get('encoder_max_speed'),
                st.get('servo_engaged_angle'), st.get('servo_disengaged_angle'),
                st.get('drive_dir_invert'), st.get('selector_dir_invert'),
@@ -1116,9 +1119,16 @@ class SACalibration:
                 cells = []
                 for t in range(num):
                     v = vals[t] if t < len(vals) else None
+                    # A pass/fail field has no number to print, so its format
+                    # is the word itself. Anything with a placeholder is a
+                    # measurement and gets formatted.
+                    if field and v:
+                        text = (fmt % v) if '%' in fmt else fmt
+                    else:
+                        text = ""
                     cells.append({
                         'tool': t,
-                        'value': (fmt % v) if (field and v) else "",
+                        'value': text,
                         'done': bool(field and v),
                         'gcode': cmd.replace('{t}', str(t)),
                     })
@@ -1841,25 +1851,61 @@ class SACalibration:
         path  = d['path']
         group = d['group']
         self._sen_disarm()
-        proved = (["It reads CLEAR when empty and FILAMENT when loaded."]
+        proved = (["Empty read CLEAR, and filament read FILAMENT.",
+                   "It cleared again when you pulled it out."]
                   if group == 'entry' else
                   ["Both read CLEAR when empty.",
-                   "The extruder sensor sees the filament first, then the "
+                   "The extruder sensor saw the filament first, then the "
                    "toolhead sensor — so they are the right way round.",
-                   "Both clear again when it is pulled out."])
+                   "Both cleared again when you pulled it out."])
         gcmd.respond_info("SA: %s path %d — all checks passed."
                           % (self._SEN_TITLE[group], path))
-        self._clear()
-        self._offer_next_path(
-            gcmd, 'entry_sensors' if group == 'entry' else 'toolhead_sensors',
-            path,
-            'SA_TEST_ENTRY_SENSORS TOOL=%d' if group == 'entry'
-            else 'SA_TEST_TOOLHEAD_SENSORS TOOL=%d',
-            self._SEN_TITLE[group])
+
+        # Record it. Nothing else can: a sensor reading CLEAR looks the same
+        # whether it is working or not wired, which is what this test exists to
+        # tell apart, so the answer only exists because someone did it by hand.
+        key = ('entry_sensor_ok_%d' if group == 'entry'
+               else 'toolhead_sensor_ok_%d') % path
+        self._save_variable(key, 'True')
+        try:
+            lst = (owner._entry_sensor_ok if group == 'entry'
+                   else owner._toolhead_sensor_ok)
+            lst[path] = True
+        except Exception:
+            logging.exception("SA CAL: could not record the sensor result")
+
+        # Say so on screen, not just in the console. Going straight to the
+        # next-path offer made a test that passed look like one that was
+        # skipped -- and the list of what it proved was being built and thrown
+        # away rather than shown.
+        owner._cal_state = 'sen_%s_pass' % group
+        self._emit_ui_prompt(
+            gcmd, self._ui_title(),
+            ("%s — path %d" % (self._SEN_TITLE[group], path) + NL + NL
+             + "PASSED. This path's wiring is proved:" + NL + NL
+             + NL.join("  \u2713 " + line for line in proved)
+             + NL + NL
+             + "It stays ticked in the guide, so you can see at a glance which "
+               "paths are still to do."),
+            [("CONTINUE", "next", "primary")],
+            footer=[("STOP", "abort", "error")])
 
     def _sen_respond(self, gcmd, state, value):
         owner = self.owner
         d     = owner._cal_data
+
+        if state.endswith('_pass'):
+            path, group = d.get('path', 0), d.get('group', 'entry')
+            self._clear()
+            self._offer_next_path(
+                gcmd,
+                'entry_sensors' if group == 'entry' else 'toolhead_sensors',
+                path,
+                'SA_TEST_ENTRY_SENSORS TOOL=%d' if group == 'entry'
+                else 'SA_TEST_TOOLHEAD_SENSORS TOOL=%d',
+                self._SEN_TITLE[group])
+            return
+
         if str(value).strip().lower() == 'retry':
             d['stage'] = 0
             d['shown'] = None
