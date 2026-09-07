@@ -1649,10 +1649,14 @@ class SACalibration:
         if group == 'entry':
             return [
                 {'want': {'entry': False},
-                 'ask': "Make sure path %d's entry is empty." % path,
-                 'why': "It should read CLEAR with nothing in it. One that reads "
-                        "FILAMENT while empty is inverted, and everything below "
-                        "would read backwards."},
+                 'confirm': "Is path %d's entry empty?" % path,
+                 'ask': "Take any filament out of path %d's entry, then "
+                        "confirm." % path,
+                 'why': "This is the one reading nothing else can check. Every "
+                        "stage after it needs the sensor to change, which a "
+                        "dead one cannot fake -- but CLEAR looks the same "
+                        "whether the sensor works, is unplugged, or is wired "
+                        "backwards. Your answer is what tells those apart."},
                 {'want': {'entry': True},
                  'ask': "Now push a piece of filament into path %d's entry, "
                         "past the sensor." % path},
@@ -1661,11 +1665,14 @@ class SACalibration:
             ]
         return [
             {'want': {'extruder': False, 'toolhead': False},
-             'ask': "Detach the Bowden from toolhead %d, and make sure no "
-                    "filament is left in it." % path,
-             'why': "Both should read CLEAR with nothing in them. One that "
-                    "reads FILAMENT while empty is inverted, and a Bowden blast "
-                    "would be told to stop before it had started."},
+             'confirm': "Is toolhead %d empty, with the Bowden off?" % path,
+             'ask': "Detach the Bowden from toolhead %d and take out any "
+                    "filament, then confirm." % path,
+             'why': "This is the one reading nothing else can check. Every "
+                    "stage after it needs a sensor to change, which a dead one "
+                    "cannot fake -- but CLEAR looks the same whether a sensor "
+                    "works, is unplugged, or is wired backwards. Your answer "
+                    "is what tells those apart."},
             {'want': {'extruder': True},
              'wrong_first': 'toolhead',
              'ask': "Push a scrap of filament into the toolhead inlet until it "
@@ -1721,7 +1728,9 @@ class SACalibration:
             'plan': self._sen_plan(group, path),
             'deadline': owner.reactor.monotonic() + self._SEN_TIMEOUT,
         }
-        owner._cal_state = 'sen_%s_wait' % group
+        owner._cal_state = ('sen_%s_confirm' % group
+                            if owner._cal_data['plan'][0].get('confirm')
+                            else 'sen_%s_wait' % group)
         gcmd.respond_info(
             "SA %s — path %d%s"
             "===========================================%s"
@@ -1736,7 +1745,9 @@ class SACalibration:
         path  = d['path']
         if now is None:
             now = dict((k, self._sen_read(path, k)[1]) for k in d['keys'])
-        stage = d['plan'][d['stage']]
+        stage  = d['plan'][d['stage']]
+        asking = bool(stage.get('confirm')) and \
+            (self.owner._cal_state or '').endswith('_confirm')
 
         # Nothing to say if neither the question nor the readings have moved.
         sig = (d['stage'], tuple((k, now.get(k)) for k in d['keys']))
@@ -1753,17 +1764,34 @@ class SACalibration:
              + stage['ask']
              + ((NL + NL + stage['why']) if stage.get('why') else "")
              + NL + NL
-             + "Nothing is driven — this waits for the readings to change."
+             + ("Nothing is driven." if asking else
+                "Nothing is driven — this waits for the readings to change.")
              + NL + "Stage %d of %d." % (d['stage'] + 1, len(d['plan']))),
-            [],
+            ([(stage['confirm'].upper().replace("?", ""), 'yes', 'primary'),
+              ("NOT YET", 'no', 'secondary')] if asking else []),
             footer=[("STOP", "abort", "error")])
 
     def sensor_poll(self, gcmd):
         """One read. Re-armed by the delayed_gcode while the test runs."""
         owner = self.owner
         st    = owner._cal_state or ''
-        if not (st.startswith('sen_') and st.endswith('_wait')):
+        waiting  = st.startswith('sen_') and st.endswith('_wait')
+        asking   = st.startswith('sen_') and st.endswith('_confirm')
+        if not (waiting or asking):
             return
+
+        if asking:
+            # Keep the readings live so they can be watched changing, but do
+            # not advance on them: this stage is answered by the operator.
+            d = owner._cal_data
+            now = dict((k, self._sen_read(d['path'], k)[1]) for k in d['keys'])
+            if owner.reactor.monotonic() > d['deadline']:
+                self._sen_fault(gcmd, 'stuck', now, None)
+                return
+            self._sen_render(gcmd, now)
+            self._sen_arm()
+            return
+
         d     = owner._cal_data
         path  = d['path']
         stage = d['plan'][d['stage']]
@@ -1810,7 +1838,19 @@ class SACalibration:
         readings = NL.join("  %-36s %s" % (self._SEN_LABEL[k],
                                            self._sen_word(now.get(k)))
                            for k in d['keys'])
-        if kind == 'swapped':
+        if kind == 'inverted':
+            body = ("You said it is empty, but %s reads FILAMENT."
+                    % self._SEN_LABEL[wrong] + NL + NL
+                    + "That is the sensor disagreeing with the machine in front "
+                      "of it, which is the whole reason this step asks rather "
+                      "than just reading." + NL + NL
+                    + "Usually the pin polarity: add or remove the '!' on that "
+                      "sensor's switch_pin. If the pin is right, the switch or "
+                      "lever is stuck." + NL + NL
+                    + "Left as it is, the two stages after this would run on "
+                      "filament that was already there and the path would be "
+                      "recorded as proved.")
+        elif kind == 'swapped':
             near = [k for k in d['plan'][d['stage']]['want']][0]
             body = ("%s read FILAMENT before %s did." % (self._SEN_LABEL[wrong],
                                                          self._SEN_LABEL[near])
@@ -1906,11 +1946,43 @@ class SACalibration:
                 self._SEN_TITLE[group])
             return
 
+        if state.endswith('_confirm'):
+            v = str(value).strip().lower()
+            if v not in ('yes', 'y', '1', 'true', 'ok'):
+                d['shown'] = None          # redraw the question
+                self._sen_render(gcmd)
+                self._sen_arm()
+                return
+
+            # The operator says it is empty. Now the reading means something:
+            # anything not CLEAR is the sensor being wrong, and this is the
+            # only moment in the test when that can be established.
+            path  = d['path']
+            now   = dict((k, self._sen_read(path, k)[1]) for k in d['keys'])
+            stage = d['plan'][d['stage']]
+            bad   = [k for k, want in stage['want'].items() if now.get(k) != want]
+            if bad:
+                self._sen_fault(gcmd, 'inverted', now, bad[0])
+                return
+
+            d['stage'] += 1
+            d['shown']  = None
+            d['deadline'] = owner.reactor.monotonic() + self._SEN_TIMEOUT
+            owner._cal_state = 'sen_%s_wait' % d['group']
+            self._sen_render(gcmd)
+            self._sen_arm()
+            return
+
         if str(value).strip().lower() == 'retry':
             d['stage'] = 0
             d['shown'] = None
             d['deadline'] = owner.reactor.monotonic() + self._SEN_TIMEOUT
-            owner._cal_state = 'sen_%s_wait' % d['group']
+            # Back to stage 0 means back to its question, if it has one --
+            # otherwise a retry would walk straight past the empty check that
+            # the retry usually exists to redo.
+            owner._cal_state = (
+                'sen_%s_confirm' % d['group']
+                if d['plan'][0].get('confirm') else 'sen_%s_wait' % d['group'])
             self._sen_render(gcmd)
             self._sen_arm()
             return

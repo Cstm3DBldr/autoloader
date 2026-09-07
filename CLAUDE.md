@@ -474,7 +474,7 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_BUZZ_SELECTOR` | Test selector motor |
 | `SA_BUZZ_CHECK MOTOR=drive\|selector` | Buzz, then ask which way it went. Answering "wrong way" runs `SA_SET_DIRECTION`, saves it, and buzzes again so the fix is checked rather than taken on trust. This is what the guides call; the bare `SA_BUZZ_*` commands still exist for a quick manual poke |
 | `SA_SET_DIRECTION MOTOR=drive\|selector [INVERT=0\|1]` | Flip (or set) that motor's direction and persist it to variables.cfg. Effective immediately — the sign is applied per move, not baked into the stepper config, so no restart and no rewiring |
-| `SA_TEST_ENTRY_SENSORS [TOOL=N]` | Prove a path's entry sensor by hand: empty reads CLEAR, filament reads FILAMENT, and it clears again. Drives nothing |
+| `SA_TEST_ENTRY_SENSORS [TOOL=N]` | Prove a path's entry sensor by hand: empty reads CLEAR, filament reads FILAMENT, and it clears again. Drives nothing. The empty check is **confirmed by the operator, not read** — every later stage needs the sensor to change, which a dead one cannot fake, but CLEAR looks identical whether the sensor works, is unplugged or is inverted. A pass is saved per path and shown in the guide's grid |
 | `SA_TEST_TOOLHEAD_SENSORS [TOOL=N]` | Prove the extruder and toolhead sensors with the Bowden off and a scrap of filament. Checks all three things that matter: empty reads CLEAR, the extruder sensor sees it BEFORE the toolhead one, and both clear on the way out. The middle check is the point — crossed sensors make the Bowden blast stop on one the filament has not reached, at the gears |
 | `SA_TEST_ENDSTOP [DURATION=30] [INTERVAL=0.3]` | Watch the selector endstop and report every change for DURATION seconds. Drives nothing — the operator moves the carriage by hand. Ends with ENDSTOP OK only after seeing BOTH states, so a switch stuck in either one fails rather than passing quietly |
 | `SA_CALIBRATE_SERVO` | Find the engage angle. Ordered to protect the servo: arm off first, then move to the rest angle, then the arm goes back on at the end that is safe by definition (resting on the selector body, away from the drive gear), and only the far angle is searched. A `WRONG WAY` button mirrors both angles for a reversed servo — and takes the arm off again before crossing the travel |
@@ -796,6 +796,16 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   state about every 1.9mm, so above roughly 235mm/s there are fewer than four
   samples per state and counts start being missed while the filament moves
   perfectly well.
+
+- Do not let a hand test pass on a reading alone when the reading is the thing
+  under test. `SA_TEST_ENTRY_SENSORS` waits for CLEAR, then FILAMENT, then
+  CLEAR again — the last two need the sensor to actually change and so cannot
+  be faked by a dead or unplugged one, but the first is satisfied by anything
+  reading CLEAR, including a sensor that is not connected and a path that was
+  never emptied. It would then run the remaining stages on filament that was
+  already there and save the result. The operator's answer is the only thing in
+  the loop that is not the sensor, so the empty check asks and compares. Same
+  reason `SA_TEST_ENDSTOP` confirms rather than infers.
 
 - Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin ships as `^autoloader:SA_SELECTOR_STOP`. This file used to claim `^!` was mandatory; it is not, and following that would have broken homing. Measured on the machine with the carriage off the switch: `^` reads open (correct), `^!` reads TRIGGERED, which makes homing stop instantly and call that zero. Which polarity is right depends on the switch wiring, so `SA_TEST_ENDSTOP` settles it per printer and writes the answer to user.cfg.
 
