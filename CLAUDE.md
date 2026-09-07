@@ -565,6 +565,25 @@ For .cfg-only changes, `FIRMWARE_RESTART` is fine and faster.
 runs `post_update.sh` for the initial file sync, registers the repo with the
 Update Manager, and restarts services.
 
+**Restarting KlipperScreen after changing a panel:**
+
+```bash
+bash ~/autoloader/scripts/service_restart.sh KlipperScreen
+```
+
+`sudo systemctl restart KlipperScreen` over a non-interactive ssh fails with
+"a terminal is required to read the password" and returns 1 — and paired with
+the `2>/dev/null` that usually follows, it is a restart that reports nothing
+and does nothing. KlipperScreen ran for two days on two-day-old code while
+every deploy claimed to have restarted it; the symptom was a touchscreen
+showing a guide that had been rewritten twice, with the old step numbering.
+
+`service_restart.sh` goes through Moonraker like the Klipper one does, and
+then **checks the process actually changed PID** — matching the real Python
+process, not the unit, because KlipperScreen's MainPID is a launcher and the
+process holding the imported panels is a grandchild under xinit. "The unit is
+active" is true even when nothing reloaded.
+
 **Verification** (always run after a deploy or when something feels off):
 
 ```bash
