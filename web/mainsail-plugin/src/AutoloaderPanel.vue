@@ -629,309 +629,79 @@
                 </v-toolbar>
                 <v-divider />
                 <v-card-text class="pa-4 sa-cal-body">
-                    <!-- Step 0 — Motor direction -->
-                    <div v-if="calStep === 0">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalMotors') }}
+                    <!--
+                        One page, rendered from the printer. The steps used to
+                        be written out here as well as in KlipperScreen and in
+                        the backend chain, which is how three files came to
+                        disagree about how many there are.
+                    -->
+                    <div v-if="guidePage">
+                        <div class="sa-step-head">{{ guidePage.title }}</div>
+                        <div class="sa-step-body">{{ guidePage.hint }}</div>
+
+                        <div
+                            v-if="guidePage.status"
+                            class="sa-step-note"
+                            :class="guideToneClass">
+                            {{ guidePage.status }}
                         </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalMotorsHint') }}
-                        </div>
-                        <div class="sa-step-note" :class="motorDirClass">
-                            {{ motorDirLabel }}
-                        </div>
-                        <div class="d-flex mb-3">
+
+                        <div v-if="guidePage.buttons.length" class="d-flex mb-3">
                             <v-btn
-                                class="sa-step-btn mr-2" color="primary"
-                                @click="saGcode('SA_BUZZ_CHECK MOTOR=drive')">
-                                {{ $t('Panels.AutoloaderPanel.BuzzDrive') }}
-                            </v-btn>
-                            <v-btn
-                                class="sa-step-btn" color="primary"
-                                @click="saGcode('SA_BUZZ_CHECK MOTOR=selector')">
-                                {{ $t('Panels.AutoloaderPanel.BuzzSelector') }}
+                                v-for="b in guidePage.buttons"
+                                :key="b.gcode"
+                                class="sa-step-btn mr-2"
+                                color="primary"
+                                @click="saGcode(b.gcode)">
+                                {{ b.label }}
                             </v-btn>
                         </div>
-                        <div class="sa-cal-expect">
-                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalMotorsExpect') }}
-                        </div>
-                        <div class="sa-cal-warn">
-                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalMotorsWarn') }}
-                        </div>
-                    </div>
 
-                    <!-- Step 1 — Home -->
-                    <!-- Step 1 - Endstop
-                         Before homing, not after: homing is the first thing
-                         that trusts the switch, and it finds out by driving
-                         the carriage at it. -->
-                    <div v-if="calStep === 1">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalEndstop') }}
-                        </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalEndstopHint') }}
-                        </div>
-                        <v-btn
-                            class="sa-step-btn mb-3" color="primary"
-                            @click="saGcode('SA_TEST_ENDSTOP DURATION=30')">
-                            {{ $t('Panels.AutoloaderPanel.RunEndstop') }}
-                        </v-btn>
-                        <div class="sa-cal-expect">
-                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalEndstopExpect') }}
-                        </div>
-                        <div class="sa-cal-warn">
-                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalEndstopWarn') }}
-                        </div>
-                    </div>
-
-                    <div v-if="calStep === 2">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalHome') }}
-                        </div>
-                        <div
-                            class="sa-step-note"
-                            :class="isSelectorHomed ? 'sa-step-note--ok' : 'sa-step-note--warn'">
-                            {{ isSelectorHomed
-                                ? $t('Panels.AutoloaderPanel.CalHomeOk')
-                                : $t('Panels.AutoloaderPanel.CalHomeNo') }}
-                        </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalHomeHint') }}
-                        </div>
-                        <v-btn class="sa-step-btn mb-3" color="primary" @click="saGcode('SA_HOME')">
-                            {{ $t('Panels.AutoloaderPanel.Home') }}
-                        </v-btn>
-                        <div class="sa-cal-expect">
-                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalHomeExpect') }}
-                        </div>
-                        <div class="sa-cal-warn">
-                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalHomeWarn') }}
-                        </div>
-                    </div>
-
-                    <!-- Step 2 — Selector positions -->
-                    <div v-if="calStep === 3">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalSelector') }}
-                        </div>
-                        <div
-                            class="sa-step-note"
-                            :class="selectorCalibrated ? 'sa-step-note--ok' : 'sa-step-note--warn'">
-                            <template v-if="selectorCalibrated">
-                                ✓ {{ $t('Panels.AutoloaderPanel.Calibrated') }}:
-                                {{ selectorPositionsLabel }}
-                            </template>
-                            <template v-else>
-                                ✗ {{ $t('Panels.AutoloaderPanel.CalSelectorDefaults') }}
-                            </template>
-                        </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalSelectorHint') }}
-                        </div>
-                        <v-btn
-                            class="sa-step-btn mb-3" color="primary"
-                            :disabled="!isSelectorHomed"
-                            @click="saGcode('SA_CALIBRATE_SELECTOR')">
-                            {{ $t('Panels.AutoloaderPanel.RunSelector') }}
-                        </v-btn>
-                        <div v-if="!isSelectorHomed" class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.HomeRequired') }}
-                        </div>
-                        <div class="sa-cal-expect">
-                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalSelectorExpect') }}
-                        </div>
-                        <div class="sa-cal-warn">
-                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalSelectorWarn') }}
-                        </div>
-                    </div>
-
-                    <!-- Step 3 — Drive rotation distance -->
-                    <!-- Step 4 - Servo engage angle
-                         After the selector so a path with filament can be
-                         selected: the engage angle is judged by watching the
-                         drive gear actually grip. -->
-                    <div v-if="calStep === 4">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalServo') }}
-                        </div>
-                        <div class="sa-step-note">
-                            {{ servoAnglesLabel }}
-                        </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalServoHint') }}
-                        </div>
-                        <v-btn
-                            class="sa-step-btn mb-3" color="primary"
-                            @click="saGcode('SA_CALIBRATE_SERVO')">
-                            {{ $t('Panels.AutoloaderPanel.RunServo') }}
-                        </v-btn>
-                        <div class="sa-cal-expect">
-                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalServoExpect') }}
-                        </div>
-                        <div class="sa-cal-warn">
-                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalServoWarn') }}
-                        </div>
-                    </div>
-
-                    <div v-if="calStep === 5">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalDrive') }}
-                        </div>
-                        <div
-                            class="sa-step-note"
-                            :class="driveCalibrated ? 'sa-step-note--ok' : 'sa-step-note--warn'">
-                            <template v-if="driveCalibrated">
-                                ✓ rotation_distance = {{ saStatus.drive_rotation_distance.toFixed(4) }}
-                            </template>
-                            <template v-else>
-                                ✗ {{ $t('Panels.AutoloaderPanel.NotCalibrated') }}
-                            </template>
-                        </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalDriveHint') }}
-                        </div>
-                        <v-btn
-                            class="sa-step-btn mb-3" color="primary"
-                            @click="saGcode('SA_CALIBRATE_DRIVE')">
-                            {{ $t('Panels.AutoloaderPanel.RunDrive') }}
-                        </v-btn>
-                        <div class="sa-cal-expect">
-                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalDriveExpect') }}
-                        </div>
-                        <div class="sa-cal-warn">
-                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalDriveWarn') }}
-                        </div>
-                    </div>
-
-                    <!-- Step 4 — Encoder max speed -->
-                    <div v-if="calStep === 6">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalEncSpeed') }}
-                        </div>
-                        <div
-                            class="sa-step-note"
-                            :class="encoderSpeedCalibrated ? 'sa-step-note--ok' : 'sa-step-note--warn'">
-                            <template v-if="encoderSpeedCalibrated">
-                                ✓ Max = {{ encoderMaxSpeed.toFixed(1) }} mm/s
-                                ({{ $t('Panels.AutoloaderPanel.Blast') }}
-                                = {{ (encoderMaxSpeed * 0.75).toFixed(1) }} mm/s)
-                            </template>
-                            <template v-else>
-                                ✗ {{ $t('Panels.AutoloaderPanel.CalEncSpeedDefault') }}
-                            </template>
-                        </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalEncSpeedHint') }}
-                        </div>
-                        <v-btn
-                            class="sa-step-btn mb-3" color="primary"
-                            @click="saGcode('SA_CALIBRATE_ENCODER_SPEED')">
-                            {{ $t('Panels.AutoloaderPanel.RunEncSpeed') }}
-                        </v-btn>
-                        <div class="sa-cal-expect">
-                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalEncSpeedExpect') }}
-                        </div>
-                        <div class="sa-cal-warn">
-                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalEncSpeedWarn') }}
-                        </div>
-                    </div>
-
-                    <!-- Step 5 — Per-tool encoder mm/pulse -->
-                    <div v-if="calStep === 7">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalEncoder') }}
-                        </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalEncoderHint') }}
-                        </div>
-                        <div class="sa-tool-grid mb-3">
+                        <!--
+                            A per-path step arrives with a button per path,
+                            already addressed, so there is nothing to pick on
+                            a second screen.
+                        -->
+                        <div v-if="guidePage.grid" class="sa-cal-grid mb-3">
                             <div
-                                v-for="i in saPathIndices"
-                                :key="i"
-                                class="sa-tool-cell">
+                                v-for="c in guidePage.grid"
+                                :key="c.tool"
+                                class="sa-cal-cell">
                                 <div
-                                    class="caption mb-1"
-                                    :class="toolEncoderDone(i) ? 'success--text' : 'grey--text'">
-                                    T{{ i }} ·
-                                    {{ toolEncoderDone(i)
-                                        ? saStatus.encoder_mpp[i].toFixed(4)
-                                        : '—' }}
+                                    class="sa-cal-cell-val"
+                                    :class="c.done ? 'sa-cal-done' : 'sa-cal-todo'">
+                                    {{ c.value || '\u2715' }}
                                 </div>
                                 <v-btn
                                     small
                                     block
-                                    class="sa-step-btn sa-step-btn--grid"
-                                    @click="saGcode(`SA_CALIBRATE_ENCODER TOOL=${i}`)">
-                                    {{ $t('Panels.AutoloaderPanel.Run') }}
+                                    color="primary"
+                                    @click="saGcode(c.gcode)">
+                                    T{{ c.tool }}
                                 </v-btn>
                             </div>
                         </div>
-                        <div class="sa-cal-expect">
-                            ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalEncoderExpect') }}
-                        </div>
-                        <div class="sa-cal-warn">
-                            ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalEncoderWarn') }}
-                        </div>
-                    </div>
 
-                    <!-- Step 6 — Per-tool bowden length -->
-                    <div v-if="calStep === 8">
-                        <div class="sa-step-head">
-                            {{ $t('Panels.AutoloaderPanel.CalBowden') }}
-                        </div>
-                        <div class="sa-step-body">
-                            {{ $t('Panels.AutoloaderPanel.CalBowdenHint') }}
-                        </div>
-                        <div class="sa-tool-grid mb-3">
-                            <div
-                                v-for="i in saPathIndices"
-                                :key="i"
-                                class="sa-tool-cell">
-                                <div
-                                    class="caption mb-1"
-                                    :class="toolBowdenDone(i) ? 'success--text' : 'grey--text'">
-                                    T{{ i }} ·
-                                    {{ toolBowdenDone(i)
-                                        ? `${saStatus.bowden_lengths[i].toFixed(0)}mm`
-                                        : '—' }}
-                                </div>
-                                <v-btn
-                                    small
-                                    block
-                                    class="sa-step-btn sa-step-btn--grid"
-                                    @click="saGcode(`SA_CALIBRATE_BOWDEN TOOL=${i}`)">
-                                    {{ $t('Panels.AutoloaderPanel.Run') }}
-                                </v-btn>
-                            </div>
-                        </div>
                         <div class="sa-cal-expect">
                             ✓ {{ $t('Panels.AutoloaderPanel.WhatToExpect') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalBowdenExpect') }}
+                            <span v-for="(l, i) in guidePage.expect" :key="'e' + i">
+                                • {{ l }}<br />
+                            </span>
                         </div>
                         <div class="sa-cal-warn">
                             ⚠ {{ $t('Panels.AutoloaderPanel.WatchOutFor') }}<br />
-                            {{ $t('Panels.AutoloaderPanel.CalBowdenWarn') }}
+                            <span v-for="(l, i) in guidePage.warn" :key="'w' + i">
+                                • {{ l }}<br />
+                            </span>
                         </div>
+
                         <div class="caption grey--text mt-3">
                             {{ $t('Panels.AutoloaderPanel.CalSaveNote') }}
-                            <v-btn x-small text class="sa-save-config" @click="saGcode('SAVE_CONFIG')">
+                            <v-btn
+                                x-small
+                                text
+                                class="sa-save-config"
+                                @click="saGcode('SAVE_CONFIG')">
                                 {{ $t('Panels.AutoloaderPanel.SaveConfig') }}
                             </v-btn>
                         </div>
@@ -1488,7 +1258,6 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
     // Calibration wizard state (mirrors KlipperScreen sa_calibration_guide)
     calOpen = false
     calStep = 0
-    calTotalSteps = 9
     /*
      * Set while the operator is paging around by hand, so following the live
      * phase does not yank the page out from under someone reading ahead. It
@@ -1947,6 +1716,32 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
      */
     get motorDirInverted(): boolean {
         return !!this.saStatus.drive_dir_invert || !!this.saStatus.selector_dir_invert
+    }
+
+    /*
+     * The guide, as the printer defines it. Nothing about the steps is known
+     * here -- not their content, not their order, not how many there are.
+     * Keeping a second copy is what let this dialog show seven pages, count to
+     * nine, and belong to an eleven-step chain all at once.
+     */
+    get guidePages(): any[] {
+        const p = (this.saStatus as any).guide_pages
+        return Array.isArray(p) ? p : []
+    }
+
+    get guidePage(): any | null {
+        return this.guidePages[this.calStep] ?? null
+    }
+
+    get calTotalSteps(): number {
+        return this.guidePages.length || 1
+    }
+
+    get guideToneClass(): string {
+        const tone = this.guidePage?.tone
+        if (tone === 'warn') return 'sa-cal-status--warn'
+        if (tone === 'ok') return 'sa-cal-status--ok'
+        return ''
     }
 
     get motorDirLabel(): string {
@@ -2784,6 +2579,22 @@ export default class AutoloaderPanel extends Mixins(SaMixin) {
 }
 
 /* "What to expect" green callout */
+.sa-cal-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+.sa-cal-cell-val {
+    text-align: center;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    margin-bottom: 2px;
+}
+/* Done and not-done read at a glance, the same two colours the status line
+   uses, so one page does not invent a third vocabulary. */
+.sa-cal-done { color: #66BB6A; }
+.sa-cal-todo { color: #9E9E9E; }
+
 .sa-cal-expect {
     margin-top: 10px;
     padding: 8px 12px;
