@@ -1,0 +1,78 @@
+# BTT MMB CAN v2.0 — pin map.
+#
+# Adding a new board means adding one file like this and one line in
+# installer/boards/Kconfig. Nothing else in the installer changes.
+#
+# Values here are defaults the generator writes into pin_aliases.cfg. They are
+# not shown as questions: a user who bought this board did not choose its
+# pinout, and asking them to confirm 20 pins is how you get typos.
+
+config BOARD_MMB_2_0
+    bool "BTT MMB CAN v2.0"
+    help
+      The 6-channel board this project was developed on. One TMC5160 for the
+      drive motor, one for the selector, six encoder inputs and six entry
+      sensor inputs.
+
+if BOARD_MMB_2_0
+
+config BOARD_NAME
+    default "BTT MMB CAN v2.0"
+
+# Drive motor — M3
+config PIN_DRIVE_STEP
+    default "PC15"
+config PIN_DRIVE_DIR
+    default "PC11"
+config PIN_DRIVE_ENABLE
+    default "PC10"
+config PIN_DRIVE_CS
+    default "PB3"
+config PIN_DRIVE_DIAG
+    default "PB7"
+
+# Selector motor — M1
+config PIN_SELECTOR_STEP
+    default "PD4"
+config PIN_SELECTOR_DIR
+    default "PD3"
+config PIN_SELECTOR_ENABLE
+    default "PD5"
+config PIN_SELECTOR_CS
+    default "PB5"
+config PIN_SELECTOR_DIAG
+    default "PB9"
+config PIN_SELECTOR_STOP
+    default "PA15"
+
+config PIN_SERVO
+    default "PA1"
+
+# Shared TMC5160 software SPI. Hardware SPI (spi1/spi2) does not work on this
+# MCU -- it fails to enumerate the drivers -- so this is software SPI on
+# purpose. Do not "fix" it.
+config PIN_TMC_MISO
+    default "PB14"
+config PIN_TMC_MOSI
+    default "PB15"
+config PIN_TMC_SCK
+    default "PB13"
+config TMC_SENSE_RESISTOR
+    default "0.075"
+
+# Per-path inputs, in path order. Encoders are the 2x7 high pins, entry
+# sensors the 2x7 low pins.
+config PINS_ENCODER
+    default "PC7,PA9,PB12,PB10,PB1,PC5"
+config PINS_ENTRY
+    default "PC6,PA8,PB11,PB2,PB0,PC4"
+
+# This board's entry sensors read HIGH when empty, so the generator writes
+# `^!` on the use line. A board wired the other way sets this to "^".
+config ENTRY_SENSOR_POLARITY
+    default "^!"
+
+config BOARD_MAX_PATHS
+    default 6
+
+endif

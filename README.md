@@ -1,0 +1,643 @@
+# Autoloader
+
+A Klipper firmware extra for an automated multi-filament loader built around the BTT MMB CAN V2.0 board.
+
+Supports up to 32 filament paths with a single shared drive motor, a carriage-style selector motor, a latching servo to engage the drive gear, and one fixed optical encoder per path. Optional per-path entry, toolhead, and extruder entry sensors enable fully automated loading, accurate Bowden tube length detection, and real-time slip monitoring.
+
+---
+
+
+> **Installing for the first time?** Read **[docs/INSTALL.md](docs/INSTALL.md)**.
+> It is written for someone who has not seen this project before: what it is,
+> what it changes on your printer, what the setup menu asks, and how to undo it.
+
+## Installation
+
+```bash
+wget -O - https://raw.githubusercontent.com/Cstm3DBldr/autoloader/main/install.sh | bash
+```
+
+After the command finishes, add this line to `printer.cfg`:
+
+```
+[include autoloader/autoloader.cfg]
+```
+
+This single include pulls in the rest (pin_aliases, hardware, parameters, macros) in the correct order.
+
+Then save and restart Klipper.
+
+### Uninstall
+
+```bash
+cd ~/autoloader
+./install.sh --uninstall
+rm -rf ~/autoloader
+```
+
+---
+
+## Hardware overview
+
+| Component | Hardware | Notes |
+|---|---|---|
+| MCU | BTT MMB CAN V2.0 | STM32G0B1, CAN bus |
+| Drive motor | M3 — TMC5160 | Single gear, shared across all paths |
+| Selector motor | M1 — TMC5160 | Moves carriage to active path, endstop homing |
+| Engage servo | BTT servo header | Latching servo, PWM cut after move |
+| Path encoders | 6x fixed optical | Never move; one per path |
+| Entry sensors | 6x switch sensors | At roll end of each path |
+| Toolhead sensors | 6x EBB36 PB8 | Past extruder gears, entering hotend (final load confirmation) |
+| Extruder sensors | 6x EBB36 PB5 | At toolhead entry, before extruder gears (Bowden calibration endpoint) |
+
+---
+
+## File structure
+
+```
+klipper/extras/
+    autoloader.py   Main controller, config parsing, GCode registration
+    sa_motion.py            Motion primitives (servo, selector, drive, idle timeouts)
+    sa_sequences.py         Load and unload sequences
+    sa_calibration.py       Calibration routines (drive, encoder, selector, bowden)
+    sa_encoder.py           Encoder driver — pulse counting via Klipper buttons module
+
+autoloader/
+    autoloader.cfg  Aggregator (printer.cfg pulls only this file)
+    pin_aliases.cfg         Physical pins → aliases (one [board_pins] per MCU)
+    hardware.cfg            Hardware sections only (MCU, drivers, steppers, servo, encoders, sensors)
+    parameters.cfg          The [autoloader] section — all user-tunable values
+    macros.cfg              Thin gcode wrappers around the Python backend
+
+moonraker/
+    sa_moonraker.py         Moonraker component — REST endpoints + status broadcast
+
+web/
+    mainsail/AutoloaderPanel.vue   Mainsail UI panel
+    fluidd/AutoloaderPanel.vue     Fluidd UI panel
+
+KlipperScreen/
+    panels/sa_*.py          Touchscreen panels (sa_main, sa_load_unload, sa_macros, etc.)
+    sa_filament_db.py       Filament profile DB loader (shared with Moonraker)
+    sa_klipperscreen.conf   Menu registration
+
+filaments/brands/           Per-brand filament profile .cfg files (color/material/temps)
+```
+
+---
+
+## Path states
+
+Each of the 6 paths has a state that persists across moves:
+
+| State | Meaning |
+|---|---|
+| `unknown` | Not confirmed — state after boot or explicit reset |
+| `empty` | No filament in path |
+| `partial` | Filament in Bowden tube but not loaded to nozzle — includes filament parked at the entry sensor |
+| `loaded` | Filament loaded all the way to nozzle tip |
+
+### How a path changes state
+
+The `[autoloader]` state monitor polls every entry sensor once per second
+and owns these transitions:
+
+- **Filament reaches the entry sensor** → the path is promoted to
+  `partial` immediately and holds there, and an auto-park is queued.
+  Only a load promotes further, to `loaded`.
+- **Entry sensor reads clear on a `loaded`/`partial` path** for
+  `runout_timeout` seconds (default 10) → the path drops to `empty` and
+  its stored filament profile is wiped, so the next load cannot inherit
+  the old brand, colour and temperatures.
+- **A profile is selected on an `empty` path** and nothing is loaded
+  within `material_select_timeout` seconds (default 60) → the profile is
+  wiped. A path whose entry sensor sees filament keeps its profile until
+  the filament is removed or the profile is changed by hand.
+
+A path with a load, unload or park in flight is skipped entirely: its
+sensor goes clear and back mid-sequence, and a load can run longer than
+`material_select_timeout`.
+
+### Auto-park
+
+Inserting filament queues `SA_PARK` for that path. Parks run one at a
+time, oldest first, and a request that arrives while another is running
+is held and run next rather than dropped. Each is re-checked against the
+sensor immediately before it runs, and skipped during a real print.
+
+This is driven by the state monitor, **not** by the entry sensors'
+`insert_gcode` — see the note in `autoloader/hardware.cfg` for why that
+hook silently loses insertions. Trigger latency is up to 1 second.
+
+---
+
+## GCode commands reference
+
+### Motion commands
+
+#### `SA_HOME`
+Homes the selector carriage to the endstop using a double-touch sequence (fast approach, back-off, slow re-approach). Always run this before any path selection after power-on or if the carriage position is uncertain.
+
+```
+SA_HOME
+```
+
+#### `SA_SELECT TOOL=N`
+Disengages the servo and moves the selector carriage to path N (neutral, no filament gripped).
+
+```
+SA_SELECT TOOL=2
+```
+
+#### `SA_ENGAGE`
+Engages the drive servo — grips filament in the currently selected path. Run `SA_SELECT TOOL=N` first.
+
+```
+SA_ENGAGE
+```
+
+#### `SA_DISENGAGE`
+Disengages the drive servo — path returns to neutral.
+
+```
+SA_DISENGAGE
+```
+
+### Load / unload
+
+#### `SA_LOAD TOOL=N`
+Full automated load sequence for path N:
+1. Check entry sensor — abort if no filament.
+2. Select path, engage drive gear.
+3. Feed until encoder confirms grip.
+4. Feed through Bowden tube until extruder sensor triggers (or bowden_length reached).
+5. Monitor encoder slip throughout.
+6. Release drive gear.
+7. Heat extruder to `load_temperature`.
+8. Extrude `nozzle_distance` mm to push filament to nozzle tip.
+9. Purge `purge_length` mm.
+
+```
+SA_LOAD TOOL=0
+```
+
+#### `SA_UNLOAD TOOL=N`
+Full automated unload sequence for path N:
+1. Retract `nozzle_distance + purge_length` mm via extruder motor.
+2. Select path, engage drive gear.
+3. Drive in reverse until entry sensor clears.
+4. Disengage drive gear.
+
+```
+SA_UNLOAD TOOL=3
+```
+
+### Status and diagnostics
+
+#### `SA_STATUS`
+Prints a full status table showing all paths — entry/toolhead/extruder sensor states, path state, encoder distance, and mm_per_pulse.
+
+```
+SA_STATUS
+```
+
+#### `SA_ENCODER_QUERY [TOOL=N] [RESET=1]`
+Snapshot of encoder distances and sensor states. Optional `RESET=1` zeros counters before reading.
+
+```
+SA_ENCODER_QUERY
+SA_ENCODER_QUERY TOOL=2
+SA_ENCODER_QUERY RESET=1
+SA_ENCODER_QUERY TOOL=2 RESET=1
+```
+
+#### `SA_ENCODER_WATCH [TOOL=N] [DURATION=30] [INTERVAL=0.5]`
+Live encoder delta stream. Prints one line per interval showing movement on each encoder since the previous tick. Useful for confirming which encoder responds to which path.
+
+- Paths with any movement are marked with `*`.
+- Press `CTRL+C` (SSH) or `ESTOP` to abort early.
+
+```
+SA_ENCODER_WATCH
+SA_ENCODER_WATCH TOOL=2
+SA_ENCODER_WATCH DURATION=60 INTERVAL=1.0
+```
+
+### Motor tests
+
+#### `SA_BUZZ_DRIVE [DISTANCE=5] [SPEED=10] [REPS=3]`
+Oscillates the drive motor back and forth to confirm it moves. Safe to run without filament loaded. The motor is disabled after the test.
+
+```
+SA_BUZZ_DRIVE
+SA_BUZZ_DRIVE DISTANCE=10 SPEED=20 REPS=5
+```
+
+#### `SA_BUZZ_SELECTOR [DISTANCE=10] [SPEED=50] [REPS=3]`
+Oscillates the selector motor back and forth. Run after `SA_HOME` so position is known.
+
+```
+SA_BUZZ_SELECTOR
+SA_BUZZ_SELECTOR DISTANCE=20 SPEED=100
+```
+
+### State management
+
+#### `SA_SET_STATE TOOL=N STATE=x`
+Manually override the path state. Valid states: `unknown`, `empty`, `partial`, `loaded`.
+
+```
+SA_SET_STATE TOOL=0 STATE=empty
+SA_SET_STATE TOOL=2 STATE=loaded
+```
+
+---
+
+## Calibration commands
+
+Calibration uses a **non-blocking phase state machine**. Each calibration command does its automated work, prints the result, then pauses and tells you exactly what to send next. You respond with `SA_RESPOND VALUE=<answer>` and the next phase runs immediately as a normal GCode command — no polling, no timeouts.
+
+- Send `SA_RESPOND VALUE=abort` at any prompt to cancel the calibration.
+- A Klipper restart (including from `SAVE_CONFIG`) always clears any in-progress calibration state.
+
+### `SA_RESPOND VALUE=x`
+Advances the active calibration to its next phase.
+
+```
+SA_RESPOND VALUE=yes
+SA_RESPOND VALUE=no
+SA_RESPOND VALUE=103.5
+SA_RESPOND VALUE=abort
+```
+
+---
+
+### Drive motor calibration — `SA_CALIBRATE_DRIVE`
+
+Calibrates `rotation_distance` for the drive motor. One motor drives all paths, so this only needs to be done once.
+
+**What it does:** Commands 100mm of filament movement, asks you to measure the actual distance, then calculates the correct `rotation_distance`. Repeats up to 3 times if error is greater than 1mm.
+
+**Requirements:** Filament loaded past the drive gear on at least one path. A ruler or calipers.
+
+**Process:**
+1. Run `SA_CALIBRATE_DRIVE`.
+2. When prompted, enter the path number that has filament loaded.
+3. Mark the filament at the encoder exit (piece of tape works well).
+4. Send `SA_RESPOND VALUE=yes` when ready.
+5. The routine commands 100mm.
+6. Measure from your mark to the new filament position.
+7. Send `SA_RESPOND VALUE=<measured mm>` (e.g., `SA_RESPOND VALUE=103.5`).
+8. Repeat up to 3 passes if needed.
+9. Send `SA_RESPOND VALUE=yes` to save and restart, or `no` to queue for later.
+
+**Result:** Updates `rotation_distance` in `[manual_stepper sa_drive]` via `SAVE_CONFIG`.
+
+---
+
+### Encoder calibration — `SA_CALIBRATE_ENCODER TOOL=N`
+
+Calibrates `mm_per_pulse` for one path encoder using 5 x 400mm feed/retract cycles.
+
+**Requirements:** Filament loaded past drive gear and through encoder for path N. Enough free filament for ~2000mm total travel.
+
+**Process:**
+1. Run `SA_CALIBRATE_ENCODER TOOL=N`.
+2. Position filament flush with encoder exit as a zero reference point.
+3. Send `SA_RESPOND VALUE=yes`.
+4. The routine runs 5 feed + 5 retract cycles automatically.
+5. When prompted, measure the final filament exit distance (should be ~200mm from start).
+6. Send `SA_RESPOND VALUE=<measurement>` or `SA_RESPOND VALUE=ok` if correct.
+7. Confirm save and restart.
+
+**Result:** Updates `mm_per_pulse` in `[sa_encoder N]` via `SAVE_CONFIG`.
+
+---
+
+### Selector calibration — `SA_CALIBRATE_SELECTOR`
+
+Fully automated one-time calibration. The routine homes the carriage, sweeps to the far mechanical stop using TMC5160 stallguard, then homes back to measure the total rail length precisely. Path positions are calculated automatically from the measured travel — no manual measurement needed.
+
+**Requirements:** `SA_HOME` must work correctly first. No filament loaded. `[gcode_button selector_stall]` must be present in `hardware.cfg` (pin `^!autoloader:SA_SELECTOR_DIAG`).
+
+**Process:**
+1. Run `SA_CALIBRATE_SELECTOR`.
+2. Send `SA_RESPOND VALUE=yes` when prompted to confirm ready.
+3. The carriage homes, then sweeps outward. The TMC5160 `stop_enable` bit latches the stall signal so it is reliably detected after the move. If no stall is detected the carriage briefly contacts the hard stop at reduced current (0.4 A), which is harmless.
+4. The routine homes back to the physical endstop and measures total travel from the MCU step delta.
+5. Calculated positions are displayed. Send `SA_RESPOND VALUE=yes` to accept or `no` to cancel.
+6. Send `SA_RESPOND VALUE=yes` to save and restart, or `no` to queue for later.
+
+**Tuning if the carriage stalls mid-travel (before reaching the far end):**
+- Raise `selector_stall_threshold` (less sensitive stallguard)
+- Raise `selector_stall_current` (more traversal torque)
+
+**Result:** Updates `selector_position_0` through `selector_position_N` in `[autoloader]` via `SAVE_CONFIG`.
+
+**Manual alternative:** Jog the selector manually with `MANUAL_STEPPER STEPPER=sa_selector ENABLE=1 MOVE=<mm> SPEED=30`, use `SA_ENCODER_WATCH` to watch while manually checking carriage alignment, and update `selector_position_N` values in `hardware.cfg` by hand.
+
+---
+
+### Bowden tube calibration — `SA_CALIBRATE_BOWDEN TOOL=N`
+
+Calibrates the exact Bowden tube length for one path by detecting when filament reaches the extruder gears. Requires `extruder_sensor_N` configured.
+
+**Requirements:** `extruder_sensor_N` wired and configured. Filament loaded to entry sensor on path N.
+
+**Process:**
+1. Run `SA_CALIBRATE_BOWDEN TOOL=N`.
+2. Enter the estimated tube length when prompted (over-estimate is safer).
+3. The routine runs 3 trials: fast approach to 90% of estimate, then slow inch-forward until the extruder sensor triggers.
+4. Results are averaged.
+5. Confirm save and restart.
+
+**Result:** Updates `bowden_length_N` in `[autoloader]` via `SAVE_CONFIG`. The load sequence uses this value as the target for the Bowden feed phase.
+
+---
+
+## Calibration sequence (first-time setup)
+
+Recommended order for a new installation:
+
+1. **Flash and connect** the BTT MMB CAN V2.0 board.
+2. **Update `canbus_uuid`** in `hardware.cfg`.
+3. **Test motors:** `SA_BUZZ_DRIVE` then `SA_BUZZ_SELECTOR` — confirm both move.
+4. **Test servo:** `SA_ENGAGE` then `SA_DISENGAGE` — confirm servo moves.
+5. **Home selector:** `SA_HOME` — confirm endstop triggers and carriage returns.
+6. **Calibrate selector:** `SA_CALIBRATE_SELECTOR` — auto-calculates path positions.
+7. **Load filament** on path 0 past the drive gear.
+8. **Calibrate drive motor:** `SA_CALIBRATE_DRIVE` — sets `rotation_distance`.
+9. **Calibrate encoders:** `SA_CALIBRATE_ENCODER TOOL=N` for each path.
+10. **Calibrate Bowden lengths:** `SA_CALIBRATE_BOWDEN TOOL=N` for each path (requires extruder sensors).
+11. **Test full load:** `SA_LOAD TOOL=0` — verify complete sequence.
+
+---
+
+## Klipper status object
+
+The autoloader state is accessible in macros as `printer['autoloader']`:
+
+```jinja
+{% set sa = printer['autoloader'] %}
+{% if sa.filament_loaded[0] %}
+  { action_respond_info("Path 0 is loaded") }
+{% endif %}
+```
+
+Available keys:
+
+| Key | Type | Description |
+|---|---|---|
+| `num_paths` | int | Number of configured paths |
+| `current_path` | int | Active path index, -1 if unhomed |
+| `servo_engaged` | bool | True if drive servo is engaged |
+| `path_states` | list[str] | State string per path |
+| `encoder_dist` | list[float] | Current encoder distance per path (mm) |
+| `entry_filament` | list[bool] | Filament at roll end per path |
+| `toolhead_filament` | list[bool] | Filament at toolhead per path |
+| `extruder_filament` | list[bool] | Filament at extruder gears per path |
+| `filament_loaded` | list[bool] | True if path state is `loaded` |
+| `selector_position` | float | Current path position in mm, -1 if unhomed |
+
+---
+
+## Configuration reference
+
+All parameters are set in the `[autoloader]` section of `hardware.cfg`.
+
+### Hardware references
+
+| Key | Default | Description |
+|---|---|---|
+| `drive_stepper` | required | Full name, e.g. `manual_stepper sa_drive` |
+| `selector_stepper` | required | Full name, e.g. `manual_stepper sa_selector` |
+| `servo` | required | Full name, e.g. `servo sa_engage` |
+
+### Servo
+
+| Key | Default | Description |
+|---|---|---|
+| `servo_engaged_angle` | `30` | Degrees — drive gear grips filament |
+| `servo_disengaged_angle` | `160` | Degrees — drive gear releases |
+
+### Per-path (N = 0 to num_paths-1)
+
+| Key | Default | Description |
+|---|---|---|
+| `encoder_N` | `sa_encoder N` | Encoder section name |
+| `entry_sensor_N` | none | Entry sensor section name (optional) |
+| `toolhead_sensor_N` | none | Toolhead sensor section name (optional) |
+| `extruder_sensor_N` | none | Extruder sensor section name (optional, required for bowden cal) |
+| `selector_position_N` | `N * 21.0` | Selector position in mm from home |
+| `extruder_N` | `extruder` (0) / `extruderN` | Extruder name for heating |
+| `bowden_length_N` | `800.0` | Bowden tube length mm (calibrate with SA_CALIBRATE_BOWDEN) |
+
+### Motion parameters
+
+| Key | Default | Description |
+|---|---|---|
+| `num_paths` | `6` | Number of paths (1-32) |
+| `tube_length` | `800` | Legacy Bowden length (mm), used if bowden_length_N not set |
+| `nozzle_distance` | `50` | Distance from extruder gears to nozzle tip (mm) |
+| `purge_length` | `30` | Purge extrusion after nozzle is reached (mm) |
+| `engage_max_distance` | `60` | Max drive travel before expecting encoder motion (mm) |
+| `load_temperature` | `200` | Minimum hotend temp before extruder moves (C) |
+| `feed_speed` | `50` | Drive motor speed (mm/s) |
+| `selector_speed` | `200` | Selector motor speed (mm/s) |
+| `feed_step_size` | `10` | Drive step per loop iteration (mm) |
+| `slip_tolerance` | `15` | Encoder vs stepper slip warning threshold (%) |
+| `sensor_polling_delay` | `0.2` | Seconds between sensor checks in feed loops |
+| `servo_move_delay` | `0.3` | Seconds to wait after servo command |
+| `stepper_timeout` | `120` | Seconds before idle steppers auto-disable |
+| `runout_timeout` | `10` | Seconds the entry sensor must read clear before a loaded path is declared empty and its filament profile wiped |
+| `material_select_timeout` | `60` | Seconds a filament profile may sit on an empty path before it is wiped (`0` disables) |
+| `selector_max_travel` | `200.0` | Max mm for selector far-end detection / cal sweep |
+| `selector_homing_speed` | `50.0` | Homing approach speed (mm/s) |
+| `selector_homing_backoff` | `5.0` | Back-off distance before slow re-approach (mm) |
+| `selector_stall_current` | `0.4` | Motor current (A) during SA_CALIBRATE_SELECTOR sweep — lower than run_current |
+| `selector_stall_threshold` | `3` | TMC5160 SGT value for stallguard sensitivity (raise to reduce false triggers) |
+| `selector_stall_speed` | `50.0` | Sweep speed (mm/s) during SA_CALIBRATE_SELECTOR |
+
+### Park / clean
+
+| Key | Default | Description |
+|---|---|---|
+| `cooling_pad_enabled` | `True` | Call `PARK_ON_COOLING_PAD` after load/unload |
+| `clean_nozzle_enabled` | `True` | Call `SA_CLEAN_NOZZLE` before parking — disable if you have no brush |
+
+---
+
+## Printer macros required by the autoloader
+
+The autoloader calls two macros that you define in your printer config. Both must exist when the corresponding config options are enabled.
+
+### `PARK_ON_COOLING_PAD`
+
+Moves the toolhead to your cooling pad or parking position. **Do not change Z** — the autoloader holds Z at `load_park_z` throughout the load/unload sequence.
+
+```gcode
+[gcode_macro PARK_ON_COOLING_PAD]
+gcode:
+    G90
+    G0 X0  Y300 F5000
+    G0 Y350 F5000
+    G0 X30  F5000
+```
+
+### `SA_CLEAN_NOZZLE`
+
+Wipes the nozzle on your brush or cleaning pad. Called after the heater is commanded off but while the nozzle is still hot. **Do not change Z** — keep all moves at the current height so the autoloader can maintain `load_park_z`.
+
+A starter template is included in `autoloader/macros.cfg`. Customize the X/Y coordinates for your brush position:
+
+```gcode
+[gcode_macro SA_CLEAN_NOZZLE]
+description: Wipe nozzle on brush pad. Called by autoloader after load/unload.
+gcode:
+    G90
+    G0 X80 Y350 F5000   ; approach brush
+    G0 X40 F5000        ; wipe pass 1
+    G0 X70 F5000
+    G0 X40 F5000        ; wipe pass 2
+    G0 X70 F5000
+    G0 X30 Y300 F5000   ; clear brush area
+```
+
+Set `clean_nozzle_enabled: False` in `hardware.cfg` to skip nozzle wiping entirely.
+
+---
+
+## Sensor wiring
+
+### Entry sensors (`^!autoloader:SA_ENTRY_N`)
+Pull-up + invert — sensors read HIGH (active) when empty on this hardware. If your sensors read the opposite, remove the `!` from `switch_pin`.
+
+### Toolhead sensors (`^etN:PB8`)
+One per BTT EBB36 toolhead board. Pull-up only (not inverted). Detects filament past the extruder gears, entering the hotend. Used as final load confirmation.
+
+### Extruder entry sensors (`^etN:PB5`)
+One per BTT EBB36 toolhead board. Detects filament arriving at the extruder gears (toolhead entry, before the gears). Enables sensor-based load targeting (more reliable than a fixed tube length). Required for `SA_CALIBRATE_BOWDEN`.
+
+---
+
+## Stepper idle timeout
+
+All steppers are automatically disabled after `stepper_timeout` seconds (default 120s) following the last move. This prevents heat build-up and motor noise. The timeout is reset on every motion command and cancelled immediately when a new move starts.
+
+To disable auto-timeout behavior, set `stepper_timeout: 0` in `hardware.cfg`. Note: this is a per-extra timeout independent of Klipper's main `[idle_timeout]`.
+
+---
+
+## Backing up the printer
+
+`scripts/backup_printer_config.sh` snapshots the printer's live configuration
+onto a dedicated `printer-backup/known-good-<date>` branch, so there is a
+known-good reference to diff against or restore from after a change goes
+wrong. Run it from the repo on your PC, not on the printer:
+
+```
+bash "/c/Users/Mike/Claude Project Files/Autoloader/scripts/backup_printer_config.sh"
+```
+
+Add a label to distinguish two snapshots taken the same day:
+
+```
+bash "/c/Users/Mike/Claude Project Files/Autoloader/scripts/backup_printer_config.sh" before-respooler
+```
+
+It captures two sets of files, for two different reasons:
+
+- Files the repo already tracks and deploys (`autoloader/*.cfg`,
+  KlipperScreen panels, `sa_klipperscreen.conf`) land in their normal repo
+  paths, so `git diff main <branch>` shows exactly what drifted on the
+  printer — tuned values, Mainsail config-editor edits, and whatever
+  `SAVE_CONFIG` wrote. In practice the drift is `autoloader/variables.cfg`,
+  which holds the calibration results.
+- The rest of `~/printer_data/config` — `printer.cfg`, `macros.cfg`,
+  `homing.cfg`, `moonraker.conf`, `Toolchanger/` — is not tracked anywhere
+  else and exists only on the SD card. It lands under `printer_snapshot/`,
+  along with a `MANIFEST.md` recording the deployed commit and the Klipper,
+  Moonraker, KlipperScreen and Mainsail versions.
+
+Gcode files, logs and the Moonraker database are skipped. The script refuses
+to run with uncommitted work or an unreachable printer, and returns you to
+your original branch when it finishes.
+
+Restoring is a normal checkout:
+
+```
+git checkout printer-backup/known-good-2026-08-30 -- autoloader/parameters.cfg
+git checkout printer-backup/known-good-2026-08-30 -- printer_snapshot/
+```
+
+The branch is an archive and is never merged.
+
+---
+
+## Troubleshooting
+
+### Encoder shows no motion during load
+- Check filament is actually past the drive gear engagement point.
+- Run `SA_ENGAGE` manually then push filament by hand while watching `SA_ENCODER_WATCH TOOL=N`.
+- Verify `mm_per_pulse` is non-zero in `[sa_encoder N]`.
+- Run `SA_CALIBRATE_ENCODER TOOL=N` to re-calibrate.
+
+### Selector does not home
+- Confirm endstop wiring: `QUERY_ENDSTOPS` should show `sa_selector:open` when clear and `sa_selector:TRIGGERED` when pressed.
+- Check `endstop_pin` in `[manual_stepper sa_selector]`.
+- Reduce `selector_homing_speed` if the carriage overshoots.
+
+### Filament not reaching extruder
+- Check `bowden_length_N` matches your actual tube length.
+- If extruder sensor is wired, run `SA_CALIBRATE_BOWDEN TOOL=N`.
+- Watch `SA_ENCODER_WATCH` during a manual load to see where motion stops.
+
+### Slip warnings during load
+- Increase `engage_max_distance` if warnings appear early in the load.
+- Check that the servo engaged angle actually grips the filament (`SA_ENGAGE` then try to pull filament by hand).
+- Run `SA_CALIBRATE_DRIVE` to verify `rotation_distance` is accurate.
+- Reduce `feed_speed` for the initial Bowden feed.
+
+### SA_RESPOND timeout during calibration
+- The calibration routine waits 300 seconds (5 minutes) by default for `SA_RESPOND`.
+- If you miss the window, re-run the calibration command.
+- Calibration can always be aborted mid-sequence with `SA_RESPOND VALUE=abort`.
+
+### `SA_PARK` says "nothing to park" and does not move
+Expected when the entry sensor is inactive. `park_filament()` checks the entry
+sensor first because parking is drive-gear work — with no filament at the
+entry there is nothing to grip. Feed filament in and it will park normally.
+
+### `SA_LOAD` reports "possible broken filament piece in tube"
+Raised when the extruder or toolhead sensor reads present while the entry
+sensor does not. Usually a cut or snapped length left behind after a manual
+unload. Clear it from the toolhead before loading that path — this guard is
+protecting you from feeding new filament into an occupied tube.
+
+### A path reads `empty` although a toolhead holds filament
+Path state describes the **autoloader's** path, and is inferred from the entry
+sensor only — `_initialize_states_from_sensors()` and the runout monitor both
+ignore the extruder and toolhead sensors. An orphaned length sitting in a
+toolhead is therefore invisible to path state, which is correct: the
+autoloader path really is empty. Use `SA_SET_STATE TOOL=N STATE=loaded` only
+if the state is genuinely wrong.
+
+### Sequences run `G28` on their own
+`do_load()` and `do_unload()` check `_is_homed()` and home the printer
+themselves before any toolhead motion, so an unhomed machine is not a blocker
+for either. `park_filament()` never moves the toolhead at all — it is selector
+and drive work only.
+
+---
+
+## Test logs
+
+Point-in-time captures of what works and what doesn't live in `docs/`:
+
+| File | Notes |
+|---|---|
+| `docs/SYSTEMS_TEST_2026-08-30.md` | Baseline after the LED work. Nothing broken — two reported failures were the entry guards correctly refusing paths whose filament had been cut out. Encoders and selector calibrated, 5 of 6 bowden lengths set. |
+
+---
+
+*Last updated: 2026-08-30 — added the printer backup script and the first systems-test log.*

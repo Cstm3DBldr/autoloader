@@ -1,0 +1,504 @@
+# Background LED animator for the autoloader's toolhead LEDs.
+#
+# Klipper Python extra. Two responsibilities, both running off one
+# reactor timer in Klipper's main thread:
+#
+#   1. Empty-path breathing pulse — slow white sine wave on the logo
+#      LED (INDEX=3) of each unloaded toolhead while idle. Pauses
+#      cleanly when actively printing or during any autoloader op.
+#
+#   2. Temp-aware active-tool nozzle — when the printer is NOT
+#      actively printing (idle, ready, or paused), the active tool's
+#      nozzle pair (INDEX=1,2) shows red-orange while the hotend is
+#      still warm, and otherwise follows the same load-state colours as
+#      the docked tools — green staged, blue loaded, off empty — one
+#      step brighter so the mounted tool stays identifiable.
+#      The "warm" signal is read from the toolhead's heater_fan state
+#      (which Klipper already manages with a >= 50 C threshold) so we
+#      don't duplicate the threshold logic. This keeps the nozzle's
+#      hot/cold state up to date as the hotend cools after a pause
+#      times out, without any external poll loop or state-machine
+#      logic in macros.
+#
+# When pause begins, the breathing brightness LERPs toward zero
+# across a few ticks (smooth fade-out, no abrupt transition). When
+# idle resumes, the waveform picks up smoothly from wherever the LED
+# currently is.
+#
+# Why a Python extra rather than a [delayed_gcode] / jinja loop:
+#   - reactor timer runs in Klipper's main thread; no GCode mutex
+#     contention with print commands or autoloader sequences
+#   - smooth interpolation needs floating-point math the gcode
+#     parser can't easily express across many channels
+#   - one place to coordinate state across all 6 toolheads
+#   - cheap to poll heater_fan state every tick (<1ms across 6 tools)
+#
+# Configuration (auto-loaded from a [sa_led_animator] block in cfg):
+#
+#   [sa_led_animator]
+#   #breathing_period: 4.0      # seconds per full pulse cycle
+#   #min_brightness: 0.0        # brightness at the trough of the pulse
+#   #max_brightness: 0.40       # brightness at the peak (~1/2 of full)
+#   #update_rate_hz: 5.0        # ticks per second
+#   #smoothing_factor: 0.30     # LERP step toward target each tick
+#                               # (1.0 = snap, 0.1 = very slow easing)
+#   #hotend_fan_template: "heater_fan T%d_hotend_fan"
+#                               # printf-style template resolving each
+#                               # tool number to its hotend heater_fan
+#                               # name. Override if the toolchanger
+#                               # config uses a different naming
+#                               # convention.
+
+import logging
+import math
+
+
+class SaLedAnimator:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.breathing_period = config.getfloat(
+            'breathing_period', 4.0, above=0.5, maxval=30.0)
+        self.min_brightness = config.getfloat(
+            'min_brightness', 0.0, minval=0.0, maxval=1.0)
+        self.max_brightness = config.getfloat(
+            'max_brightness', 0.40, minval=0.0, maxval=1.0)
+        self.update_rate_hz = config.getfloat(
+            'update_rate_hz', 5.0, above=0.5, maxval=60.0)
+        self.smoothing = config.getfloat(
+            'smoothing_factor', 0.30, above=0.01, maxval=1.0)
+        self.hotend_fan_template = config.get(
+            'hotend_fan_template', 'heater_fan T%d_hotend_fan')
+        self._tick_interval = 1.0 / self.update_rate_hz
+        self._current = {}   # tool_n -> last emitted brightness
+        self._warm_prev = {}  # tool_n -> was the hotend fan on last tick
+        self._led_chains = []
+        self.printer.register_event_handler('klippy:ready', self._handle_ready)
+
+    def _handle_ready(self):
+        self.gcode    = self.printer.lookup_object('gcode')
+        self.reactor  = self.printer.get_reactor()
+
+        # Discover et0_leds .. et7_leds (one per toolhead). chain_count
+        # of 3 is the StealthBurner standard; INDEX=3 is the logo on
+        # this build (verified via _SA_LED_TEST_T0).
+        #
+        # We grab each neopixel's `led_helper` directly. Driving LEDs
+        # via run_script_from_command("SET_LED ...") from a reactor
+        # timer fails silently — that gcode helper is only safe to
+        # call from inside another gcode command's handler, where the
+        # gcode mutex is held. The led_helper's _set_color +
+        # _check_transmit pair is the documented internal path that
+        # other animation extras use from reactor callbacks.
+        for i in range(8):
+            obj = self.printer.lookup_object('neopixel et%d_leds' % i, None)
+            if obj is None:
+                continue
+            led_helper = getattr(obj, 'led_helper', None)
+            if led_helper is None:
+                logging.info(
+                    "sa_led_animator: neopixel et%d_leds has no "
+                    "led_helper attribute; skipping", i)
+                continue
+            self._led_chains.append((i, 'et%d_leds' % i, led_helper))
+            self._current[i] = 0.0
+
+        if not self._led_chains:
+            logging.info("sa_led_animator: no et*_leds chains found; "
+                         "animator will not run")
+            return
+
+        # Start ~5s after ready, matching the [delayed_gcode]
+        # _SA_LEDS_STARTUP fallback timing — gives the autoloader
+        # extra a moment to restore path_color_hexes from
+        # save_variables before we start checking path_states.
+        # NOTE: register_timer + update_timer (rather than passing the
+        # waketime to register_timer directly). Some Klipper versions
+        # register the timer as NEVER until update_timer is called, even
+        # if a waketime is passed; the two-step call is the safe pattern
+        # used by other extras and reliably gets the timer firing.
+        self._timer = self.reactor.register_timer(self._animate)
+        self.reactor.update_timer(
+            self._timer, self.reactor.monotonic() + 5.0)
+        logging.info(
+            "sa_led_animator: started — %d chain(s), period=%.1fs, "
+            "max_brightness=%.2f, rate=%.1fHz, smoothing=%.2f",
+            len(self._led_chains), self.breathing_period,
+            self.max_brightness, self.update_rate_hz, self.smoothing)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Reactor timer callback — fires at update_rate_hz
+    # ──────────────────────────────────────────────────────────────────
+
+    def _animate(self, eventtime):
+        try:
+            self._tick(eventtime)
+        except Exception:
+            logging.exception("sa_led_animator: tick failed (suppressed)")
+        return eventtime + self._tick_interval
+
+    def _tick(self, eventtime):
+        # 1. Read printer-wide state ───────────────────────────────────
+        idle_state = self._idle_state(eventtime)
+        sa         = self.printer.lookup_object('autoloader', None)
+        if sa is None:
+            return  # autoloader not loaded — nothing to animate
+
+        cal_state         = getattr(sa, '_cal_state', '') or ''
+        path_states       = list(getattr(sa, 'path_states', []) or [])
+        path_color_hexes  = list(getattr(sa, 'path_color_hexes', []) or [])
+        active_tool       = self._active_tool_number()
+
+        # Pause animation entirely while a print is running OR while the
+        # autoloader has any operation in flight. Both are short windows
+        # but stomping on the load/unload's own _SA_LED_PARKED transition
+        # at the end would look wrong.
+        paused = (idle_state == 'printing') or bool(cal_state)
+
+        # 2. Compute the ideal brightness for this tick from a sine
+        #    wave (smooth 0 -> 1 -> 0 -> ... over breathing_period).
+        phase = (eventtime % self.breathing_period) / self.breathing_period
+        wave  = (math.sin(2.0 * math.pi * phase) + 1.0) / 2.0
+        ideal = self.min_brightness + wave * (
+            self.max_brightness - self.min_brightness)
+
+        # 3. Per-toolhead. Breathing pulse runs on paths that have
+        #    NEITHER filament physically loaded NOR a saved color
+        #    profile. Two release conditions:
+        #
+        #    (a) state in ('loaded', 'partial', anything-not-empty-or-
+        #        unknown) — filament is in this path, the existing
+        #        macros (_SA_LED_PARKED / _SA_LED_FROM_STATE) own the
+        #        logo and we let it sit.
+        #    (b) state is 'empty' / 'unknown' BUT path_color_hexes[i]
+        #        has a non-blank value — user saved a profile but the
+        #        path isn't physically loaded yet. Show the saved color
+        #        as a "ready to load this filament" preview rather than
+        #        keep pulsing white. Pulsing despite a stored color was
+        #        the prior behavior; users found it confusing because
+        #        SA_SET_MATERIAL fires _SA_LED_PARKED to paint the
+        #        color, but the next animator tick (~70ms) overwrote
+        #        it back to the breathing pulse — making it look like
+        #        the save didn't take.
+        #
+        #    Pulse only when state is empty/unknown AND no stored
+        #    color — that's the genuinely "nothing here, nothing
+        #    planned" case where the breathing white pulse is the
+        #    right signal.
+        for tool_n, led_name, led_helper in self._led_chains:
+            # Active mounted tool: leave alone (other macros handle it)
+            if tool_n == active_tool:
+                self._current[tool_n] = 0.0
+                continue
+
+            state = (path_states[tool_n]
+                     if tool_n < len(path_states)
+                     else 'unknown')
+            hex_c = (path_color_hexes[tool_n]
+                     if tool_n < len(path_color_hexes)
+                     else '') or ''
+
+            if state == 'loaded':
+                # Fully loaded to the nozzle: the macros own the logo and
+                # paint the real filament color, solid. Only 'loaded'
+                # earns a solid logo -- a racked head that is empty OR
+                # merely parked at the entry sensor is still waiting, and
+                # every waiting slot in the rack should read the same.
+                self._current[tool_n] = 0.0
+                continue
+
+            # Waiting (empty / unknown / parked at entry): pulse. If a
+            # profile has been saved for it, pulse IN that color rather
+            # than white -- the slot still reads as "waiting" (which is
+            # what the pulse means) while the saved color is visibly
+            # applied. Pulsing plain white here was the bug: the branch
+            # used to abstain entirely whenever a color was stored, on
+            # the assumption _SA_LED_PARKED had painted it, but nothing
+            # repaints after a Klipper restart, so those slots sat at
+            # whatever dim white the startup macro left while their
+            # colorless neighbours breathed.
+            tint = self._hex_to_logo_rgb(hex_c)
+
+            target = 0.0 if paused else ideal
+
+            # LERP toward target with smoothing factor; produces the
+            # gentle fade-out when transitioning into a print and the
+            # gentle fade-in coming out of one.
+            current  = self._current.get(tool_n, 0.0)
+            smoothed = current + (target - current) * self.smoothing
+            self._current[tool_n] = smoothed
+
+            self._emit(led_helper, smoothed, tint)
+
+        # 4. Active-tool nozzle: temp-aware safety indicator.
+        # ─────────────────────────────────────────────────────────
+        # When the printer is NOT actively printing (i.e. standby,
+        # paused, complete, error), the active tool's nozzle pair
+        # reflects hotend warmth: red-orange "still warm" while the
+        # heater_fan is on (extruder >= 50 C, the threshold Klipper
+        # already manages), dim blue once it has cooled.
+        #
+        # Use print_stats.state (NOT idle_timeout.state) as the
+        # "actually printing" signal — idle_timeout transitions to
+        # 'Printing' on ANY gcode activity (including a one-line
+        # SET_LED from the console), which would briefly flip
+        # animator_owns_nozzle to False and clear our cache. The
+        # cache clear lets a stale value re-emit on
+        # the next tick, wiping any STATUS_HOMING / STATUS_LEVELING
+        # / etc. green/purple that an explicit macro just set.
+        # print_stats.state only flips to 'printing' on a real
+        # virtual_sdcard / Moonraker job, so brief gcode commands
+        # during eval don't disturb the cache.
+        actively_printing = self._is_actively_printing(eventtime)
+        animator_owns_nozzle = (not actively_printing
+                                and not bool(cal_state))
+        if animator_owns_nozzle:
+            for tool_n, _, helper in self._led_chains:
+                warm = self._is_tool_warm(tool_n, eventtime)
+                was_warm = self._warm_prev.get(tool_n)
+                self._warm_prev[tool_n] = warm
+
+                if warm:
+                    # Heat outranks load state, and it outranks mounting:
+                    # a hot nozzle is a safety warning whether or not the
+                    # toolhead is currently picked up. A head that just
+                    # finished a cycle sits docked and hot for minutes,
+                    # and active_tool is -1 outright during a change --
+                    # gating this on tool_n == active_tool left exactly
+                    # those cases dark.
+                    state_name = 'heating'
+                elif tool_n == active_tool:
+                    # Mounted and cool: follow the load state, one step
+                    # brighter than the docked heads so it stays
+                    # identifiable.
+                    st = (path_states[tool_n]
+                          if tool_n < len(path_states) else 'unknown')
+                    if st == 'loaded':
+                        state_name = 'loaded_active'
+                    elif st == 'partial':
+                        state_name = 'staged'
+                    else:
+                        state_name = 'off'
+                elif was_warm:
+                    # Docked and just cooled through the fan threshold.
+                    # Emit once to clear the amber -- without this the
+                    # warning would latch on forever, since the branches
+                    # below hand a cool docked head back to the macros
+                    # and nothing would overwrite it.
+                    st = (path_states[tool_n]
+                          if tool_n < len(path_states) else 'unknown')
+                    state_name = 'loaded_cold' if st == 'loaded' else 'off'
+                else:
+                    # Docked and cool: the macros own this nozzle.
+                    continue
+
+                color = self._get_nozzle_color(state_name)
+                if color is None:
+                    continue
+                # Compare against the LED's ACTUAL current state (read
+                # from led_helper.led_state) rather than against an
+                # in-memory cache of what we last emitted. The in-memory
+                # cache went stale when other macros (e.g. _SA_LED_ACTIVE,
+                # STATUS_OFF, _SA_LEDS_INIT_ALL) wrote to the nozzle
+                # without animator's knowledge -- animator would think "I
+                # last emitted blue, target is blue, skip" while the
+                # actual LED was white from a stale macro call. Reading
+                # the real state self-heals from any external writer at
+                # the cost of "STATUS_HOMING / _LEVELING / etc. fired
+                # manually outside a print won't stick" (animator
+                # immediately restores the temp-aware color). Inside
+                # PRINT_START print_stats.state == 'printing' so animator
+                # yields and STATUS_* still sticks there -- which is the
+                # only place those macros need to stick during real
+                # operation.
+                if self._read_nozzle_state(helper) != color:
+                    self._emit_nozzle(helper, color)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Helpers
+    # ──────────────────────────────────────────────────────────────────
+
+    def _idle_state(self, eventtime):
+        """Return idle_timeout state lowercased ('idle' / 'ready' / 'printing')."""
+        it = self.printer.lookup_object('idle_timeout', None)
+        if it is None:
+            return 'idle'
+        try:
+            return str(it.get_status(eventtime).get('state', 'Idle')).lower()
+        except Exception:
+            return 'idle'
+
+    def _active_tool_number(self):
+        """Return the currently mounted tool's number, or -1 if none."""
+        tpe = self.printer.lookup_object('tool_probe_endstop', None)
+        if tpe is None:
+            return -1
+        try:
+            return int(getattr(tpe, 'active_tool_number', -1))
+        except Exception:
+            return -1
+
+    def _hex_to_logo_rgb(self, hex_c):
+        """Convert a stored filament hex to (r,g,b) for the logo LED.
+
+        Mirrors the locked rendering pipeline in `_sa_set_logo_filament`
+        (autoloader/leds.cfg) so a slot's pulse and its solid painted
+        color are the same hue. leds.cfg is the source of truth -- if
+        that pipeline changes, change this with it:
+
+          * max channel 0            -> no color (caller pulses white)
+          * max channel < 0.15       -> rescale brightest to 0.0075, NO
+                                        gamma (we are at the strip's
+                                        quantization floor; gamma would
+                                        crush it to zero)
+          * otherwise                -> g * 0.85 when green is not the
+                                        dominant channel, then sRGB
+                                        gamma 2.2 on all three
+
+        Returns None for a blank/unparseable/black value, which makes
+        the caller fall back to the plain white pulse.
+        """
+        h = (hex_c or '').strip().lstrip('#')
+        if len(h) != 6:
+            return None
+        try:
+            r = int(h[0:2], 16) / 255.0
+            g = int(h[2:4], 16) / 255.0
+            b = int(h[4:6], 16) / 255.0
+        except ValueError:
+            return None
+
+        max_ch = max(r, g, b)
+        if max_ch <= 0.0:
+            return None
+        if max_ch < 0.15:
+            scale = 0.0075 / max_ch
+            return (r * scale, g * scale, b * scale)
+        if not (g >= r and g >= b):
+            g *= 0.85
+        return (r ** 2.2, g ** 2.2, b ** 2.2)
+
+    def _emit(self, led_helper, brightness, tint=None):
+        """Push one logo-LED update via the neopixel's led_helper directly.
+
+        Bypasses the gcode dispatcher entirely. Safe to call from a
+        reactor timer because led_helper._check_transmit registers a
+        reactor callback (with mutex) for the actual chip transmit —
+        we just stage the new color in led_state.
+
+        Logo is INDEX=3 in user-space (1-based), which maps to the
+        same 1-based index passed to _set_color.
+        """
+        b = max(0.0, min(1.0, brightness))
+        if tint is None:
+            color = (b, b, b, b)
+        else:
+            # Scale the gamma-corrected filament color by the pulse
+            # envelope. W stays 0 -- mixing the white channel into a
+            # tinted logo washes the hue out on these RGBW strips.
+            color = (tint[0] * b, tint[1] * b, tint[2] * b, 0.0)
+        try:
+            led_helper._set_color(3, color)
+            led_helper._check_transmit()
+        except Exception:
+            # Log once at warning level on first failure, then suppress
+            # to avoid log spam from a recurring issue.
+            if not getattr(self, '_emit_failed_logged', False):
+                logging.exception("sa_led_animator: _emit failed "
+                                  "(further failures suppressed)")
+                self._emit_failed_logged = True
+
+    def _emit_nozzle(self, led_helper, color):
+        """Push one nozzle-pair update (INDEX=1 and INDEX=2)."""
+        r, g, b, w = color
+        try:
+            led_helper._set_color(1, (r, g, b, w))
+            led_helper._set_color(2, (r, g, b, w))
+            led_helper._check_transmit()
+        except Exception:
+            if not getattr(self, '_nozzle_emit_failed_logged', False):
+                logging.exception("sa_led_animator: _emit_nozzle failed "
+                                  "(further failures suppressed)")
+                self._nozzle_emit_failed_logged = True
+
+    def _read_nozzle_state(self, led_helper):
+        """Read the actual current state of the nozzle's LED pair as
+        a 4-tuple (r,g,b,w). Returns None on any access error.
+
+        Reads led_helper.led_state directly — that's the in-memory
+        record of what was last sent to the chip (Klipper's own
+        bookkeeping, used by _set_color to deduplicate). 0-indexed
+        in the helper's list, 1-based in user-space; nozzle pair is
+        user-indexes 1 and 2 → list indexes 0 and 1. They're always
+        kept in sync by _emit_nozzle so reading either is sufficient.
+        """
+        try:
+            return tuple(led_helper.led_state[0])
+        except Exception:
+            return None
+
+    def _is_actively_printing(self, eventtime):
+        """True if a real print job is currently advancing.
+
+        Reads `print_stats.state` (set by virtual_sdcard / Moonraker job
+        runner). Values are 'standby', 'printing', 'paused', 'complete',
+        'error', 'cancelled'. Only 'printing' counts as "actively
+        printing"; the rest mean the animator should own the nozzle.
+
+        Why not idle_timeout.state == 'Printing'? That transitions on
+        ANY gcode activity (including a one-line SET_LED from the
+        console), which is too coarse and would clear our cache during
+        brief manual macro fires.
+        """
+        ps = self.printer.lookup_object('print_stats', None)
+        if ps is None:
+            return False
+        try:
+            return ps.get_status(eventtime).get('state') == 'printing'
+        except Exception:
+            return False
+
+    def _is_tool_warm(self, tool_n, eventtime):
+        """True if tool N's hotend heater_fan is running.
+
+        Reading the fan's speed is cheaper and more authoritative than
+        polling extruder temp + duplicating the threshold — Klipper
+        already manages the >= 50 C threshold via the heater_fan's
+        heater_temp config (Voron StealthChanger default). When the
+        fan is on, the hotend is at or above that threshold; when
+        off, below.
+        """
+        name = self.hotend_fan_template % tool_n
+        fan = self.printer.lookup_object(name, None)
+        if fan is None:
+            return False
+        try:
+            return float(fan.get_status(eventtime).get('speed', 0.0)) > 0.0
+        except Exception:
+            return False
+
+    def _get_nozzle_color(self, state_name):
+        """Look up an (r,g,b,w) tuple from _sa_led_vars.colors.nozzle.
+
+        Reading from the leds.cfg variable bag means the canonical
+        color values stay in one place — adjusting a state's RGB in
+        leds.cfg automatically updates what the animator emits.
+        Returns None if the macro / state isn't found (caller should
+        skip the emit in that case rather than guess).
+        """
+        macro = self.printer.lookup_object(
+            'gcode_macro _sa_led_vars', None)
+        if macro is None or not hasattr(macro, 'variables'):
+            return None
+        try:
+            colors = macro.variables.get('colors', {})
+            c = colors.get('nozzle', {}).get(state_name)
+            if c is None:
+                return None
+            return (float(c.get('r', 0.0)), float(c.get('g', 0.0)),
+                    float(c.get('b', 0.0)), float(c.get('w', 0.0)))
+        except Exception:
+            return None
+
+
+def load_config(config):
+    return SaLedAnimator(config)

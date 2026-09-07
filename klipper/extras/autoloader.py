@@ -1,0 +1,2025 @@
+# autoloader.py — Autoloader main controller
+#
+# Single [autoloader] Klipper config section that instantiates and
+# wires together all subsystems:
+#   sa_motion.py        — motion primitives (servo, selector, drive)
+#   sa_sequences.py     — load / unload sequences
+#   sa_calibration.py   — all calibration routines
+#
+# Motion topology:
+#   Selector motor  : moves drive gear carriage to align with the active path
+#   Drive motor     : single gear that moves filament once path is selected
+#   Engage servo    : clamps drive gear into active path (driven) or releases (neutral)
+#   Per-path encoder: one fixed encoder per path — never moves, always counting
+#   Entry sensor    : one fixed sensor per path at the roll end
+#   Toolhead sensor : detects filament at the nozzle end of each Bowden tube
+#   Extruder sensor : detects filament arriving at extruder gears per toolhead
+#
+# Path states
+# ───────────
+#   unknown  — not confirmed (after boot or explicit reset)
+#   empty    — no filament in path
+#   partial  — filament in tube but not loaded to nozzle
+#   loaded   — filament loaded all the way to nozzle tip
+#
+# GCode commands registered here:
+#   SA_HOME
+#   SA_SELECT     TOOL=N
+#   SA_ENGAGE
+#   SA_DISENGAGE
+#   SA_LOAD       TOOL=N
+#   SA_UNLOAD     TOOL=N
+#   SA_STATUS
+#   SA_BUZZ_DRIVE      [DISTANCE SPEED REPS]
+#   SA_BUZZ_SELECTOR   [DISTANCE SPEED REPS]
+#   SA_CALIBRATE_SELECTOR          (automated, no TOOL param)
+#   SA_CALIBRATE_DRIVE
+#   SA_CALIBRATE_ENCODER  TOOL=N
+#   SA_CALIBRATE_BOWDEN   TOOL=N
+#   SA_ENCODER_QUERY   [TOOL RESET]
+#   SA_ENCODER_WATCH   [TOOL DURATION INTERVAL]
+#   SA_SET_STATE  TOOL=N STATE=x
+#   SA_RESPOND    VALUE=x
+
+import sys, os as _os
+_extras_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _extras_dir not in sys.path:
+    sys.path.insert(0, _extras_dir)
+
+import logging
+import os
+
+NL = chr(10)
+import re
+import configparser
+from sa_motion      import SAMotion
+from sa_sequences   import SASequences
+from sa_calibration import SACalibration
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Autoloader
+# ══════════════════════════════════════════════════════════════════════════════
+
+class Autoloader:
+    # Hard floor for SA_FORM_TIP's min_extrude_temp override. Below roughly
+    # this the extruder strips the filament rather than moving it.
+    TIP_FORM_TEMP_FLOOR = 150.0
+
+    # Every tip_form_* value that may carry a per-material variant, longest
+    # name first. The order matters: matched shortest-first,
+    # tip_form_shear_temp_asa would resolve against 'temp' with a material of
+    # 'shear', which is silently wrong rather than an error.
+    TIP_FORM_BASES = tuple(sorted((
+        'temp', 'push_length', 'push_speed', 'heatbreak_dist',
+        'heatbreak_speed', 'retract_speed', 'slow_speed', 'dwell',
+        'sever_dist', 'cooling_pos', 'cooling_len', 'cooling_moves',
+        'cool_speed_in', 'cool_speed_out', 'shear_temp', 'shear_speed',
+        'shear_timeout',
+    ), key=len, reverse=True))
+
+
+    # ── Path states ───────────────────────────────────────────────────────────
+    STATE_UNKNOWN = 'unknown'
+    STATE_EMPTY   = 'empty'
+    STATE_PARTIAL = 'partial'
+    STATE_LOADED  = 'loaded'
+
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.gcode   = self.printer.lookup_object('gcode')
+        self.reactor = self.printer.get_reactor()
+
+        # ── Shared motion hardware names ──────────────────────────────────────
+        self.drive_stepper_name    = config.get('drive_stepper')
+        self.selector_stepper_name = config.get('selector_stepper')
+        self.servo_name            = config.get('servo')
+
+        # ── Servo angles ──────────────────────────────────────────────────────
+        # These fall back to what every shipped parameters.cfg carries. They
+        # used to fall back to 30/160 -- the two angles the other way round --
+        # so a config that omitted them got a drive gear that gripped when it
+        # meant to release, and nothing on screen said the values were not the
+        # ones in the file the operator was reading.
+        self.servo_engaged_angle    = config.getfloat('servo_engaged_angle',    160.0)
+        self.servo_disengaged_angle = config.getfloat('servo_disengaged_angle', 10.0)
+
+        # The servo's own maximum, read from the [servo] section rather than
+        # assumed to be 180 -- mirroring an angle for a reversed servo has to
+        # land inside the range the servo actually accepts.
+        self.servo_max_angle = 180.0
+        try:
+            sc = config.getsection(self.servo_name)
+            self.servo_max_angle = sc.getfloat('maximum_servo_angle', 180.0)
+        except Exception:
+            logging.info("Autoloader: could not read maximum_servo_angle; "
+                         "assuming 180")
+
+        # ── Path count ────────────────────────────────────────────────────────
+        self.num_paths = config.getint('num_paths', 6)
+        if not 1 <= self.num_paths <= 32:
+            raise config.error("num_paths must be between 1 and 32")
+
+        # ── Per-path config ───────────────────────────────────────────────────
+        self._encoder_names         = []
+        # Which paths have had their sensors proved by hand. Not derived from
+        # anything -- a sensor reading CLEAR is indistinguishable from one that
+        # is not wired, which is exactly what the test exists to tell apart.
+        self._entry_sensor_ok       = []
+        self._toolhead_sensor_ok    = []
+        self._entry_sensor_names    = []
+        self._toolhead_sensor_names = []
+        self._extruder_sensor_names = []
+        self._selector_positions    = []
+        self._extruder_names        = []
+        self._bowden_lengths        = []
+
+        for i in range(self.num_paths):
+            self._encoder_names.append(
+                config.get('encoder_%d' % i, 'sa_encoder %d' % i))
+
+            self._entry_sensor_ok.append(False)
+            self._toolhead_sensor_ok.append(False)
+            self._entry_sensor_names.append(
+                config.get('entry_sensor_%d' % i, None))
+
+            self._toolhead_sensor_names.append(
+                config.get('toolhead_sensor_%d' % i, None))
+
+            self._extruder_sensor_names.append(
+                config.get('extruder_sensor_%d' % i, None))
+
+            self._selector_positions.append(
+                config.getfloat('selector_position_%d' % i, float(i) * 21.0))
+
+            default_ext = 'extruder' if i == 0 else 'extruder%d' % i
+            self._extruder_names.append(
+                config.get('extruder_%d' % i, default_ext))
+
+            self._bowden_lengths.append(
+                config.getfloat('bowden_length_%d' % i, 800.0))
+
+        # ── Motion parameters ─────────────────────────────────────────────────
+        self.tube_length             = config.getfloat('tube_length',             800.0)
+        self.nozzle_distance         = config.getfloat('nozzle_distance',          50.0)
+        self.purge_length            = config.getfloat('purge_length',             30.0)
+        self.load_temperature        = config.getfloat('load_temperature',        200.0)
+        self.engage_max_distance     = config.getfloat('engage_max_distance',      60.0)
+        self.slip_tolerance          = config.getfloat('slip_tolerance',           15.0)
+        self.feed_speed              = config.getfloat('feed_speed',               50.0)
+        self.feed_step_size          = config.getfloat('feed_step_size',           10.0)
+        self.selector_speed          = config.getfloat('selector_speed',          200.0)
+        self.sensor_delay            = config.getfloat('sensor_polling_delay',      0.2)
+        self.servo_move_delay        = config.getfloat('servo_move_delay',          0.3)
+        self.stepper_timeout         = config.getfloat('stepper_timeout',         120.0)
+        # Time the entry sensor must stay *inactive* before we mark a
+        # previously-loaded path as empty. Filters out brief sensor
+        # flicker (vibration, cable noise) without delaying real
+        # runout detection meaningfully. Filament *appearing* at the
+        # sensor (path was empty -> sees filament) transitions
+        # immediately, no debounce — that's the user inserting a
+        # spool and we want the LED to react instantly.
+        self.runout_timeout_seconds  = config.getfloat('runout_timeout',           10.0,
+                                                       minval=0.5, maxval=120.0)
+        self.material_select_timeout = config.getfloat('material_select_timeout', 60.0,
+                                                       minval=0.)
+        self.selector_max_travel     = config.getfloat('selector_max_travel',     200.0)
+        self.selector_homing_speed   = config.getfloat('selector_homing_speed',    50.0)
+        self.selector_homing_backoff = config.getfloat('selector_homing_backoff',   5.0)
+        # Sensorless calibration (SA_CALIBRATE_SELECTOR)
+        self.selector_stall_threshold    = config.getint(  'selector_stall_threshold',  1)
+        self.selector_stall_current      = config.getfloat('selector_stall_current',    0.3)
+        self.selector_stall_speed        = config.getfloat('selector_stall_speed',     30.0)
+
+        # Used by SA_CALIBRATE_SELECTOR. These were referenced by
+        # sa_calibration.py and defined nowhere, so the command raised
+        # AttributeError out of a gcode handler and SHUT KLIPPER DOWN every
+        # time it was run. It had simply never been run on this build.
+        #
+        # selector_cal_current: reduced current for the one-time sweep into the
+        #   far wall. A brief grind there is acceptable; the measurement comes
+        #   from homing back, not from detecting the stop.
+        # selector_end_offset: mm held back from total travel before dividing
+        #   it between paths. 0 uses the full measured travel.
+        # path_width: expected spacing, purely informational -- the routine
+        #   reports calculated vs configured so a mechanical error is obvious.
+        #   0 disables that note.
+        # Motor direction, as a sign applied to every move rather than a `!`
+        # on dir_pin. Inverting a pin means editing hardware.cfg and
+        # restarting; a sign can be flipped from the calibration guide, saved,
+        # and take effect on the next move -- which is what makes "it went the
+        # wrong way" a button rather than a config edit.
+        #
+        # Persisted in variables.cfg, so it survives an update that regenerates
+        # hardware.cfg.
+        self.drive_dir_invert    = config.getboolean('drive_dir_invert',    False)
+        self.selector_dir_invert = config.getboolean('selector_dir_invert', False)
+
+        self.selector_cal_current    = config.getfloat('selector_cal_current',  0.4)
+        self.selector_end_offset     = config.getfloat('selector_end_offset',   0.0)
+        self.path_width              = config.getfloat('path_width',            0.0)
+        self.encoder_to_gear_distance    = config.getfloat('encoder_to_gear_distance',  20.0)
+        self.sensor_retry_dist           = config.getfloat('sensor_retry_dist',          20.0)
+
+        # ── Park positions ────────────────────────────────────────────────────
+        self.load_park_x           = config.getfloat('load_park_x',           175.0)
+        self.load_park_y           = config.getfloat('load_park_y',            10.0)
+        self.load_park_z           = config.getfloat('load_park_z',            50.0)
+        self.load_print_park_x     = config.getfloat('load_print_park_x',      10.0)
+        self.load_print_park_y     = config.getfloat('load_print_park_y',      10.0)
+        self.cooling_pad_enabled   = config.getboolean('cooling_pad_enabled',  True)
+        self.clean_nozzle_enabled  = config.getboolean('clean_nozzle_enabled', True)
+
+        # ── Load / extrusion params ───────────────────────────────────────────
+        self.fill_nozzle_length    = config.getfloat('fill_nozzle_length',     50.0)
+        self.max_volumetric_flow   = config.getfloat('max_volumetric_flow',     5.0)
+        self.wiggle_distance       = config.getfloat('wiggle_distance',         5.0)
+        self.nozzle_to_sensor_dist = config.getfloat('nozzle_to_sensor_dist',  50.0)
+
+        # ── Tip forming ───────────────────────────────────────────────────────
+        self.tip_form_temp           = config.getfloat('tip_form_temp',           185.0)
+        self.tip_form_push_length    = config.getfloat('tip_form_push_length',      8.0)
+        self.tip_form_push_speed     = config.getfloat('tip_form_push_speed',      25.0)
+        self.tip_form_heatbreak_dist = config.getfloat('tip_form_heatbreak_dist',  40.0)
+        self.tip_form_heatbreak_speed= config.getfloat('tip_form_heatbreak_speed', 70.0)
+        self.tip_form_retract_speed  = config.getfloat('tip_form_retract_speed',   70.0)
+        self.tip_form_slow_speed     = config.getfloat('tip_form_slow_speed',      15.0)
+        self.tip_form_dwell          = config.getfloat('tip_form_dwell',            0.5)
+
+        # Tip forming, second stage onward. Named after the Happy Hare / ERCF
+        # scheme because that is the vocabulary the technique is documented in:
+        # sever the melt with one fast pull, ease back to the cooling zone, then
+        # oscillate there while the plastic stiffens. The oscillation is what
+        # actually shapes the tip -- without it a hot pull just necks and balls.
+        self.tip_form_sever_dist     = config.getfloat('tip_form_sever_dist',      15.0)
+        self.tip_form_cooling_pos    = config.getfloat('tip_form_cooling_pos',     35.0)
+        self.tip_form_cooling_len    = config.getfloat('tip_form_cooling_len',     10.0)
+        self.tip_form_cooling_moves  = config.getint('tip_form_cooling_moves',        4)
+        self.tip_form_cool_speed_in  = config.getfloat('tip_form_cool_speed_in',   10.0)
+        self.tip_form_cool_speed_out = config.getfloat('tip_form_cool_speed_out',  50.0)
+        # Cold-shear mode. 0 disables and the normal sever/ease/cool sequence
+        # runs. Set to a temperature and the heater is switched off after the
+        # ram, the hotend is allowed to fall to it, and the filament is then
+        # drawn out slowly so it shears at a defined boundary rather than
+        # separating from a melt.
+        self.tip_form_shear_temp     = config.getfloat('tip_form_shear_temp',      0.0)
+        self.tip_form_shear_speed    = config.getfloat('tip_form_shear_speed',     3.0)
+        self.tip_form_shear_timeout  = config.getfloat('tip_form_shear_timeout', 180.0)
+
+        # Per-material tip forming. Any tip_form_<name> may be given a
+        # <MATERIAL> variant -- tip_form_shear_temp_asa, tip_form_temp_petg --
+        # and the loaded profile's own material string selects it. Values above
+        # stay the fallback, so a printer that configures nothing per material
+        # behaves exactly as before.
+        self.tip_form_by_material = self._parse_tip_form_materials(config)
+        if self.tip_form_by_material:
+            logging.info("Autoloader: per-material tip values for %s",
+                         ", ".join(sorted(self.tip_form_by_material)))
+
+        # ── Parking sequence ──────────────────────────────────────────────────
+        # Common: where the filament tip ends up + the speed of the final move.
+        self.park_offset                 = config.getfloat('park_offset',                  5.0)
+        self.park_offset_speed           = config.getfloat('park_offset_speed',           20.0)
+
+        # Load-path (called on fresh insert and during load Branch C).
+        # Step 1 — initial feed forward to engage drive gear and push past encoder.
+        self.park_load_initial_extra     = config.getfloat('park_load_initial_extra',     20.0)
+        self.park_load_initial_speed     = config.getfloat('park_load_initial_speed',     20.0)
+        # Step 2 — retract until encoder is quiet (filament cleared encoder).
+        self.park_load_retract_chunk     = config.getfloat('park_load_retract_chunk',      5.0)
+        self.park_load_retract_speed     = config.getfloat('park_load_retract_speed',     25.0)
+        self.park_load_retract_pause     = config.getfloat('park_load_retract_pause',      0.15)
+        self.park_load_retract_max       = config.getfloat('park_load_retract_max',      300.0)
+        # Step 3 — Pass 1 (and Step 5 — Pass 2): feed forward to find encoder.
+        self.park_load_find_chunk        = config.getfloat('park_load_find_chunk',         5.0)
+        self.park_load_find_speed        = config.getfloat('park_load_find_speed',        15.0)
+        self.park_load_find_pause        = config.getfloat('park_load_find_pause',         0.10)
+        self.park_load_find_max          = config.getfloat('park_load_find_max',         200.0)
+        # Step 4 — back-off retract before Pass 2.
+        self.park_load_backoff_extra     = config.getfloat('park_load_backoff_extra',      6.0)
+        # Step 6 — final retract uses park_offset and park_offset_speed (above).
+
+        # Unload-path (called after long Bowden blast retract).
+        # Phase 1 — retract while encoder shows motion (debounced).
+        self.park_unload_chunk           = config.getfloat('park_unload_chunk',           10.0)
+        self.park_unload_speed           = config.getfloat('park_unload_speed',           25.0)
+        self.park_unload_pause           = config.getfloat('park_unload_pause',            0.20)
+        self.park_unload_quiet_iters     = config.getint  ('park_unload_quiet_iters',      2)
+        self.park_unload_max             = config.getfloat('park_unload_max',            800.0)
+        # Phase 2 — feed forward to re-find the tip.
+        self.park_unload_find_chunk      = config.getfloat('park_unload_find_chunk',       2.0)
+        self.park_unload_find_speed      = config.getfloat('park_unload_find_speed',      15.0)
+        self.park_unload_find_pause      = config.getfloat('park_unload_find_pause',       0.10)
+        self.park_unload_find_max        = config.getfloat('park_unload_find_max',       120.0)
+        # Phase 3 — final retract uses park_offset and park_offset_speed (above).
+
+        # ── Runtime state ─────────────────────────────────────────────────────
+        self.current_path      = -1
+        self._servo_is_engaged = False
+        self.path_states       = [self.STATE_UNKNOWN] * self.num_paths
+
+        # ── Per-path material/color profiles (restored from save_variables) ────
+        self.path_materials     = [''] * self.num_paths
+        self.path_brands        = [''] * self.num_paths
+        self.path_product_lines = [''] * self.num_paths
+        self.path_color_names   = [''] * self.num_paths
+        self.path_color_hexes   = [''] * self.num_paths
+        self.path_color_types   = ['single'] * self.num_paths
+        self.path_color_hex2s   = [''] * self.num_paths
+        self.path_color_hex3s   = [''] * self.num_paths
+        self.path_load_temps    = [self.load_temperature]       * self.num_paths
+        self.path_unload_temps  = [self.load_temperature - 15.] * self.num_paths
+        self.path_purge_speeds  = [5.0]                         * self.num_paths
+        self.path_purge_lengths = [self.purge_length]           * self.num_paths
+
+        # Previous entry-sensor reading per path, for edge detection.
+        # None means "no baseline yet" -- the next reading establishes one
+        # without being treated as an event.
+        self._entry_prev = [None] * self.num_paths
+
+        # Profiles a wipe removed, kept so the removal is recoverable.
+        self._stashed_profiles = {}
+        self._stash_announced  = set()
+
+        # SA_RESPOND mailbox (used by calibration routines)
+        self._pending_response = None
+        self._response_ready   = False
+        # A position read back from save_variables is where the carriage was
+        # last believed to be, not where the endstop says it is.
+        self._selector_position_restored = False
+        self._cal_state        = None
+        # Set True by sa_motion once the selector homes. Initialised
+        # here because every calibration reads it before homing, and
+        # an unset attribute raised AttributeError out of a gcode
+        # handler -- which Klipper treats as an internal error and
+        # shuts the printer down. Running any calibration on a freshly
+        # started Klipper did exactly that.
+        self._selector_homed   = False
+        # Paths with a load/unload in flight. The state monitor leaves
+        # these alone -- see SASequences.do_load.
+        self._op_paths         = set()
+        # Paths waiting for an auto-park, and whether the drainer is
+        # already running. See _queue_park.
+        self._park_queue       = []
+        self._park_active      = False
+        self._cal_data         = {}
+        self._cal_prompt       = ''
+        # True while the operator is walking the calibration chain, so a step
+        # that is ALSO an everyday command knows whether to offer the next one.
+        # SA_HOME is the case that forces this: offering "calibrate the
+        # selector next?" after every home would be a popup on a command people
+        # run all day.
+        self._cal_chain        = False
+        # Which calibration guide page the operator is on, held here rather
+        # than in each UI so the touchscreen and Mainsail show the same one.
+        # Not persisted: an open guide is a thing someone is doing right now,
+        # and restoring one after a restart would be reopening a window nobody
+        # asked for.
+        self._guide_open       = False
+        self._guide_step       = 1
+
+        # ── Subsystems ────────────────────────────────────────────────────────
+        self.motion      = SAMotion(self)
+        self.sequences   = SASequences(self)
+        self.calibration = SACalibration(self)
+
+        # ── Startup ───────────────────────────────────────────────────────────
+        self._register_commands()
+        self.printer.register_event_handler('klippy:ready', self._on_ready)
+        logging.info("Autoloader: initialized — %d paths", self.num_paths)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Klipper lifecycle
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _on_ready(self):
+        # Close any calibration dialog left over from before the restart.
+        #
+        # _cal_state is cleared on startup, so a prompt that survives is a
+        # dialog whose buttons do nothing: pressing YES calls SA_RESPOND with
+        # no phase waiting for it. Worse, it still LOOKS live -- Mike hit a
+        # stale "Accept these positions?" that had been emitted by the
+        # previous session and read it as the current one.
+        #
+        # The prompt protocol has no "is one open?" query, and prompt_end on
+        # nothing is harmless, so this is unconditional.
+        # Deliberately delayed. klippy:ready fires before Moonraker has
+        # reattached and resubscribed, so sending this immediately would
+        # broadcast it to nobody and the stale dialog would survive anyway.
+        self.reactor.register_callback(
+            self._clear_stale_prompt, self.reactor.monotonic() + 3.0)
+
+        self.reactor.register_callback(self._init_hardware)
+
+    def _clear_stale_prompt(self, eventtime):
+        try:
+            self.gcode.respond_raw("// action:prompt_end")
+            logging.info("Autoloader: cleared any stale calibration dialog")
+        except Exception:
+            logging.exception("Autoloader: could not clear a stale UI prompt")
+
+    def _init_hardware(self, eventtime):
+        self.motion.on_ready()
+        self._restore_material_profiles()
+        # For paths that are still STATE_UNKNOWN after restore (i.e. no
+        # explicit sa_state_<N> in save_variables), use the entry sensor
+        # to make a best-effort guess: filament present at sensor ->
+        # loaded, sensor clear -> empty. The result is also persisted
+        # so subsequent boots use the saved value rather than re-guessing.
+        # This handles the common "user set a material profile and
+        # physically loaded filament without ever running SA_LOAD" case.
+        self._initialize_states_from_sensors()
+        # Start the runout monitor — periodically reconciles path_states
+        # against the entry sensors with a debounce window so a brief
+        # sensor flicker doesn't accidentally mark a path empty.
+        self._start_state_monitor()
+
+        # Push restored colors to every toolhead's status LEDs as soon as
+        # we're ready. The [delayed_gcode] _SA_LEDS_STARTUP in leds.cfg
+        # is still kept as a belt-and-suspenders fallback for the case
+        # where the LED macros aren't loaded yet at this point in
+        # startup, but in normal operation this immediate refresh wins
+        # — saves the user staring at blank-white toolheads for 5 sec
+        # after every Klipper restart.
+        try:
+            self.gcode.run_script_from_command("_SA_LEDS_INIT_ALL")
+        except Exception:
+            logging.info(
+                "SA: immediate LED init skipped (will retry via "
+                "[delayed_gcode] _SA_LEDS_STARTUP); reason: %s",
+                __import__('traceback').format_exc().splitlines()[-1])
+
+    def save_path_state(self, path):
+        """Persist path_states[path] to save_variables."""
+        sv = self.printer.lookup_object('save_variables', None)
+        if sv:
+            self.gcode.run_script_from_command(
+                "SAVE_VARIABLE VARIABLE=sa_state_%d VALUE=\"'%s'\""
+                % (path, self.path_states[path]))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # State-from-sensor inference + runout monitor
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _initialize_states_from_sensors(self):
+        """For paths still STATE_UNKNOWN after _restore_material_profiles
+        (no `sa_state_<N>` saved), infer a state from the sensors and
+        persist it. Skips paths that already have a known state — those
+        have an explicit save and shouldn't be overridden on boot just
+        because a sensor disagrees momentarily.
+
+        All three sensors are consulted, because each answers a different
+        question. The toolhead sensor is the only one that can say the
+        filament actually reached the nozzle, so it alone justifies
+        'loaded'. Filament at the entry with nothing past it means the
+        path holds filament that was never driven through, which is
+        'partial'. Nothing anywhere is 'empty'.
+        """
+        for i in range(self.num_paths):
+            if self.path_states[i] != self.STATE_UNKNOWN:
+                continue
+            try:
+                at_entry    = self._entry_sensor_active(i)
+                at_toolhead = self._toolhead_sensor_active(i)
+            except Exception:
+                continue
+            if at_toolhead:
+                new_state = self.STATE_LOADED
+            elif at_entry:
+                new_state = self.STATE_PARTIAL
+            else:
+                new_state = self.STATE_EMPTY
+            self.path_states[i] = new_state
+            try:
+                self.gcode.run_script_from_command(
+                    "SAVE_VARIABLE VARIABLE=sa_state_%d VALUE=\"'%s'\""
+                    % (i, new_state))
+            except Exception:
+                logging.exception(
+                    "Autoloader: could not persist inferred state for path %d", i)
+            logging.info("Autoloader: path %d state inferred from "
+                         "sensors (entry=%s toolhead=%s): %s",
+                         i, at_entry, at_toolhead, new_state)
+
+    def _start_state_monitor(self):
+        """Reactor timer that reconciles path_states with the entry
+        sensors once per second. Empty -> Loaded transitions are
+        immediate (someone just inserted a spool). Loaded -> Empty
+        transitions debounce for `runout_timeout_seconds` so a brief
+        sensor flicker doesn't accidentally mark a path empty.
+        """
+        # eventtime of the last "filament present" reading per path.
+        # Used as the debounce reference point.
+        self._sensor_last_active_time = {}
+        # path -> eventtime a profile was first seen on a sensor-clear
+        # path, i.e. when the material_select_timeout clock started.
+        self._profile_pending_since = {}
+        now = self.reactor.monotonic()
+        # Seed every path, not just the ones reading present. The runout
+        # check falls back to this value, and a fallback of
+        # `eventtime - runout_timeout_seconds` is instantly satisfied on
+        # the first tick -- emptying a path that had merely not been seen
+        # yet. Starting the clock at boot gives one full debounce window
+        # before anything can be declared a runout.
+        for i in range(self.num_paths):
+            self._sensor_last_active_time[i] = now
+        self._state_monitor_timer = self.reactor.register_timer(
+            self._state_monitor_tick, now + 2.0)
+
+    def _state_monitor_tick(self, eventtime):
+        try:
+            for i in range(self.num_paths):
+                if i in self._op_paths:
+                    # Load or unload in flight on this path. Its sensor
+                    # goes clear and back mid-sequence, and a load can
+                    # run longer than material_select_timeout, so acting
+                    # on either clock here would fight the operation --
+                    # up to wiping the profile the load is using.
+                    # Hold the debounce reference at "now" so the path
+                    # gets a full window once the operation finishes.
+                    self._sensor_last_active_time[i] = eventtime
+                    self._profile_pending_since.pop(i, None)
+                    # Drop the baseline: a load or unload drives the sensor
+                    # clear and back on purpose, and comparing against a
+                    # reading from before the operation would read as a
+                    # removal the moment it finishes.
+                    self._entry_prev[i] = None
+                    continue
+                try:
+                    active = self._entry_sensor_active(i)
+                except Exception:
+                    continue
+                if active:
+                    # Only record that filament is present, as the debounce
+                    # reference for the runout check below. The state itself is
+                    # left alone: the entry sensor sees filament arriving at the
+                    # entry, which says nothing about whether it has been driven
+                    # through the bowden to the nozzle. Only the load and unload
+                    # sequences know that, so only they promote a path.
+                    self._sensor_last_active_time[i] = eventtime
+                    # Filament is physically here: the profile is retained
+                    # until it is removed or manually changed, so cancel
+                    # any pending select timeout.
+                    self._profile_pending_since.pop(i, None)
+                    # Filament reached the entry sensor, so the path holds
+                    # filament that has not been driven to the nozzle --
+                    # which is exactly what 'partial' means. Promote and
+                    # hold there. Loading is what promotes to 'loaded';
+                    # this never touches a path already in that state.
+                    #
+                    # The panels were already deriving this client-side
+                    # (their _effective_state treats an active entry
+                    # sensor as partial), so the backend disagreed with
+                    # its own UI and the LEDs, which read path_states
+                    # directly, kept showing an empty slot with filament
+                    # sitting in it.
+                    was = self._entry_prev[i]
+                    self._entry_prev[i] = True
+
+                    if self.path_states[i] in (self.STATE_EMPTY,
+                                               self.STATE_UNKNOWN):
+                        self._set_state_persist(
+                            i, self.STATE_PARTIAL,
+                            "entry sensor detected filament")
+                        self._queue_led_refresh(i)
+                        self._queue_park(i)
+                    elif was is False:
+                        # Filament left and came back inside the runout
+                        # debounce, so the state never reached 'empty' and the
+                        # branch above never fired: nothing moved, and the path
+                        # went on claiming filament was parked at the drive
+                        # gear while it sat at the entry sensor.
+                        #
+                        # The sensor EDGE is the real event. Whatever the
+                        # stored state says, filament that has just arrived has
+                        # not been parked yet.
+                        logging.info(
+                            "Autoloader: path %d filament returned before the "
+                            "runout debounce expired — re-parking", i)
+                        self._queue_park(i)
+
+                    # Filament is here but the slot has no profile. If a wipe
+                    # took one, say so once -- the operator is standing at the
+                    # machine with the spool in hand, which is the only moment
+                    # they can confirm whether it is the same one.
+                    self._announce_stash(i)
+                else:
+                    self._entry_prev[i] = False
+                    # Sensor clear. Two different clocks run here:
+                    #
+                    #  * a path that BELIEVED it held filament has just
+                    #    lost it -- that is a removal, and the profile
+                    #    goes as soon as the runout debounce confirms it.
+                    #  * a path that was already empty but carries a
+                    #    profile the user selected -- they picked a
+                    #    filament and never loaded it. That gets the
+                    #    longer material_select_timeout before the slot
+                    #    is wiped, so selecting a profile and then
+                    #    walking over to fetch the spool doesn't lose it.
+                    if self.path_states[i] in (self.STATE_LOADED,
+                                               self.STATE_PARTIAL):
+                        # Sensor inactive on a path that still believes it
+                        # holds filament. Both states qualify: an unload ends
+                        # by parking the filament at the drive gear and
+                        # leaving the path "partial", so a path the roll is
+                        # then pulled from would otherwise sit on "partial"
+                        # forever with nothing to clear it. Debounce either
+                        # way against runout_timeout_seconds so a flicker
+                        # does not empty a good path.
+                        last_active = self._sensor_last_active_time.get(
+                            i, eventtime - self.runout_timeout_seconds)
+                        if (eventtime - last_active
+                                >= self.runout_timeout_seconds):
+                            self._set_state_persist(
+                                i, self.STATE_EMPTY,
+                                "entry sensor clear for %.1fs (runout)"
+                                % self.runout_timeout_seconds)
+                            # The filament that profile described is gone. Clearing it
+                            # lets the logo fall back to the breathing white that means
+                            # "nothing here", and stops the next load inheriting the old
+                            # brand, colour and temperatures.
+                            self._clear_material_profile(
+                                i, "filament removed")
+                            self._queue_led_refresh(i)
+                    elif self._has_material_profile(i):
+                        # Empty slot holding a profile nobody loaded.
+                        since = self._profile_pending_since.setdefault(
+                            i, eventtime)
+                        if (self.material_select_timeout > 0.
+                                and eventtime - since
+                                >= self.material_select_timeout):
+                            self._clear_material_profile(
+                                i, "selected but not loaded within %.0fs"
+                                % self.material_select_timeout)
+        except Exception:
+            logging.exception(
+                "Autoloader: state monitor tick failed (suppressed)")
+        # 1 Hz check — runout detection latency is dominated by
+        # runout_timeout_seconds anyway, so polling faster doesn't help.
+        return eventtime + 1.0
+
+    def _queue_park(self, path):
+        """Ask for an auto-park on *path*, serialised behind any other.
+
+        This replaces the entry sensors' insert_gcode. Klipper's
+        RunoutHelper only runs insert_gcode when idle_timeout.state is
+        not "Printing", and idle_timeout flips to "Printing" on any gcode
+        activity -- so parking one path suppressed the insert event for
+        the next. It also sets filament_present before that check
+        returns, so the edge was consumed and never fired again: insert
+        two spools in quick succession and the second park was lost, not
+        merely delayed.
+
+        Polling the sensor in the state monitor detects the insertion
+        regardless of what gcode is running, and queueing here means a
+        park that arrives mid-park is held and run next rather than
+        dropped.
+        """
+        if path in self._park_queue:
+            return
+        self._park_queue.append(path)
+
+        # A calibration owns the machine. The entry sensor test asks the
+        # operator to insert filament by hand, and parking it takes the gcode
+        # mutex -- so the test stalled until the load finished. Held rather
+        # than dropped: they did insert a spool, and it should end up parked
+        # once the calibration is out of the way.
+        if self._cal_state:
+            logging.info("Autoloader: auto-park for path %d held while '%s' "
+                         "is running", path, self._cal_state)
+            return
+
+        if self._park_active:
+            return
+        self._park_active = True
+        try:
+            self.reactor.register_callback(self._drain_park_queue)
+        except Exception:
+            self._park_active = False
+            logging.exception("Autoloader: could not queue auto-park")
+
+    def drain_pending_parks(self):
+        """Start draining anything held while a calibration was running."""
+        if self._cal_state or self._park_active or not self._park_queue:
+            return
+        self._park_active = True
+        try:
+            self.reactor.register_callback(self._drain_park_queue)
+        except Exception:
+            self._park_active = False
+            logging.exception("Autoloader: could not resume held auto-parks")
+
+    def _drain_park_queue(self, eventtime):
+        """Run queued auto-parks one at a time, oldest first.
+
+        Runs as a reactor callback rather than from the monitor timer:
+        run_script blocks on the gcode mutex, which a timer must not do.
+        New paths appended while a park is in flight are picked up by
+        this same loop, so a burst of insertions still parks every one.
+        """
+        try:
+            while self._park_queue:
+                path = self._park_queue.pop(0)
+                try:
+                    # Re-check rather than trusting the queued request:
+                    # the filament may have been pulled back out while
+                    # this sat behind another park.
+                    if not self._entry_sensor_active(path):
+                        continue
+                except Exception:
+                    continue
+                if path in self._op_paths:
+                    continue
+                if self._is_printing():
+                    # A real print owns the machine; don't inject moves.
+                    # The path keeps its 'partial' state and can be
+                    # parked by hand afterwards.
+                    continue
+                try:
+                    self.gcode.run_script("SA_PARK TOOL=%d" % path)
+                except Exception:
+                    logging.exception(
+                        "Autoloader: auto-park of path %d failed", path)
+        finally:
+            self._park_active = False
+
+    def _is_printing(self):
+        """True only during a real print job.
+
+        Deliberately not idle_timeout.state -- that reads "Printing" for
+        any gcode at all, which is the bug this whole path works around.
+        """
+        ps = self.printer.lookup_object('print_stats', None)
+        if ps is None:
+            return False
+        try:
+            return ps.get_status(
+                self.reactor.monotonic()).get('state') == 'printing'
+        except Exception:
+            return False
+
+    def _queue_led_refresh(self, path):
+        """Repaint one path's LEDs after a state change made off-gcode.
+
+        The state monitor runs on a reactor timer and holds no gcode
+        mutex, so it cannot call run_script itself. Handing the work to
+        reactor.register_callback is the same pattern Klipper's own
+        filament_switch_sensor uses to run its runout gcode, and it
+        lets the existing _SA_LED_FROM_STATE rendering stay the single
+        definition of what each state looks like.
+        """
+        def _run(eventtime, path=path):
+            try:
+                self.gcode.run_script("_SA_LED_FROM_STATE TOOL=%d" % path)
+            except Exception:
+                logging.exception(
+                    "Autoloader: LED refresh for path %d failed", path)
+        try:
+            self.reactor.register_callback(_run)
+        except Exception:
+            logging.exception("Autoloader: could not queue LED refresh")
+
+    def _persist_variables(self, updates):
+        """Write several save_variables entries in one file rewrite.
+
+        Mirrors save_variables.cmd_SAVE_VARIABLE, but deliberately does
+        not go through the gcode dispatcher: the state monitor runs on a
+        reactor timer and does not hold the gcode mutex, so
+        run_script_from_command is not safe to call from there. It also
+        collapses what would be a dozen separate SAVE_VARIABLE commands
+        -- each of which rewrites the entire file -- into one write.
+        """
+        sv = self.printer.lookup_object('save_variables', None)
+        if sv is None:
+            return
+        try:
+            newvars = dict(sv.allVariables)
+            newvars.update(updates)
+            varfile = configparser.ConfigParser()
+            varfile.add_section('Variables')
+            for name, val in sorted(newvars.items()):
+                varfile.set('Variables', name, repr(val))
+            with open(sv.filename, 'w') as f:
+                varfile.write(f)
+            sv.loadVariables()
+        except Exception:
+            logging.exception(
+                "Autoloader: failed to persist variables (suppressed)")
+
+    @staticmethod
+    def _material_key(material):
+        """Normalise a material name into a config-option key.
+
+        The filament database carries names like 'PA-CF' and 'coPETG', while
+        configparser lowercases option names and a hyphen reads badly in one.
+        Both sides collapse to lowercase with runs of non-alphanumerics as
+        single underscores, so 'PA-CF', 'pa_cf' and 'Pa Cf' all name the same
+        material and the config file can be written the obvious way.
+        """
+        return re.sub(r'[^a-z0-9]+', '_',
+                      (material or '').strip().lower()).strip('_')
+
+    def _parse_tip_form_materials(self, config):
+        """Collect tip_form_<name>_<MATERIAL> options into {material: {name: v}}."""
+        table = {}
+        for opt in config.get_prefix_options('tip_form_'):
+            rest = opt[len('tip_form_'):]
+            for base in self.TIP_FORM_BASES:
+                if not rest.startswith(base + '_'):
+                    continue
+                mat = self._material_key(rest[len(base) + 1:])
+                if mat:
+                    table.setdefault(mat, {})[base] = config.getfloat(opt)
+                break
+        return table
+
+    def tip_form_overrides(self, path, material=None):
+        """Tip-form values for a path's material, and a line saying where from.
+
+        Returns (dict, note). The dict is empty whenever nothing material
+        specific applies, which leaves the tuned globals in force -- an
+        unrecognised material forms the same tip it always did rather than
+        being refused or guessed at.
+        """
+        if material is None:
+            material = self.path_materials[path] or ''
+        material = (material or '').strip()
+        key = self._material_key(material)
+        if not key:
+            return {}, ("T%d has no filament profile — forming with the "
+                        "global tip values." % path)
+        vals = self.tip_form_by_material.get(key)
+        if not vals:
+            return {}, ("no tip values configured for %s — forming with the "
+                        "global tip values." % material)
+        return dict(vals), ("%s tip values — %s" % (
+            material,
+            ", ".join("%s=%g" % (k, v) for k, v in sorted(vals.items()))))
+
+    def _has_material_profile(self, path):
+        """True if path carries a user-selected filament profile.
+
+        Material, brand and colour are checked together rather than just
+        one of them: a profile picked from the touchscreen colour step
+        can set a colour with no material name yet, and one typed from
+        the console can do the reverse.
+        """
+        return bool((self.path_materials[path]   or '').strip()
+                    or (self.path_brands[path]     or '').strip()
+                    or (self.path_color_hexes[path] or '').strip())
+
+    def _profile_dict(self, path):
+        """The stored profile for one path, as a plain dict."""
+        return {
+            'material':     self.path_materials[path],
+            'brand':        self.path_brands[path],
+            'product_line': self.path_product_lines[path],
+            'color_name':   self.path_color_names[path],
+            'color_hex':    self.path_color_hexes[path],
+            'color_type':   self.path_color_types[path],
+            'color_hex2':   self.path_color_hex2s[path],
+            'color_hex3':   self.path_color_hex3s[path],
+            'load_temp':    float(self.path_load_temps[path]),
+            'unload_temp':  float(self.path_unload_temps[path]),
+            'purge_speed':  float(self.path_purge_speeds[path]),
+            'purge_length': float(self.path_purge_lengths[path]),
+        }
+
+    def _profile_label(self, prof):
+        """A human-readable one-liner for a stashed profile."""
+        # Brand, line and material overlap constantly -- "Polymaker" +
+        # "PolyLite ASA" + "ASA" reads as "Polymaker PolyLite ASA ASA". Keep
+        # each part only when it is not already spelled out by another, in
+        # either direction, so the longer name wins and the redundant one goes.
+        bits = []
+        for b in (prof.get('brand'), prof.get('product_line'),
+                  prof.get('material')):
+            b = (b or '').strip()
+            if not b or any(b.lower() in k.lower() for k in bits):
+                continue
+            bits = [k for k in bits if k.lower() not in b.lower()]
+            bits.append(b)
+        name = " ".join(bits) or "unnamed profile"
+        colour = (prof.get('color_name') or '').strip()
+        return "%s%s" % (name, (" — %s" % colour) if colour else "")
+
+    def _stash_profile(self, path, reason=""):
+        """Keep one path's profile aside so a wipe is recoverable.
+
+        Stored as a single dict rather than twelve more variables: the
+        variables file holds repr() of each value, and one dict of strings and
+        floats round-trips through that safely while keeping the file readable.
+        """
+        prof = self._profile_dict(path)
+        prof['cleared_because'] = reason or "no reason given"
+        self._stashed_profiles[path] = prof
+        self._stash_announced.discard(path)
+        self._persist_variables({'sa_lastprofile_%d' % path: prof})
+        logging.info("Autoloader: stashed profile on path %d (%s)",
+                     path, self._profile_label(prof))
+
+    def _cmd_restore_profile(self, gcmd):
+        """SA_RESTORE_PROFILE TOOL=N — put back the profile a wipe removed.
+
+        Deliberately not automatic. Restoring on its own would be right when
+        the same spool goes back in and actively dangerous when a different one
+        does: the machine would report red PLA while holding blue PETG and heat
+        to PLA temperatures for it. A profile is a claim about what is
+        physically in the path, and only the operator can confirm that claim,
+        so this asks rather than assumes.
+        """
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        prof = self._stashed_profiles.get(path)
+        if not prof:
+            gcmd.respond_info(
+                "SA: T%d has no stashed profile to restore." % path)
+            return
+        if self._has_material_profile(path):
+            gcmd.respond_info(
+                "SA: T%d already carries a profile (%s). Refusing to overwrite "
+                "it — clear it first if the stashed %s is the right one."
+                % (path, self._profile_label(self._profile_dict(path)),
+                   self._profile_label(prof)))
+            return
+
+        self.gcode.run_script_from_command(
+            "SA_SET_MATERIAL TOOL=%d MATERIAL=\"%s\" BRAND=\"%s\" LINE=\"%s\" "
+            "COLOR_NAME=\"%s\" COLOR_HEX=\"%s\" COLOR_TYPE=\"%s\" "
+            "COLOR_HEX_2=\"%s\" COLOR_HEX_3=\"%s\" LOAD_TEMP=%.1f "
+            "UNLOAD_TEMP=%.1f PURGE_SPEED=%.1f PURGE_LENGTH=%.1f"
+            % (path, prof.get('material', ''), prof.get('brand', ''),
+               prof.get('product_line', ''), prof.get('color_name', ''),
+               prof.get('color_hex', ''), prof.get('color_type', 'single'),
+               prof.get('color_hex2', ''), prof.get('color_hex3', ''),
+               float(prof.get('load_temp', self.load_temperature)),
+               float(prof.get('unload_temp', self.load_temperature - 15.)),
+               float(prof.get('purge_speed', 5.0)),
+               float(prof.get('purge_length', self.purge_length))))
+        gcmd.respond_info("SA: T%d profile restored — %s"
+                          % (path, self._profile_label(prof)))
+
+    def _announce_stash(self, path):
+        """Tell the operator a wiped profile is still recoverable.
+
+        Fired when a path with no profile sees filament again. Said once per
+        stash, because the alternative is a line on every sensor bounce.
+        """
+        prof = self._stashed_profiles.get(path)
+        if not prof or self._has_material_profile(path):
+            return
+        if path in self._stash_announced:
+            return
+        self._stash_announced.add(path)
+        self.gcode.respond_info(
+            "SA: T%d has filament but no profile. The last one (%s) was cleared "
+            "because %s — SA_RESTORE_PROFILE TOOL=%d puts it back, if that is "
+            "the same spool."
+            % (path, self._profile_label(prof),
+               prof.get('cleared_because', 'no reason given'), path))
+
+    def _clear_material_profile(self, path, reason=""):
+        """Wipe the stored filament profile for one path, and persist it.
+
+        Called when the filament a profile describes is gone, so the next
+        load cannot inherit the old brand, colour and temperatures, and
+        the logo falls back to the plain breathing pulse that means
+        "nothing here".
+        """
+        if not self._has_material_profile(path):
+            return
+
+        # Stash before wiping. A 10 s sensor dropout is enough to trigger this,
+        # and it used to take brand, colour, material and tuned temperatures
+        # with it permanently -- a mis-seated switch or a hand on the filament
+        # during testing cost work that only the operator could reconstruct.
+        # The stash survives a restart and is restored only on request: see
+        # _cmd_restore_profile for why this does not restore itself.
+        self._stash_profile(path, reason)
+
+        self.path_materials[path]     = ''
+        self.path_brands[path]        = ''
+        self.path_product_lines[path] = ''
+        self.path_color_names[path]   = ''
+        self.path_color_hexes[path]   = ''
+        self.path_color_types[path]   = 'single'
+        self.path_color_hex2s[path]   = ''
+        self.path_color_hex3s[path]   = ''
+        self.path_load_temps[path]    = self.load_temperature
+        self.path_unload_temps[path]  = self.load_temperature - 15.
+        self.path_purge_speeds[path]  = 5.0
+        self.path_purge_lengths[path] = self.purge_length
+
+        self._persist_variables({
+            'sa_material_%d'     % path: '',
+            'sa_brand_%d'        % path: '',
+            'sa_product_line_%d' % path: '',
+            'sa_color_name_%d'   % path: '',
+            'sa_color_hex_%d'    % path: '',
+            'sa_color_type_%d'   % path: 'single',
+            'sa_color_hex2_%d'   % path: '',
+            'sa_color_hex3_%d'   % path: '',
+            'sa_load_temp_%d'    % path: self.load_temperature,
+            'sa_unload_temp_%d'  % path: self.load_temperature - 15.,
+            'sa_purge_speed_%d'  % path: 5.0,
+            'sa_purge_length_%d' % path: self.purge_length,
+        })
+        self._profile_pending_since.pop(path, None)
+        logging.info("Autoloader: cleared filament profile on path %d (%s)",
+                     path, reason or "no reason given")
+        # No LED call needed: sa_led_animator reads path_color_hexes every
+        # tick, so the slot drops back to the plain white "nothing here"
+        # pulse on its own. Firing a macro from this reactor timer would
+        # mean blocking on the gcode mutex, which the timer must not do.
+
+    def _set_state_persist(self, path, new_state, reason=""):
+        """Internal helper — update path_states[path] and persist."""
+        if self.path_states[path] == new_state:
+            return
+        old = self.path_states[path]
+        self.path_states[path] = new_state
+        try:
+            self.gcode.run_script_from_command(
+                "SAVE_VARIABLE VARIABLE=sa_state_%d VALUE=\"'%s'\""
+                % (path, new_state))
+        except Exception:
+            logging.exception(
+                "Autoloader: could not persist new state for path %d", path)
+        logging.info("Autoloader: path %d state %s -> %s%s",
+                     path, old, new_state,
+                     (" (%s)" % reason) if reason else "")
+
+    def _restore_material_profiles(self):
+        """Read per-path calibration and material/color fields from save_variables on boot."""
+        sv = self.printer.lookup_object('save_variables', None)
+        if not sv:
+            return
+        svars = sv.allVariables
+        # Restore calibrated positions and bowden lengths (override config file defaults)
+        for i in range(self.num_paths):
+            if ('selector_position_%d' % i) in svars:
+                self._selector_positions[i] = float(svars['selector_position_%d' % i])
+            if ('bowden_length_%d' % i) in svars:
+                self._bowden_lengths[i] = float(svars['bowden_length_%d' % i])
+            self._entry_sensor_ok[i] = bool(
+                svars.get('entry_sensor_ok_%d' % i, False))
+            self._toolhead_sensor_ok[i] = bool(
+                svars.get('toolhead_sensor_ok_%d' % i, False))
+        for i in range(self.num_paths):
+            self.path_materials[i]     = svars.get('sa_material_%d'      % i, '')
+            self.path_brands[i]        = svars.get('sa_brand_%d'         % i, '')
+            self.path_product_lines[i] = svars.get('sa_product_line_%d'  % i, '')
+            self.path_color_names[i]   = svars.get('sa_color_name_%d'    % i, '')
+            self.path_color_hexes[i]   = svars.get('sa_color_hex_%d'     % i, '')
+            self.path_color_types[i]   = svars.get('sa_color_type_%d'    % i, 'single')
+            self.path_color_hex2s[i]   = svars.get('sa_color_hex2_%d'    % i, '')
+            self.path_color_hex3s[i]   = svars.get('sa_color_hex3_%d'    % i, '')
+            self.path_load_temps[i]    = float(svars.get(
+                'sa_load_temp_%d'   % i, self.load_temperature))
+            self.path_unload_temps[i]  = float(svars.get(
+                'sa_unload_temp_%d' % i, self.load_temperature - 15.))
+            self.path_purge_speeds[i]  = float(svars.get(
+                'sa_purge_speed_%d' % i, 5.0))
+            self.path_purge_lengths[i] = float(svars.get(
+                'sa_purge_length_%d' % i, self.purge_length))
+            stashed = svars.get('sa_lastprofile_%d' % i, None)
+            if isinstance(stashed, dict):
+                self._stashed_profiles[i] = stashed
+
+        # Servo angles found by SA_CALIBRATE_SERVO. Saved here rather than in
+        # parameters.cfg so the installer's regeneration cannot discard them.
+        for key, attr in (('sa_selector_end_offset',    'selector_end_offset'),
+                          ('sa_servo_engaged_angle',    'servo_engaged_angle'),
+                          ('sa_servo_disengaged_angle', 'servo_disengaged_angle')):
+            v = svars.get(key, None)
+            if v is not None:
+                try:
+                    setattr(self, attr, float(v))
+                except (TypeError, ValueError):
+                    logging.warning("Autoloader: bad %s in variables.cfg: %r",
+                                    key, v)
+
+        for key, attr in (('sa_drive_dir_invert',    'drive_dir_invert'),
+                          ('sa_selector_dir_invert', 'selector_dir_invert')):
+            v = svars.get(key, None)
+            if v is not None:
+                setattr(self, attr, str(v).strip().lower()
+                        in ('1', 'true', 'yes', 'y'))
+            # Restore path state as well if saved
+            saved_state = svars.get('sa_state_%d' % i, None)
+            if saved_state in (self.STATE_UNKNOWN, self.STATE_EMPTY,
+                               self.STATE_PARTIAL, self.STATE_LOADED):
+                self.path_states[i] = saved_state
+        # Apply the calibrated drive rotation_distance to the live stepper, the
+        # same way sa_encoder applies its calibrated mm_per_pulse. This used to
+        # rewrite hardware.cfg and ask for another restart, which does not
+        # survive post_update.sh copying the repo's hardware.cfg over it.
+        saved_rd = svars.get('drive_rotation_distance', None)
+        if saved_rd is not None:
+            try:
+                saved_rd = float(saved_rd)
+                if saved_rd > 0.0:
+                    self.apply_drive_rotation_distance(saved_rd, 'save_variables')
+            except Exception as e:
+                logging.warning("Autoloader: rotation_distance sync failed: %s", e)
+        logging.info("Autoloader: calibrations restored from save_variables")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Hardware name helpers
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _drv_name(self):
+        """Short name for drive stepper (last word of drive_stepper_name)."""
+        return self.drive_stepper_name.split()[-1]
+
+    def _sel_name(self):
+        """Short name for selector stepper (last word of selector_stepper_name)."""
+        return self.selector_stepper_name.split()[-1]
+
+    def _servo_short_name(self):
+        """Short name for servo (last word of servo_name)."""
+        return self.servo_name.split()[-1]
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Hardware sensor accessors
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _encoder(self, path):
+        """Return the sa_encoder object for *path*."""
+        return self.printer.lookup_object(self._encoder_names[path])
+
+    def _entry_sensor_active(self, path):
+        """True if filament is detected at the entry of *path*."""
+        name = self._entry_sensor_names[path]
+        if not name:
+            return False
+        try:
+            return bool(self.printer.lookup_object(name).get_status(
+                self.reactor.monotonic())['filament_detected'])
+        except Exception:
+            return False
+
+    def _toolhead_sensor_active(self, path):
+        """True if filament is past the extruder gears and entering the hotend on *path*."""
+        name = self._toolhead_sensor_names[path]
+        if not name:
+            return False
+        try:
+            return bool(self.printer.lookup_object(name).get_status(
+                self.reactor.monotonic())['filament_detected'])
+        except Exception:
+            return False
+
+    def _extruder_sensor_active(self, path):
+        """True if filament has arrived at toolhead entry (before extruder gears) on *path*."""
+        name = self._extruder_sensor_names[path]
+        if not name:
+            return False
+        try:
+            return bool(self.printer.lookup_object(name).get_status(
+                self.reactor.monotonic())['filament_detected'])
+        except Exception:
+            return False
+
+    def _encoder_distance(self, path):
+        """Current encoder distance for *path*, or None on error."""
+        try:
+            return self._encoder(path).get_distance()
+        except Exception:
+            return None
+
+    def _encoder_mm_per_pulse(self, path):
+        """mm_per_pulse for encoder *path*, or None on error."""
+        try:
+            return self._encoder(path).mm_per_pulse
+        except Exception:
+            return None
+
+    def apply_drive_rotation_distance(self, rd, source='calibration'):
+        """Set the live drive stepper's rotation_distance. Returns True if changed.
+
+        Runtime, not a config rewrite: hardware.cfg is replaced by the updater
+        on every pull, so a value written there is lost and the printer runs on
+        the repo's default until someone restarts twice.
+        """
+        try:
+            drv_obj = self.printer.lookup_object(self.drive_stepper_name)
+            steppers = drv_obj.get_steppers()
+            current = steppers[0].get_rotation_distance()[0]
+            if abs(current - rd) <= 0.0001:
+                return False
+            for st in steppers:
+                st.set_rotation_distance(rd)
+            logging.info(
+                "Autoloader: drive rotation_distance %.4f -> %.4f (from %s)",
+                current, rd, source)
+            return True
+        except Exception:
+            logging.exception(
+                "Autoloader: could not apply drive rotation_distance %.4f", rd)
+            return False
+
+    def _get_drive_rotation_distance(self):
+        try:
+            drv_obj = self.printer.lookup_object(self.drive_stepper_name)
+            return round(drv_obj.get_steppers()[0].get_rotation_distance()[0], 4)
+        except Exception:
+            return 0.0
+
+    def _get_encoder_max_speed(self):
+        """Return calibrated encoder_max_speed from save_variables, or 0 if not set."""
+        try:
+            sv = self.printer.lookup_object('save_variables', None)
+            if sv:
+                val = sv.allVariables.get('encoder_max_speed', 0)
+                return float(val) if val else 0.0
+        except Exception:
+            pass
+        return 0.0
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # GCode command registration
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _register_commands(self):
+        cmds = [
+            ('SA_HOME',
+             self._cmd_home,
+             "Home selector to endstop (double-touch)"),
+            ('SA_SELECT',
+             self._cmd_select,
+             "Position selector to path N (no servo change). TOOL=N"),
+            ('SA_ENGAGE',
+             self._cmd_engage,
+             "Engage drive servo — grip filament in selected path"),
+            ('SA_DISENGAGE',
+             self._cmd_disengage,
+             "Disengage drive servo — path returns to neutral"),
+            ('SA_LOAD',
+             self._cmd_load,
+             "Full load sequence. TOOL=N"),
+            ('SA_UNLOAD',
+             self._cmd_unload,
+             "Full unload sequence. TOOL=N"),
+            ('SA_STATUS',
+             self._cmd_status,
+             "Print status for all paths including encoders and sensors"),
+            ('SA_BUZZ_DRIVE',
+             self._cmd_buzz_drive,
+             "Test drive motor. [DISTANCE=5] [SPEED=10] [REPS=3]"),
+            ('SA_BUZZ_SELECTOR',
+             self._cmd_buzz_selector,
+             "Test selector motor. [DISTANCE=10] [SPEED=50] [REPS=3]"),
+            ('SA_CALIBRATE_SELECTOR',
+             self._cmd_calibrate_selector,
+             "Automated selector position calibration (interactive)"),
+            ('SA_CALIBRATE_DRIVE',
+             self._cmd_calibrate_drive,
+             "Interactive drive motor rotation_distance calibration"),
+            ('SA_CALIBRATE_ENCODER',
+             self._cmd_calibrate_encoder,
+             "Interactive encoder mm_per_pulse calibration. TOOL=N"),
+            ('SA_CALIBRATE_BOWDEN',
+             self._cmd_calibrate_bowden,
+             "Guided Bowden tube length calibration. TOOL=N"),
+            ('SA_CALIBRATE_ENCODER_SPEED',
+             self._cmd_calibrate_encoder_speed,
+             "Find max reliable encoder speed and save as encoder_max_speed"),
+            ('SA_VERIFY_FEED',
+             self._cmd_verify_feed,
+             "Drive one pass and check it against a ruler. "
+             "[TOOL=N] [SPEED=mm/s] [DIST=mm]"),
+            ('SA_ENCODER_QUERY',
+             self._cmd_encoder_query,
+             "Snapshot all encoder distances. [TOOL=N] [RESET=1]"),
+            ('SA_ENCODER_WATCH',
+             self._cmd_encoder_watch,
+             "Live encoder delta stream. [TOOL=N] [DURATION=30] [INTERVAL=0.5]"),
+            ('SA_SET_STATE',
+             self._cmd_set_state,
+             "Override path state. TOOL=N STATE=loaded/empty/partial/unknown"),
+            ('SA_RESPOND',
+             self._cmd_respond,
+             "Send a value back to a waiting calibration routine. VALUE=x"),
+            ('SA_SET_MATERIAL',
+             self._cmd_set_material,
+             "Store filament profile for a path. TOOL=N MATERIAL=PLA BRAND=x "
+             "LINE=x COLOR_NAME=x COLOR_HEX=#rrggbb "
+             "LOAD_TEMP=200 UNLOAD_TEMP=185 PURGE_SPEED=5 PURGE_LENGTH=30"),
+            ('SA_SET_CONFIG',
+             self._cmd_set_config,
+             "Stage a config value for SAVE_CONFIG. PARAM=name VALUE=val"),
+            ('SA_PARK',
+             self._cmd_park,
+             "Park filament at drive encoder (phases 0-2 only). TOOL=N"),
+            ('SA_CALIBRATE_SERVO',
+             self._cmd_calibrate_servo,
+             "Find the servo's gripping angle safely: arm off, fit at rest, "
+             "then step toward the gear."),
+            ('SA_SET_DIRECTION',
+             self._cmd_set_direction,
+             "Flip or set a motor's direction and save it. "
+             "MOTOR=drive|selector [INVERT=0|1]"),
+            ('SA_BUZZ_CHECK',
+             self._cmd_buzz_check,
+             "Buzz a motor then ask which way it went, and fix it if wrong. "
+             "MOTOR=drive|selector"),
+            ('SA_TEST_ENDSTOP',
+             self._cmd_test_endstop,
+             "Watch the selector endstop while you move the carriage by hand. "
+             "Run this BEFORE SA_HOME. [DURATION=] [INTERVAL=]"),
+            ('SA_ENCSPEED_STEP',
+             self._cmd_encspeed_step,
+             "Internal: one pass of the encoder speed test."),
+            ('SA_TEST_ENTRY_SENSORS',
+             self._cmd_test_entry_sensors,
+             "Prove a path's entry sensor by hand. [TOOL=N]"),
+            ('SA_TEST_TOOLHEAD_SENSORS',
+             self._cmd_test_toolhead_sensors,
+             "Prove a toolhead's extruder and toolhead sensors by hand, "
+             "Bowden off. [TOOL=N]"),
+            ('SA_SENSOR_POLL',
+             self._cmd_sensor_poll,
+             "Internal: one read during a sensor test."),
+            ('SA_ENDSTOP_POLL',
+             self._cmd_endstop_poll,
+             "Internal: one endstop read for the endstop test."),
+            ('SA_GUIDE',
+             self._cmd_guide,
+             "Open, close or page the calibration guide on every UI at once. "
+             "[OPEN=0|1] [STEP=n]"),
+            ('SA_RESTORE_PROFILE',
+             self._cmd_restore_profile,
+             "Put back the filament profile a wipe removed. TOOL=N"),
+            ('SA_FORM_TIP',
+             self._cmd_form_tip,
+             "Run only the tip-forming sequence, for tuning. TOOL=N "
+             "[MATERIAL=] [PUSH=] [SEVER=] [COOL_POS=] [COOL_LEN=] "
+             "[COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=]"),
+        ]
+        for name, fn, desc in cmds:
+            self.gcode.register_command(name, fn, desc=desc)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Command handlers — motion
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _cmd_home(self, gcmd):
+        gcmd.respond_info("SA: Homing selector...")
+        self.motion.selector_home()
+        gcmd.respond_info("SA: Selector homed — position 0.0mm.")
+        # Homing is both a calibration step and an everyday command. Offering
+        # "calibrate the selector next?" every time someone homes would be a
+        # popup on a command people run all day, so the offer is made only
+        # when the operator got here by accepting the previous step's offer.
+        if self._cal_chain:
+            self.calibration._offer_next(gcmd, 'home')
+
+    def _cmd_select(self, gcmd):
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        self.motion.servo_disengage()
+        self.motion.selector_move_to(self._selector_positions[path])
+        self.current_path = path
+        gcmd.respond_info(
+            "SA: Path %d selected (%.3fmm from home)."
+            % (path, self._selector_positions[path]))
+
+    def _cmd_engage(self, gcmd):
+        self.motion.servo_engage()
+        gcmd.respond_info("SA: Drive engaged (%.1f°)." % self.servo_engaged_angle)
+
+    def _cmd_disengage(self, gcmd):
+        self.motion.servo_disengage()
+        gcmd.respond_info(
+            "SA: Drive disengaged — neutral (%.1f°)." % self.servo_disengaged_angle)
+
+    def _cmd_load(self, gcmd):
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        self.sequences.do_load(gcmd, path)
+
+    def _cmd_unload(self, gcmd):
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        self.sequences.do_unload(gcmd, path)
+
+    def _cmd_park(self, gcmd):
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        self.sequences.park_filament(gcmd, path)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Command handlers — status and diagnostics
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _cmd_status(self, gcmd):
+        sel_str = ("path %d" % self.current_path
+                   if self.current_path >= 0 else "none / unhomed")
+        lines = [
+            "╔══ Autoloader Status ══════════════════════════════╗",
+            "  Paths    : %d configured" % self.num_paths,
+            "  Selector : %s" % sel_str,
+            "  Drive    : %s" % ("ENGAGED" if self._servo_is_engaged else "neutral"),
+            "╠══ [N] Entry   TH    Ext  State      Encoder  mm/pulse ═══╣",
+        ]
+        for i in range(self.num_paths):
+            entry   = self._entry_sensor_active(i)
+            toolhd  = self._toolhead_sensor_active(i)
+            extsens = self._extruder_sensor_active(i)
+            state   = self.path_states[i]
+            dist    = self._encoder_distance(i)
+            mpp     = self._encoder_mm_per_pulse(i)
+
+            if state == self.STATE_LOADED:
+                state_str = "loaded   "
+            elif state == self.STATE_PARTIAL:
+                state_str = "partial  "
+            elif state == self.STATE_EMPTY:
+                state_str = "empty    "
+            else:
+                state_str = "unknown  "
+
+            entry_str = "FIL" if entry   else "---"
+            th_str    = "FIL" if toolhd  else "---"
+            ext_str   = "FIL" if extsens else "---"
+            dist_str  = ("%.2fmm" % dist) if dist is not None else "n/a   "
+            mpp_str   = ("%.4f"   % mpp)  if mpp  is not None else "n/a"
+            marker    = " <" if i == self.current_path else ""
+
+            lines.append(
+                "  [%d] %-5s  %-5s %-5s %-10s %-8s %s%s"
+                % (i, entry_str, th_str, ext_str, state_str, dist_str, mpp_str, marker))
+
+        lines.append("╚══════════════════════════════════════════════════════════╝")
+        gcmd.respond_info("\n".join(lines))
+
+    def _cmd_encoder_query(self, gcmd):
+        tool  = gcmd.get_int('TOOL', -1)
+        reset = gcmd.get_int('RESET', 0)
+        paths = [tool] if tool >= 0 else list(range(self.num_paths))
+
+        if reset:
+            for i in paths:
+                try:
+                    self._encoder(i).reset_distance()
+                except Exception:
+                    pass
+
+        lines = [
+            "SA encoder snapshot%s%s:" % (
+                (" (path %d)" % tool) if tool >= 0 else " (all paths)",
+                " — counters zeroed" if reset else ""),
+            "  Path  Distance    mm/pulse  Entry   TH      Extruder",
+        ]
+        for i in paths:
+            dist    = self._encoder_distance(i)
+            mpp     = self._encoder_mm_per_pulse(i)
+            entry   = "FILAMENT" if self._entry_sensor_active(i)   else "empty"
+            th      = "FILAMENT" if self._toolhead_sensor_active(i) else "empty"
+            ext     = "FILAMENT" if self._extruder_sensor_active(i) else "empty"
+            dist_s  = ("%.3fmm" % dist) if dist is not None else "n/a"
+            mpp_s   = ("%.4f"   % mpp)  if mpp  is not None else "n/a"
+            marker  = "  <- active" if i == self.current_path else ""
+            lines.append(
+                "  [%d]   %-10s  %-8s  %-8s  %-8s  %s%s"
+                % (i, dist_s, mpp_s, entry, th, ext, marker))
+        gcmd.respond_info("\n".join(lines))
+
+    def _cmd_calibrate_servo(self, gcmd):
+        """SA_CALIBRATE_SERVO — see SACalibration.calibrate_servo."""
+        self.calibration.calibrate_servo(gcmd)
+
+    def _cmd_set_direction(self, gcmd):
+        """SA_SET_DIRECTION MOTOR=drive|selector [INVERT=0|1]
+
+        With no INVERT, flips whatever is set -- so "it went the wrong way" is
+        one button rather than a config edit and a restart.
+
+        Saved to variables.cfg rather than written back as a `!` on dir_pin,
+        for two reasons: it takes effect on the very next move with no restart,
+        and hardware.cfg is regenerated by the installer, which would discard a
+        pin edit on the next update.
+        """
+        motor = (gcmd.get('MOTOR', '') or '').strip().lower()
+        if motor not in ('drive', 'selector'):
+            gcmd.respond_info(
+                "SA: MOTOR must be 'drive' or 'selector'. "
+                "Example: SA_SET_DIRECTION MOTOR=selector")
+            return
+
+        attr = '%s_dir_invert' % motor
+        cur = bool(getattr(self, attr, False))
+        want = gcmd.get_int('INVERT', None)
+        new = (not cur) if want is None else bool(want)
+
+        setattr(self, attr, new)
+        self._persist_variables({'sa_%s_dir_invert' % motor: '1' if new else '0'})
+
+        gcmd.respond_info(
+            "SA: %s direction is now %s (was %s). Saved — it applies to the "
+            "next move, no restart needed."
+            % (motor, "INVERTED" if new else "normal",
+               "inverted" if cur else "normal"))
+
+        if motor == 'selector':
+            # Homing drives toward the endstop, so a flip invalidates a home
+            # done under the old sign: the carriage is not where the machine
+            # thinks it is.
+            self._selector_homed = False
+            self.current_path = -1
+            gcmd.respond_info(
+                "SA: The selector must be re-homed after a direction change — "
+                "run SA_HOME.")
+
+    def _cmd_buzz_check(self, gcmd):
+        """SA_BUZZ_CHECK MOTOR=drive|selector — buzz, then ask which way it went.
+
+        The buzz commands move the motor and leave the operator to work out
+        what to do about a wrong direction, which meant editing a `!` onto a
+        dir_pin and restarting. This asks the question and owns the answer.
+        """
+        motor = (gcmd.get('MOTOR', '') or '').strip().lower()
+        if motor not in ('drive', 'selector'):
+            gcmd.respond_info("SA: MOTOR must be 'drive' or 'selector'.")
+            return
+
+        if motor == 'drive':
+            self._cmd_buzz_drive(gcmd)
+            expect = ("The drive gear should have fed filament FORWARD first "
+                      "(toward the toolhead), then back.")
+        else:
+            self._cmd_buzz_selector(gcmd)
+            expect = ("The carriage should have moved AWAY from the endstop "
+                      "first, then back toward it.")
+
+        self.calibration.ask_direction(gcmd, motor, expect)
+
+    def _selector_endstop_state(self):
+        """(triggered, name) for the selector endstop, or (None, name).
+
+        QUERY_ENDSTOPS is the only way to read a manual_stepper's endstop --
+        it has no status object of its own -- so this asks for a fresh query
+        and then reads the result out of query_endstops' last_query.
+        """
+        name = "manual_stepper %s" % self.selector_stepper_name.split()[-1]
+        try:
+            qe = self.printer.lookup_object('query_endstops', None)
+            if qe is None:
+                return None, name
+            self.gcode.run_script_from_command("QUERY_ENDSTOPS")
+            last = qe.get_status(self.reactor.monotonic()).get('last_query', {})
+            if name in last:
+                return bool(last[name]), name
+            # Fall back to any manual_stepper entry: a rename should degrade to
+            # "found something plausible" rather than to silence.
+            for k, v in last.items():
+                if k.startswith('manual_stepper'):
+                    return bool(v), k
+            return None, name
+        except Exception:
+            logging.exception("Autoloader: endstop query failed")
+            return None, name
+
+    def _cmd_guide(self, gcmd):
+        """SA_GUIDE [OPEN=0|1] [STEP=n] — drive the guide on every UI at once.
+
+        Deliberately does not validate STEP against what is calibrated: paging
+        ahead to read what a later step will do is a reasonable thing to want,
+        and refusing it would make the guide worse at the one job it has.
+        """
+        total = self.calibration._STEP_TOTAL
+        opened = gcmd.get_int('OPEN', None, minval=0, maxval=1)
+        step = gcmd.get_int('STEP', None, minval=1, maxval=total)
+
+        if opened is not None:
+            self._guide_open = bool(opened)
+        if step is not None:
+            self._guide_step = step
+            # Asking for a page implies wanting to see it.
+            if opened is None:
+                self._guide_open = True
+
+        gcmd.respond_info(
+            "SA: Guide %s on step %d of %d."
+            % ("open" if self._guide_open else "closed",
+               self._guide_step, total))
+
+    def _cmd_test_endstop(self, gcmd):
+        """SA_TEST_ENDSTOP — prove the endstop reads the right way round.
+
+        Comes BEFORE homing on purpose. SA_HOME drives the carriage at the
+        switch and trusts it to stop the move, so a switch that is not wired,
+        not triggering, or inverted is found out by driving into the hard stop.
+
+        This asks nothing of the motors: the operator moves the carriage, and
+        each change is confirmed against what that reading is supposed to mean.
+        A switch wired backwards changes state perfectly well, which is why
+        watching for movement alone was never enough to catch one.
+        """
+        self.calibration.start_endstop_test(gcmd)
+
+    def _cmd_encspeed_step(self, gcmd):
+        """One pass for the encoder speed sweep's delayed_gcode."""
+        self.calibration.encspeed_step(gcmd)
+
+    def _cmd_test_entry_sensors(self, gcmd):
+        self.calibration.test_entry_sensors(gcmd)
+
+    def _cmd_test_toolhead_sensors(self, gcmd):
+        self.calibration.test_toolhead_sensors(gcmd)
+
+    def _cmd_sensor_poll(self, gcmd):
+        self.calibration.sensor_poll(gcmd)
+
+    def _cmd_endstop_poll(self, gcmd):
+        """One read for the endstop test's delayed_gcode. Not for humans."""
+        self.calibration.poll_endstop(gcmd)
+
+    def selector_endstop_pin(self):
+        """The configured endstop_pin for the selector, as written."""
+        section = "manual_stepper %s" % self.selector_stepper_name.split()[-1]
+        try:
+            settings = self.printer.lookup_object('configfile').get_status(
+                self.reactor.monotonic())['settings']
+            return str(settings.get(section.lower(), {}).get('endstop_pin', ''))
+        except Exception:
+            logging.exception("Autoloader: could not read endstop_pin")
+            return ''
+
+    def _cmd_encoder_watch(self, gcmd):
+        tool     = gcmd.get_int(  'TOOL',      -1)
+        duration = gcmd.get_float('DURATION',  30.0, minval=1.0,  maxval=300.0)
+        interval = gcmd.get_float('INTERVAL',   0.5, minval=0.05, maxval=10.0)
+
+        paths = list(range(self.num_paths))
+
+        # Capture baselines
+        prev = []
+        for i in paths:
+            d = self._encoder_distance(i)
+            prev.append(d if d is not None else 0.0)
+
+        header = "  t(s)  " + "  ".join("[%d]     " % i for i in paths)
+        gcmd.respond_info(
+            "SA encoder watch — %.0fs, every %.2fs. Move filament to test.\n%s"
+            % (duration, interval, header))
+
+        end_time = self.reactor.monotonic() + duration
+        elapsed  = 0.0
+
+        while self.reactor.monotonic() < end_time:
+            self.reactor.pause(self.reactor.monotonic() + interval)
+            elapsed += interval
+            cur  = []
+            for i in paths:
+                d = self._encoder_distance(i)
+                cur.append(d if d is not None else 0.0)
+            cols = []
+            for i in paths:
+                delta  = cur[i] - prev[i]
+                moving = abs(delta) > 0.01
+                mark   = "*" if moving else " "
+                cols.append("%s[%d]%+.3f" % (mark, i, delta))
+            prev = cur
+            gcmd.respond_info("%6.1f  %s" % (elapsed, "  ".join(cols)))
+
+        totals = []
+        for i in paths:
+            d = self._encoder_distance(i)
+            totals.append("[%d]: %.3fmm" % (i, d if d is not None else 0.0))
+        gcmd.respond_info(
+            "SA watch complete. Encoder totals:\n  " + "  ".join(totals))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Command handlers — motor buzz tests
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _buzz_stepper(self, gcmd, stepper_short_name, distance, speed, reps):
+        sn = stepper_short_name
+        gcmd.respond_info(
+            "SA: Buzzing %s — +/-%.0fmm x %d reps @ %.0fmm/s"
+            % (sn, distance, reps, speed))
+        self.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=1" % sn)
+        self.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % sn)
+        for _ in range(reps):
+            self.gcode.run_script_from_command(
+                "MANUAL_STEPPER STEPPER=%s MOVE=%.1f SPEED=%.1f" % (sn,  distance, speed))
+            self.gcode.run_script_from_command("M400")
+            self.gcode.run_script_from_command(
+                "MANUAL_STEPPER STEPPER=%s MOVE=%.1f SPEED=%.1f" % (sn, -distance, speed))
+            self.gcode.run_script_from_command("M400")
+        self.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=0" % sn)
+        gcmd.respond_info("SA: Buzz complete — did the motor move?")
+
+    def _cmd_buzz_drive(self, gcmd):
+        dist  = gcmd.get_float('DISTANCE',  5.0, minval=1.0, maxval=50.0)
+        speed = gcmd.get_float('SPEED',    10.0, minval=1.0, maxval=100.0)
+        reps  = gcmd.get_int(  'REPS',        3, minval=1,   maxval=10)
+        self._buzz_stepper(gcmd, self._drv_name(), dist, speed, reps)
+
+    def _cmd_buzz_selector(self, gcmd):
+        dist  = gcmd.get_float('DISTANCE', 10.0, minval=1.0, maxval=100.0)
+        speed = gcmd.get_float('SPEED',    50.0, minval=1.0, maxval=300.0)
+        reps  = gcmd.get_int(  'REPS',        3, minval=1,   maxval=10)
+        self._buzz_stepper(gcmd, self._sel_name(), dist, speed, reps)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Command handlers — calibration (delegate to SACalibration)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _cmd_calibrate_selector(self, gcmd):
+        self.calibration.calibrate_selector_auto(gcmd)
+
+    def _cmd_calibrate_drive(self, gcmd):
+        self.calibration.calibrate_drive(gcmd)
+
+    def _cmd_calibrate_encoder(self, gcmd):
+        self.calibration.calibrate_encoder(gcmd)
+
+    def _cmd_calibrate_bowden(self, gcmd):
+        self.calibration.calibrate_bowden(gcmd)
+
+    def _cmd_calibrate_encoder_speed(self, gcmd):
+        self.calibration.calibrate_encoder_speed(gcmd)
+
+    def _cmd_verify_feed(self, gcmd):
+        self.calibration.verify_feed(gcmd)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Command handlers — state management
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _cmd_set_state(self, gcmd):
+        path  = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        state = gcmd.get('STATE').lower().strip()
+        valid = [self.STATE_UNKNOWN, self.STATE_EMPTY,
+                 self.STATE_PARTIAL, self.STATE_LOADED]
+        if state not in valid:
+            gcmd.respond_info(
+                "SA: Invalid STATE '%s'. Valid values: %s" % (state, ', '.join(valid)))
+            return
+        self.path_states[path] = state
+        sv = self.printer.lookup_object('save_variables', None)
+        if sv:
+            self.gcode.run_script_from_command(
+                "SAVE_VARIABLE VARIABLE=sa_state_%d VALUE=\"'%s'\"" % (path, state))
+        gcmd.respond_info("SA: Path %d state set to '%s'." % (path, state))
+
+    def _cmd_set_material(self, gcmd):
+        """SA_SET_MATERIAL — store and persist a filament profile for one path."""
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+
+        material     = gcmd.get('MATERIAL',    '')
+        brand        = gcmd.get('BRAND',       '')
+        product_line = gcmd.get('LINE',        '')
+        color_name   = gcmd.get('COLOR_NAME',  '')
+        color_hex    = gcmd.get('COLOR_HEX',   '')
+        color_type   = gcmd.get('COLOR_TYPE',  'single')
+        color_hex2   = gcmd.get('COLOR_HEX_2', '')
+        color_hex3   = gcmd.get('COLOR_HEX_3', '')
+        load_temp    = gcmd.get_float('LOAD_TEMP',    self.load_temperature)
+        unload_temp  = gcmd.get_float('UNLOAD_TEMP',  load_temp - 15.)
+        purge_speed  = gcmd.get_float('PURGE_SPEED',  5.0)
+        purge_length = gcmd.get_float('PURGE_LENGTH', self.purge_length)
+
+        self.path_materials[path]     = material
+        self.path_brands[path]        = brand
+        self.path_product_lines[path] = product_line
+        self.path_color_names[path]   = color_name
+        self.path_color_hexes[path]   = color_hex
+        self.path_color_types[path]   = color_type
+        self.path_color_hex2s[path]   = color_hex2
+        self.path_color_hex3s[path]   = color_hex3
+        self.path_load_temps[path]    = load_temp
+        self.path_unload_temps[path]  = unload_temp
+        self.path_purge_speeds[path]  = purge_speed
+        self.path_purge_lengths[path] = purge_length
+
+        sv = self.printer.lookup_object('save_variables', None)
+        if sv:
+            def _save(var, val):
+                self.gcode.run_script_from_command(
+                    "SAVE_VARIABLE VARIABLE=%s VALUE=\"'%s'\"" % (var, str(val)))
+            _save('sa_material_%d'      % path, material)
+            _save('sa_brand_%d'         % path, brand)
+            _save('sa_product_line_%d'  % path, product_line)
+            _save('sa_color_name_%d'    % path, color_name)
+            _save('sa_color_hex_%d'     % path, color_hex)
+            _save('sa_color_type_%d'    % path, color_type)
+            _save('sa_color_hex2_%d'    % path, color_hex2)
+            _save('sa_color_hex3_%d'    % path, color_hex3)
+            _save('sa_load_temp_%d'     % path, load_temp)
+            _save('sa_unload_temp_%d'   % path, unload_temp)
+            _save('sa_purge_speed_%d'   % path, purge_speed)
+            _save('sa_purge_length_%d'  % path, purge_length)
+
+        gcmd.respond_info(
+            "SA: Path %d profile set — %s %s %s | %s %s | "
+            "%.0f°C load / %.0f°C unload / %.0fmm purge"
+            % (path, brand, product_line, material,
+               color_name, color_hex,
+               load_temp, unload_temp, purge_length))
+
+        # Push the new color to the toolhead's status LEDs immediately.
+        # _SA_LED_FROM_STATE picks ACTIVE / PARKED-with-color / UNLOADED
+        # based on whether the path is the mounted tool, has a color set,
+        # or is empty. So saving a profile with a color makes that
+        # toolhead's logo light up the new color right away — no
+        # toolchange or restart needed.
+        try:
+            self.gcode.run_script_from_command(
+                "_SA_LED_FROM_STATE TOOL=%d" % path)
+        except Exception:
+            logging.exception(
+                "SA: SA_SET_MATERIAL LED refresh failed (non-fatal)")
+
+    def _cmd_set_config(self, gcmd):
+        """SA_SET_CONFIG PARAM=name VALUE=val — stage a config value for SAVE_CONFIG."""
+        param = gcmd.get('PARAM', '').strip()
+        value = gcmd.get('VALUE', '').strip()
+        if not param or value == '':
+            gcmd.respond_info(
+                "Usage: SA_SET_CONFIG PARAM=config_key VALUE=number\n"
+                "Example: SA_SET_CONFIG PARAM=feed_speed VALUE=60\n"
+                "Then run SAVE_CONFIG to persist and restart.")
+            return
+        configfile = self.printer.lookup_object('configfile')
+        configfile.set('autoloader', param, value)
+        gcmd.respond_info(
+            "SA_SET_CONFIG: staged autoloader.%s = %s  "
+            "(run SAVE_CONFIG to persist and restart)" % (param, value))
+
+    def _cmd_form_tip(self, gcmd):
+        """SA_FORM_TIP TOOL=N [overrides] — tip forming on its own, for tuning.
+
+        Tip shape is judged with calipers, which means a dozen runs at
+        different values. Doing that through SA_UNLOAD costs a full unload
+        each time, and every parameter change costs a SAVE_CONFIG and a
+        Klipper restart because SA_SET_CONFIG only stages values. This runs
+        the sequence and nothing else, and takes the values inline so nothing
+        has to be saved or restarted between attempts.
+
+        Leaves the tip past the extruder gears exactly as an unload would, so
+        pull the filament out from the entry side to measure it.
+        """
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+
+        # Inline name -> config name. Anything omitted falls back to config.
+        argmap = {
+            'TEMP'       : 'temp',
+            'PUSH'       : 'push_length',
+            'PUSH_SPEED' : 'push_speed',
+            'SEVER'      : 'sever_dist',
+            'SEVER_SPEED': 'retract_speed',
+            'EASE'       : 'slow_speed',
+            'COOL_POS'   : 'cooling_pos',
+            'COOL_LEN'   : 'cooling_len',
+            'COOL_MOVES' : 'cooling_moves',
+            'COOL_IN'    : 'cool_speed_in',
+            'COOL_OUT'   : 'cool_speed_out',
+            'SHEAR'      : 'shear_temp',
+            'SHEAR_SPEED': 'shear_speed',
+        }
+        ov = {}
+        for arg, name in argmap.items():
+            val = gcmd.get_float(arg, None)
+            if val is not None:
+                ov[name] = val
+
+        # Tuning a material means a dozen runs, and loading its spool for each
+        # one costs more than the run does. MATERIAL= picks the per-material
+        # values without touching what is actually in the path.
+        material = gcmd.get('MATERIAL', None)
+
+        if not self._toolhead_sensor_active(path):
+            gcmd.respond_info(
+                "SA_FORM_TIP: T%d has no filament at the toolhead sensor. "
+                "Load it first — there is nothing to form." % path)
+            return
+
+        if ov:
+            gcmd.respond_info(
+                "SA_FORM_TIP: overrides %s"
+                % ", ".join("%s=%g" % (k, v) for k, v in sorted(ov.items())))
+
+        is_printing = self.sequences._is_printing()
+        self.sequences._park(gcmd, is_printing)
+        self.sequences._switch_tool(gcmd, path)
+        self.sequences.form_tip(gcmd, path, is_printing, ov, material)
+
+        # Free the extruder so the filament can be wound out by hand. Measuring
+        # the tip means pulling it out through the entry, and the gears hold it
+        # otherwise -- without this the operator has to disable the steppers
+        # themselves between every attempt.
+        extruder_name = self._extruder_names[path]
+        self.gcode.run_script_from_command(
+            "SET_STEPPER_ENABLE STEPPER=%s ENABLE=0" % extruder_name)
+
+        gcmd.respond_info(
+            "SA_FORM_TIP: done. %s is disabled — wind the filament out from the "
+            "entry side and measure the tip. Target is under 1.75mm across with "
+            "no ball and no string." % extruder_name)
+
+    def _cmd_respond(self, gcmd):
+        """SA_RESPOND VALUE=x — deliver a console response to a waiting calibration routine."""
+        value = gcmd.get('VALUE')
+        self._pending_response = value
+        self._response_ready   = True
+        gcmd.respond_info("SA: Response received: '%s'" % value)
+        self.calibration.respond(gcmd, value)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Klipper status — readable in macros as printer['autoloader']
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def get_status(self, eventtime):
+        enc_distances    = []
+        entry_filament   = []
+        toolhead_filament = []
+        extruder_filament = []
+        filament_loaded  = []
+
+        for i in range(self.num_paths):
+            d = self._encoder_distance(i)
+            enc_distances.append(round(d, 2) if d is not None else -1.0)
+            entry_filament.append(self._entry_sensor_active(i))
+            toolhead_filament.append(self._toolhead_sensor_active(i))
+            extruder_filament.append(self._extruder_sensor_active(i))
+            filament_loaded.append(self.path_states[i] == self.STATE_LOADED)
+
+        sel_pos = (self._selector_positions[self.current_path]
+                   if self.current_path >= 0 else -1.0)
+
+        status = {
+            'num_paths'          : self.num_paths,
+            'current_path'       : self.current_path,
+            'servo_engaged'      : self._servo_is_engaged,
+            'path_states'        : list(self.path_states),
+            'encoder_dist'       : enc_distances,
+            'entry_filament'     : entry_filament,
+            'toolhead_filament'  : toolhead_filament,
+            'extruder_filament'  : extruder_filament,
+            'filament_loaded'    : filament_loaded,
+            'selector_position'  : sel_pos,
+            'path_materials'     : list(self.path_materials),
+            'path_brands'        : list(self.path_brands),
+            'path_product_lines' : list(self.path_product_lines),
+            'path_color_names'   : list(self.path_color_names),
+            'path_color_hexes'   : list(self.path_color_hexes),
+            'path_color_types'   : list(self.path_color_types),
+            'path_color_hex2s'   : list(self.path_color_hex2s),
+            'path_color_hex3s'   : list(self.path_color_hex3s),
+            'path_load_temps'    : list(self.path_load_temps),
+            'path_unload_temps'  : list(self.path_unload_temps),
+            'feed_speed'              : self.feed_speed,
+            'selector_speed'          : self.selector_speed,
+            'purge_length'            : self.purge_length,
+            'nozzle_distance'         : self.nozzle_distance,
+            'nozzle_to_sensor_dist'   : self.nozzle_to_sensor_dist,
+            'tube_length'             : self.tube_length,
+            'load_temperature'        : self.load_temperature,
+            'engage_max_distance'     : self.engage_max_distance,
+            'servo_engaged_angle'     : self.servo_engaged_angle,
+            'servo_disengaged_angle'  : self.servo_disengaged_angle,
+            'drive_dir_invert'        : bool(self.drive_dir_invert),
+            'selector_dir_invert'     : bool(self.selector_dir_invert),
+            'tip_form_temp'           : self.tip_form_temp,
+            'tip_form_sever_dist'     : self.tip_form_sever_dist,
+            'tip_form_cooling_pos'    : self.tip_form_cooling_pos,
+            'tip_form_cooling_len'    : self.tip_form_cooling_len,
+            'tip_form_cooling_moves'  : self.tip_form_cooling_moves,
+            'encoder_max_speed'       : self._get_encoder_max_speed(),
+            'bowden_lengths'          : list(self._bowden_lengths),
+            'entry_sensor_ok'         : list(self._entry_sensor_ok),
+            'toolhead_sensor_ok'      : list(self._toolhead_sensor_ok),
+            'selector_positions'      : list(self._selector_positions),
+            'encoder_mpp'             : [self._encoder_mm_per_pulse(i) or 0.0
+                                         for i in range(self.num_paths)],
+            'drive_rotation_distance' : self._get_drive_rotation_distance(),
+            'cal_state'               : self._cal_state or '',
+            # The step the waiting phase belongs to, derived in one place in
+            # sa_calibration so a panel can follow the prompt instead of
+            # re-deriving the mapping and drifting from it.
+            'cal_step'                : (self.calibration._current_step()[0]
+                                         or 0),
+            'cal_step_name'           : (self.calibration._current_step()[1]
+                                         or ''),
+            'cal_step_total'          : self.calibration._STEP_TOTAL,
+            'selector_position_restored': bool(self._selector_position_restored),
+            'guide_open'              : bool(self._guide_open),
+            'guide_step'              : int(self._guide_step),
+            'cal_path'                : self._cal_data.get('path', -1),
+            'cal_prompt'              : self._cal_prompt or '',
+        }
+        # Built from the status just assembled, because the pages show live
+        # values that live in it. Every UI renders this rather than keeping its
+        # own copy of the steps -- which is how two wizards came to show nine
+        # when the chain had eleven.
+        status['guide_pages'] = self.calibration.guide_pages(status)
+        return status
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Klipper entry point
+    # ══════════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def load_config(config):
+        return Autoloader(config)
+
+def load_config(config):
+    return Autoloader(config)
