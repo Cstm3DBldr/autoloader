@@ -732,6 +732,16 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   after subscribing. The same mistake in a different shape — a watcher
   installed with nothing subscribed to — cost the previous hour. Wiring the
   pipe is not priming it, and both versions log success while doing nothing.
+- Do not read a KlipperScreen panel's own state out of `printer.data` without
+  seeding it. Moonraker delivers CHANGED fields only, so a field that has not
+  moved since KlipperScreen subscribed has never been sent and is simply absent
+  — `guide_step` sits at 1 all session until someone pages the guide, so the
+  guide panel had no step number, could not follow the printer, and sat on one
+  page while Mainsail walked the chain. Every autoloader panel does a one-shot
+  `printer/objects/query?autoloader` in `activate()` for this reason; the guide
+  was the one that did not. This is the same trap as the subscription seeding,
+  one layer up, and it looks like the panel ignoring the printer.
+
 - Do not populate a KlipperScreen panel only in `activate()`. `attach_panel`
   adds the content, calls `process_update`, THEN `activate()`, and only then
   `show_all()` — so the first construction of a panel can end up built but not

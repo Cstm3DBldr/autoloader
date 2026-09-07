@@ -167,8 +167,11 @@ class Panel(ScreenPanel):
         if not isinstance(step, int) or step < 1:
             # Logged because the failure is silent and looks like the panel
             # ignoring the printer: it renders step 1 and nothing says why.
-            logger.info("guide: no usable guide_step in %s",
-                        sorted(sa.keys())[:6] or "an empty status")
+            logger.info(
+                "guide: guide_step=%r; have guide_pages=%s, %d keys. Moonraker "
+                "sends changed fields only, so a field that never moves is "
+                "never delivered -- activate() seeds with a one-shot query.",
+                step, bool(sa.get("guide_pages")), len(sa))
             return False
         pages = sa.get("guide_pages")
         if isinstance(pages, list) and pages:
@@ -310,7 +313,22 @@ class Panel(ScreenPanel):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def activate(self):
-        sa = self._printer.data.get("autoloader", {})
+        sa = dict(self._printer.data.get("autoloader", {}))
+
+        # Seed with a one-shot query. Moonraker delivers CHANGED fields only,
+        # so anything that has not moved since KlipperScreen subscribed has
+        # never been sent -- and guide_step is exactly that: it sits at 1 all
+        # session until someone pages the guide. Without this the panel had no
+        # step number, could not follow the printer, and sat on whatever page
+        # it was showing while Mainsail moved on.
+        try:
+            resp = self._screen.apiclient.send_request(
+                "printer/objects/query?autoloader")
+            if resp and 'status' in resp:
+                sa.update(resp['status'].get('autoloader', {}) or {})
+        except Exception as e:
+            logger.warning("guide: seeding query failed: %s", e)
+
         self._last_sa   = dict(sa)
         self._num_paths = sa.get("num_paths", 6)
         self._stack.set_visible_child_name("pages")

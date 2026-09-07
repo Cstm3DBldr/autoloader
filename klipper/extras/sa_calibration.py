@@ -2156,17 +2156,23 @@ class SACalibration:
         d = self.owner._cal_data
         now = bool(d['first']) if not d['seen'] else bool(d['seen'][-1])
         want = not now
+        # Action first, and no fault language: nothing has gone wrong yet, and
+        # leading with what to check when it does reads as though something
+        # has. The stuck screen says all that, at the point where it is true.
+        do = ("Push the selector carriage ON to the switch by hand, until you "
+              "feel it press." if want else
+              "Now pull the selector carriage back OFF the switch.")
         self._emit_ui_prompt(
             gcmd, self._ui_title(),
-            ("Endstop test" + NL + NL
-             + "Reading now: %s" % self._end_word(now) + NL
-             + "That should mean %s." % self._end_meaning(now) + NL + NL
-             + "Move the selector carriage by hand until it is %s."
-               % ("ON the switch" if want else "OFF the switch") + NL
-             + "Nothing is driven. This waits for the reading to change."
-             + NL + NL
-             + "If it never changes: check the wiring and the "
-               "SA_SELECTOR_STOP pin."),
+            ("Endstop test — %d of 2" % (len(d['seen']) + 1) + NL + NL
+             + do + NL + NL
+             + "Nothing is driven. Your hand moves it; this only watches the "
+               "switch." + NL
+             + "The moment the reading changes it stops and asks you to "
+               "confirm what happened." + NL + NL
+             + "Reading now:  %s" % self._end_word(now).upper() + NL
+             + "Both states have to be seen, so a switch stuck either way "
+               "fails rather than passing quietly."),
             [],
             footer=[("STOP", "abort", "error")])
 
