@@ -297,7 +297,7 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `klipper/extras/autoloader.py` | Main controller — config parsing, GCode registration, status object |
 | `klipper/extras/sa_motion.py` | Motion primitives (servo, selector, drive, idle timeouts) |
 | `klipper/extras/sa_sequences.py` | Load and unload sequences |
-| `klipper/extras/sa_calibration.py` | All calibration routines (drive, encoder, selector, bowden) |
+| `klipper/extras/sa_calibration.py` | All calibration routines (drive, encoder, selector, bowden), **and `_GUIDE` — the one definition of the calibration guide.** Title, live status line, hint, buttons or a per-path grid, what to expect and what to check, per step. `guide_pages()` resolves it against the live status and it ships in the status object; every UI renders what it is given. There used to be three copies — this file's chain, a nine-page wizard in KlipperScreen and a seven-page one in Mainsail — and when the chain grew to eleven steps both wizards went on showing nine, one of them clamping the extras onto the last page it knew. Adding a step is one edit here |
 | `klipper/extras/sa_encoder.py` | Encoder driver — pulse counting via Klipper buttons module |
 | `moonraker/sa_moonraker.py` | Moonraker component — REST endpoints + status broadcast |
 | `web/mainsail-plugin/` | Autoloader panel as a runtime-loaded Mainsail plugin — one self-contained `.mjs`, no Mainsail fork required. Needs Mainsail with custom-panel support. See its README |
