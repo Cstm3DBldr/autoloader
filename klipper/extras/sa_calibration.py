@@ -1762,8 +1762,9 @@ class SACalibration:
              + "The printer is not homed, so there is nowhere known to put the "
                "toolhead." + NL + NL
              + "Home it now and carry on?" + NL + NL
-             + "This runs G28. The printer is clear — you just said so — so "
-               "there is nothing else to check."),
+             + "This runs the printer's own homing (G28, and any override it "
+               "defines). The printer is clear — you just said so — so there "
+               "is nothing else to check."),
             [("HOME", "home", "primary")],
             footer=[("STOP", "abort", "error")])
 
@@ -2031,7 +2032,14 @@ class SACalibration:
             return
 
         if state.endswith('_home'):
-            gcmd.respond_info("SA: homing...")
+            # G28, deliberately, and not a hunt for a HOME_ALL-ish macro.
+            # Klipper's [homing_override] and a [gcode_macro G28] with
+            # rename_existing both work by INTERCEPTING G28, so issuing it is
+            # what runs whatever the printer defines -- on this machine that is
+            # a homing_override covering xyz which initialises the toolchanger
+            # and checks the probe first. A printer with no override gets the
+            # built-in homing from the same command.
+            gcmd.respond_info("SA: homing (G28)...")
             owner.gcode.run_script_from_command("G28")
             owner.gcode.run_script_from_command("M400")
             path  = d['path']
