@@ -188,6 +188,19 @@ asks for a different layout.
   `activate()` also does a one-shot `apiclient.send_request("printer/objects/query?autoloader")`
   so the previews show real data instantly instead of `"…"`.
 
+### KlipperScreen status panel (`KlipperScreen/panels/sa_main.py`)
+
+- **A four-item status row sits above the table**, packed on `self.content`
+  outside the scroller so it cannot scroll away: SELECTOR / DRIVE GEAR /
+  ACTIVE TOOL / CALIBRATION. Same four readings, same order and same words as
+  the Mainsail panel's header, so moving between the two screens needs no
+  re-learning. Every empty case is decided in `_apply_status_row` rather than
+  left to render stale: an unhomed selector has no position and a machine with
+  no tool mounted has no temperature.
+- The table below it is deliberately **richer** than Mainsail's — it also
+  carries TEMP, the EN/EX/TH sensor dots and ENCODER. Do not trim it to match;
+  the web panel is the one that is missing those.
+
 ### KlipperScreen Macros menu (`KlipperScreen/panels/sa_macros.py`)
 
 User-confirmed canonical look. If a future edit changes any of this,
@@ -202,33 +215,19 @@ is preserved in commits `0079f41` → `d48e0f2`.
   section was removed because its 3 buttons (Re-cal Sel / Drive /
   Enc) were exact duplicates of the first 3 CALIBRATION buttons —
   same gcodes, just different labels. Don't add it back.
-- **CALIBRATION is laid out as 3+2 rows under ONE section header:**
-  - Row 1 (`_CAL_GLOBAL`, 3 wide buttons):
-    - `Calibrate Selector`        → `SA_CALIBRATE_SELECTOR`
-    - `Calibrate Drive`           → `SA_CALIBRATE_DRIVE`
-    - `Calibrate Encoder Speed`   → `SA_CALIBRATE_ENCODER_SPEED`
-  - Row 2 (`_CAL_PERTOOL`, 2 even wider buttons, both open tool picker):
-    - `Calibrate Encoder`         → `SA_CALIBRATE_ENCODER TOOL={t}`
-    - `Calibrate Bowden`          → `SA_CALIBRATE_BOWDEN TOOL={t}`
-  
-  Encoder cals are two different things despite the similar names:
-  `_SPEED` is the global max-feed-speed slip test; the per-tool one
-  is the mm-per-pulse calibration. Don't merge them or assume they're
-  duplicates — the user explicitly asked for both.
-- **CALIBRATION labels stack on 2 lines via embedded `\n`:**
-  `"Calibrate\nSelector"`, `"Calibrate\nEncoder Speed"`, etc. This
-  is the ONE place where embedded `\n` is acceptable — most labels
-  wouldn't fit single-line in a 3-column row at 800 px screen
-  width. Stacking ALL labels (rather than letting GTK auto-wrap
-  only the long ones) keeps the rows visually uniform and lets
-  the full "Encoder Speed" label render at row-1's wider 3-column
-  width without ellipsizing. The single-row 5-column variant had
-  to abbreviate to "Enc Speed" — if you ever drop back to a single
-  row, switch the abbreviation accordingly.
-- **Button heights:** DAILY=80, DIAGNOSTICS=66, CALIBRATION=64 per
-  row (×2 rows). The CAL rows are slightly shorter than DIAGNOSTICS
-  because there are TWO of them — total CALIBRATION vertical real
-  estate is still the largest of the three sections.
+- **CALIBRATION is ONE button: `OPEN CALIBRATION GUIDE`**, which shows the
+  `sa_calibration_guide` panel. It used to list five of the eleven steps, which
+  made this the fourth place the calibration order was written down and the
+  fourth to go stale. The guide holds every step with its live value and what
+  to check when it misbehaves — a shortcut listing a subset is worse than a
+  door to the whole thing, because it looks complete. Do not put step buttons
+  back here.
+- **DIAGNOSTICS buzzes with `SA_BUZZ_CHECK MOTOR=…`**, not the bare
+  `SA_BUZZ_*`: it asks which way the motor went and flips it in software on a
+  wrong answer, then buzzes again so the fix is checked. The bare commands
+  remain for a console poke.
+- **Button heights:** DAILY=80, DIAGNOSTICS=66, CALIBRATION one expanding row.
+  DAILY keeps the larger floor so it stays the visually dominant section.
 - **Outer Box:** `Gtk.Box(VERTICAL, spacing=6)`, margins
   `top=10, start=8, end=8, bottom=14`. The trailing **vexpand=True
   spacer** Box at the end of `_build_main_page` is REQUIRED — without
