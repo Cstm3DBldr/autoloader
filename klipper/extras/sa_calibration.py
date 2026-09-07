@@ -122,10 +122,25 @@ class SACalibration:
         if was_engaged:
             motion.servo_engage()
 
+    def _release_holds(self):
+        """A calibration has finished; let anything it held through happen.
+
+        Auto-park is queued while a calibration runs rather than dropped, so
+        the spool the operator inserted during a sensor test still ends up
+        parked -- just afterwards, rather than halfway through the test.
+        """
+        try:
+            self.owner.drain_pending_parks()
+        except Exception:
+            logging.exception("SA CAL: could not release held auto-parks")
+
     def _clear(self):
         self.owner._cal_state  = None
         self.owner._cal_data   = {}
         self.owner._cal_prompt = ''
+        # After the state is cleared, never before: the drain refuses to start
+        # while a calibration is running, which is the whole point of it.
+        self._release_holds()
 
     def _yes(self, value):
         return value.lower() in ('yes', 'y', '1', 'true', 'ok')
@@ -1712,6 +1727,13 @@ class SACalibration:
         if now is None:
             now = dict((k, self._sen_read(path, k)[1]) for k in d['keys'])
         stage = d['plan'][d['stage']]
+
+        # Nothing to say if neither the question nor the readings have moved.
+        sig = (d['stage'], tuple((k, now.get(k)) for k in d['keys']))
+        if d.get('shown') == sig:
+            return
+        d['shown'] = sig
+
         lines = ["  %-36s %s" % (self._SEN_LABEL[k], self._sen_word(now.get(k)))
                  for k in d['keys']]
         self._emit_ui_prompt(
@@ -1761,6 +1783,10 @@ class SACalibration:
             self._sen_fault(gcmd, 'stuck', now, None)
             return
 
+        # Only when something actually moved. A prompt is delivered as
+        # prompt_end + prompt_begin, so re-raising it every poll tears the
+        # dialog down and rebuilds it four times a second -- which is what the
+        # flashing was. The endstop test has always worked this way.
         self._sen_render(gcmd, now)
         self._sen_arm()
 
@@ -1836,6 +1862,7 @@ class SACalibration:
         d     = owner._cal_data
         if str(value).strip().lower() == 'retry':
             d['stage'] = 0
+            d['shown'] = None
             d['deadline'] = owner.reactor.monotonic() + self._SEN_TIMEOUT
             owner._cal_state = 'sen_%s_wait' % d['group']
             self._sen_render(gcmd)

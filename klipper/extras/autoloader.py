@@ -667,6 +667,17 @@ class Autoloader:
         if path in self._park_queue:
             return
         self._park_queue.append(path)
+
+        # A calibration owns the machine. The entry sensor test asks the
+        # operator to insert filament by hand, and parking it takes the gcode
+        # mutex -- so the test stalled until the load finished. Held rather
+        # than dropped: they did insert a spool, and it should end up parked
+        # once the calibration is out of the way.
+        if self._cal_state:
+            logging.info("Autoloader: auto-park for path %d held while '%s' "
+                         "is running", path, self._cal_state)
+            return
+
         if self._park_active:
             return
         self._park_active = True
@@ -675,6 +686,17 @@ class Autoloader:
         except Exception:
             self._park_active = False
             logging.exception("Autoloader: could not queue auto-park")
+
+    def drain_pending_parks(self):
+        """Start draining anything held while a calibration was running."""
+        if self._cal_state or self._park_active or not self._park_queue:
+            return
+        self._park_active = True
+        try:
+            self.reactor.register_callback(self._drain_park_queue)
+        except Exception:
+            self._park_active = False
+            logging.exception("Autoloader: could not resume held auto-parks")
 
     def _drain_park_queue(self, eventtime):
         """Run queued auto-parks one at a time, oldest first.
