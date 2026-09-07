@@ -166,6 +166,20 @@ class SAMotion:
         """+1, or -1 when the drive motor is wired backwards."""
         return -1.0 if getattr(self.owner, 'drive_dir_invert', False) else 1.0
 
+    def _endstop_state(self):
+        """(triggered, name) for the selector endstop, or (None, name).
+
+        None means it could not be read at all, which is treated as unknown
+        rather than as either answer: refusing to home because a query failed
+        would be worse than homing, and claiming success on it would be worse
+        still.
+        """
+        try:
+            return self.owner._selector_endstop_state()
+        except Exception:
+            logging.exception("SAMotion: could not read the selector endstop")
+            return None, ""
+
     def selector_home(self):
         """Home selector to physical endstop — double-touch for accuracy.
 
@@ -183,6 +197,26 @@ class SAMotion:
 
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=1" % sn)
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % sn)
+
+        # An endstop that is ALREADY triggered is the failure Klipper cannot
+        # catch for us: STOP_ON_ENDSTOP stops the first move instantly, the
+        # move "succeeded", and zero gets set wherever the carriage was
+        # standing. Back off far enough to clear the switch and look again.
+        pre, _n = self._endstop_state()
+        if pre:
+            logging.info("SAMotion: endstop already triggered — backing off "
+                         "before homing")
+            owner.gcode.run_script_from_command(
+                "MANUAL_STEPPER STEPPER=%s MOVE=%.1f SPEED=%.1f"
+                % (sn, self._sel_sign() * (bo * 4.0), hs))
+            owner.gcode.run_script_from_command("M400")
+            still, _n = self._endstop_state()
+            if still:
+                raise owner.printer.command_error(
+                    "SA: the selector endstop still reads TRIGGERED after "
+                    "backing off %.1fmm, so homing cannot tell where home is.\n"
+                    "Run SA_TEST_ENDSTOP: either the switch is stuck, or its "
+                    "polarity is inverted in hardware.cfg." % (bo * 4.0))
 
         # Fast approach
         sg = self._sel_sign()
@@ -207,10 +241,25 @@ class SAMotion:
             "MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % sn)
 
         self._arm_timeout(sn)
+
+        # And prove it. Everything downstream is measured from this zero, so a
+        # homing that did not reach the switch must not be recorded as one that
+        # did -- the guide reads this flag, and so does every selector move.
+        post, _n = self._endstop_state()
+        if post is False:
+            owner._selector_homed = False
+            owner.current_path = -1
+            raise owner.printer.command_error(
+                "SA: homing finished but the selector endstop does not read "
+                "TRIGGERED, so this is not home.\n"
+                "The carriage may be jammed short of the switch. Clear it, "
+                "then run SA_TEST_ENDSTOP before homing again.")
+
         owner.current_path = -1
         owner._selector_homed = True
         self._selector_position = 0.0
-        logging.info("SAMotion: selector homed")
+        logging.info("SAMotion: selector homed%s",
+                     "" if post else " (endstop not readable — unverified)")
         self.save_position()
 
     def selector_move_to(self, position_mm):
@@ -326,8 +375,18 @@ class SAMotion:
         if pos != 0.0 or path != -1:
             self._selector_position = pos
             owner.current_path = path
-            owner._selector_homed = True
-            logging.info("SAMotion: restored selector position=%.3fmm path=%d from save_variables",
-                         pos, path)
+            # NOT homed. This is where the machine last believed the carriage
+            # was, which is a guess that nothing moved while the power was off
+            # -- a hand, a jam, a belt slipping off. Klipper makes every axis
+            # re-home after a restart for the same reason, and this one
+            # positions to gates half a millimetre wide.
+            #
+            # Saying "homed" here is how the guide came to report it after a
+            # restart in which no homing had happened at all.
+            owner._selector_homed = False
+            owner._selector_position_restored = True
+            logging.info("SAMotion: restored selector position=%.3fmm path=%d "
+                         "from save_variables — NOT homed until the endstop "
+                         "confirms it", pos, path)
         else:
             logging.info("SAMotion: no saved position found — selector position unknown")

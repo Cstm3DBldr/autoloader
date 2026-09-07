@@ -1064,8 +1064,14 @@ class SACalibration:
                        "INVERTED" if sel else "normal"),
                     'warn' if (drv or sel) else 'idle')
         if key == 'homed':
-            ok = bool(owner._selector_homed)
-            return ("Homed" if ok else "Not homed", 'ok' if ok else 'warn')
+            if owner._selector_homed:
+                return ("Homed", 'ok')
+            if getattr(owner, '_selector_position_restored', False):
+                # Worth spelling out rather than showing a bare "Not homed":
+                # the machine does have a position, it just has no evidence
+                # for it, and that is a different thing to say.
+                return ("Position restored from last session — not homed", 'warn')
+            return ("Not homed", 'warn')
         if key == 'selector':
             pos = list(st.get('selector_positions') or [])
             done = bool(pos) and any(abs(pos[i] - i * 21.0) > 1.0
@@ -1104,7 +1110,9 @@ class SACalibration:
                st.get('drive_rotation_distance'), st.get('encoder_max_speed'),
                st.get('servo_engaged_angle'), st.get('servo_disengaged_angle'),
                st.get('drive_dir_invert'), st.get('selector_dir_invert'),
-               bool(self.owner._selector_homed), int(st.get('num_paths') or 0))
+               bool(self.owner._selector_homed),
+               bool(getattr(self.owner, '_selector_position_restored', False)),
+               int(st.get('num_paths') or 0))
         if getattr(self, '_guide_sig', None) == sig:
             return self._guide_cache
 

@@ -343,6 +343,9 @@ class Autoloader:
         # SA_RESPOND mailbox (used by calibration routines)
         self._pending_response = None
         self._response_ready   = False
+        # A position read back from save_variables is where the carriage was
+        # last believed to be, not where the endstop says it is.
+        self._selector_position_restored = False
         self._cal_state        = None
         # Set True by sa_motion once the selector homes. Initialised
         # here because every calibration reads it before homing, and
@@ -1997,6 +2000,7 @@ class Autoloader:
             'cal_step_name'           : (self.calibration._current_step()[1]
                                          or ''),
             'cal_step_total'          : self.calibration._STEP_TOTAL,
+            'selector_position_restored': bool(self._selector_position_restored),
             'guide_open'              : bool(self._guide_open),
             'guide_step'              : int(self._guide_step),
             'cal_path'                : self._cal_data.get('path', -1),

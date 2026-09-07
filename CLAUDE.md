@@ -807,6 +807,17 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   the loop that is not the sensor, so the empty check asks and compares. Same
   reason `SA_TEST_ENDSTOP` confirms rather than infers.
 
+- Do not report homed without evidence. `selector_home` set the flag at the end
+  of the routine whatever had happened, and startup set it too whenever a
+  position was restored from save_variables — so after any Klipper restart the
+  guide said "Homed" although nothing had homed. Two checks now gate it: an
+  endstop that already reads TRIGGERED is backed off first (STOP_ON_ENDSTOP
+  stops the first move instantly, so Klipper reports success and zero lands
+  wherever the carriage was standing), and the switch must read TRIGGERED at
+  the end or homing raises instead of setting the flag. A restored position is
+  kept but is NOT homed — it is a guess that nothing moved while the power was
+  off, and the guide says so in those words.
+
 - Do not add sensorless/stallguard homing — homing is physical endstop only (SA_SELECTOR_STOP / PA15). The endstop pin ships as `^autoloader:SA_SELECTOR_STOP`. This file used to claim `^!` was mandatory; it is not, and following that would have broken homing. Measured on the machine with the carriage off the switch: `^` reads open (correct), `^!` reads TRIGGERED, which makes homing stop instantly and call that zero. Which polarity is right depends on the switch wiring, so `SA_TEST_ENDSTOP` settles it per printer and writes the answer to user.cfg.
 
 ## Console Output Rules
