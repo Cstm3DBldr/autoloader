@@ -12,19 +12,6 @@ logger = logging.getLogger('klipperscreen.sa_calibration_guide')
 _GREY      = "#616161"
 _GREEN     = "#388E3C"
 _AMBER     = "#F9A825"
-_NUM_STEPS = 9
-
-_STEP_TITLES = [
-    "1 — Test Motors",
-    "2 — Test Endstop",
-    "3 — Home Selector",
-    "4 — Calibrate Selector",
-    "5 — Calibrate Servo",
-    "6 — Calibrate Drive Motor",
-    "7 — Calibrate Encoder Speed",
-    "8 — Calibrate Encoder (mm/pulse)",
-    "9 — Calibrate Bowden Length",
-]
 
 
 class Panel(ScreenPanel):
@@ -49,10 +36,14 @@ class Panel(ScreenPanel):
 
         self._num_paths   = 6
         self._last_sa     = {}
-        self._pending_cmd = None
         self._step        = 0
+        # How many pages there are is the printer's answer, not ours. It used
+        # to be a constant here, which is how this screen came to show nine
+        # steps of an eleven-step chain.
+        self._n_steps     = 0
 
-        # Outer stack: "pages" (step navigator) | "tool" (path picker)
+        # One view. The path picker it used to swap to is gone: the
+        # per-path steps arrive with a button per path already.
         self._stack = Gtk.Stack()
         self._stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
         self._stack.set_transition_duration(150)
@@ -63,7 +54,6 @@ class Panel(ScreenPanel):
         self._stack.set_hhomogeneous(False)
 
         self._stack.add_named(self._build_pages_view(), "pages")
-        self._stack.add_named(self._build_tool_page(),  "tool")
 
         self.content.pack_start(self._stack, True, True, 0)
 
@@ -82,17 +72,9 @@ class Panel(ScreenPanel):
         self._page_stack.set_vhomogeneous(False)
         self._page_stack.set_hhomogeneous(False)
 
+        # Built on demand rather than up front: the count comes from the
+        # printer and this runs before it has answered.
         self._step_boxes = []
-        for i in range(_NUM_STEPS):
-            scroll = Gtk.ScrolledWindow()
-            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.ALWAYS)
-            scroll.set_overlay_scrolling(False)
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
-                          margin_top=12, margin_start=12, margin_end=12,
-                          margin_bottom=20)
-            scroll.add(box)
-            self._step_boxes.append(box)
-            self._page_stack.add_named(scroll, "step%d" % i)
 
         wrapper.pack_start(self._page_stack, True, True, 0)
 
@@ -131,13 +113,31 @@ class Panel(ScreenPanel):
 
         return wrapper
 
+    def _ensure_pages(self, n):
+        """Have at least *n* page boxes. Grows; never shrinks, because a box
+        that is not the visible child costs nothing and removing one mid-flight
+        is a good way to drop the page being looked at."""
+        while len(self._step_boxes) < n:
+            i = len(self._step_boxes)
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.ALWAYS)
+            scroll.set_overlay_scrolling(False)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                          margin_top=12, margin_start=12, margin_end=12,
+                          margin_bottom=20)
+            scroll.add(box)
+            scroll.show_all()
+            self._step_boxes.append(box)
+            self._page_stack.add_named(scroll, "step%d" % i)
+
     def _update_nav(self):
         # Step name now lives only in the page header (not in the dots
         # markup) — keeps the nav strip narrow enough to fit alongside
         # the prev/next buttons without forcing horizontal overflow.
-        self._step_lbl.set_markup(_sbs.progress_dots(self._step, _NUM_STEPS))
+        self._step_lbl.set_markup(
+            _sbs.progress_dots(self._step, max(1, self._n_steps)))
         self._prev_btn.set_sensitive(self._step > 0)
-        last = self._step == _NUM_STEPS - 1
+        last = self._step >= self._n_steps - 1
         self._next_btn.set_label("Done" if last else "Next  ▶")
         self._next_btn.set_sensitive(not last)
         ctx = self._next_btn.get_style_context()
@@ -153,7 +153,7 @@ class Panel(ScreenPanel):
             self._gcode("SA_GUIDE STEP=%d" % self._step)
 
     def _go_next(self, widget):
-        if self._step < _NUM_STEPS - 1:
+        if self._step < self._n_steps - 1:
             self._gcode("SA_GUIDE STEP=%d" % (self._step + 2))
 
     def _sync_from_printer(self, sa):
@@ -170,7 +170,13 @@ class Panel(ScreenPanel):
             logger.info("guide: no usable guide_step in %s",
                         sorted(sa.keys())[:6] or "an empty status")
             return False
-        idx = min(_NUM_STEPS - 1, step - 1)
+        pages = sa.get("guide_pages")
+        if isinstance(pages, list) and pages:
+            self._n_steps = len(pages)
+            self._ensure_pages(self._n_steps)
+        if self._n_steps <= 0:
+            return False
+        idx = min(self._n_steps - 1, step - 1)
         if idx != self._step:
             self._step = idx
             self._show_step()
@@ -184,344 +190,71 @@ class Panel(ScreenPanel):
     # ── Step content ──────────────────────────────────────────────────────────
 
     def _populate_step(self, idx, sa):
-        box = self._step_boxes[idx]
+        """Render one page of the printer's guide.
+
+        Everything shown here arrives in guide_pages: the heading, whether the
+        step is done, what it does, what to press, what to expect and what to
+        check when it does not happen. This decides none of it.
+        """
+        pages = sa.get("guide_pages") or self._last_sa.get("guide_pages") or []
+        if idx >= len(pages) or idx >= len(self._step_boxes):
+            return
+        page = pages[idx]
+        box  = self._step_boxes[idx]
         for child in box.get_children():
             box.remove(child)
 
-        homed       = sa.get("current_path", -1) >= 0
-        sel_pos     = sa.get("selector_positions", [])
-        enc_mpp     = sa.get("encoder_mpp", [])
-        bowden_lens = sa.get("bowden_lengths", [])
-        drv_rot     = sa.get("drive_rotation_distance", 0.0)
-        enc_max     = sa.get("encoder_max_speed", 0.0)
-        num         = sa.get("num_paths", self._num_paths)
-        cal_state   = sa.get("cal_state", "")
+        box.pack_start(self._section("%d — %s" % (page.get("n", idx + 1),
+                                                  page.get("title", ""))),
+                       False, False, 0)
 
-        box.pack_start(self._section(_STEP_TITLES[idx]), False, False, 0)
+        if page.get("status"):
+            tone = {"ok": _GREEN, "warn": _AMBER}.get(page.get("tone"), _GREY)
+            box.pack_start(self._status(page["status"], tone), False, False, 0)
 
-        if   idx == 0: self._step_motors(box, sa)
-        elif idx == 1: self._step_endstop(box)
-        elif idx == 2: self._step_home(box, homed)
-        elif idx == 3: self._step_selector(box, sel_pos, cal_state, num)
-        elif idx == 4: self._step_servo(box, sa)
-        elif idx == 5: self._step_drive(box, drv_rot)
-        elif idx == 6: self._step_enc_speed(box, enc_max)
-        elif idx == 7: self._step_encoder(box, enc_mpp, num)
-        elif idx == 8: self._step_bowden(box, bowden_lens, num)
+        if page.get("hint"):
+            box.pack_start(self._hint(page["hint"]), False, False, 0)
+
+        buttons = page.get("buttons") or []
+        if buttons:
+            row = Gtk.Grid(column_spacing=8)
+            row.set_column_homogeneous(True)
+            for i, b in enumerate(buttons):
+                btn = _sbs.make(b.get("label", "").upper(), "sa-btn")
+                btn.connect("clicked", self._send, b.get("gcode", ""))
+                row.attach(btn, i, 0, 1, 1)
+            box.pack_start(row, False, False, 0)
+
+        # A per-path step arrives with one button per path, already addressed,
+        # so there is nothing left to pick on another screen.
+        grid = page.get("grid")
+        if grid:
+            g = Gtk.Grid(column_spacing=6, row_spacing=6)
+            g.set_column_homogeneous(True)
+            for cell in grid:
+                t  = int(cell.get("tool", 0))
+                fg = _GREEN if cell.get("done") else _GREY
+                lbl = Gtk.Label(halign=Gtk.Align.CENTER)
+                lbl.set_markup(
+                    '<span foreground="%s" font_size="small">T%d\n%s</span>'
+                    % (fg, t, cell.get("value") or "\u2715"))
+                lbl.set_size_request(-1, int(self._gtk.font_size * 1.9))
+                g.attach(lbl, t % 3, t // 3 * 2, 1, 1)
+                btn = _sbs.make("T%d" % t, "sa-btn")
+                btn.connect("clicked", self._send, cell.get("gcode", ""))
+                g.attach(btn, t % 3, t // 3 * 2 + 1, 1, 1)
+            box.pack_start(g, False, False, 0)
+
+        if page.get("expect"):
+            box.pack_start(
+                self._expect("\n".join("\u2022 " + x for x in page["expect"])),
+                False, False, 0)
+        if page.get("warn"):
+            box.pack_start(
+                self._warn("\n".join("\u2022 " + x for x in page["warn"])),
+                False, False, 0)
 
         box.show_all()
-
-    def _step_motors(self, box, sa):
-        """Buzz each motor and ask which way it went.
-
-        The old buttons buzzed and left the operator to spot the direction
-        themselves, with "swap any two motor phase wires" as the printed fix
-        -- a teardown for something the firmware can invert.
-        """
-        drv_inv = bool(sa.get("drive_dir_invert", False))
-        sel_inv = bool(sa.get("selector_dir_invert", False))
-        box.pack_start(self._status(
-            "Direction:  drive %s   selector %s"
-            % ("INVERTED" if drv_inv else "normal",
-               "INVERTED" if sel_inv else "normal"),
-            _AMBER if (drv_inv or sel_inv) else _GREY),
-            False, False, 0)
-        box.pack_start(self._hint(
-            "Buzz each motor and answer which way it moved. Answering "
-            "'wrong way' flips that motor in software, saves it, and buzzes "
-            "again so you can check the fix."),
-            False, False, 0)
-        row = Gtk.Grid(column_spacing=8)
-        row.set_column_homogeneous(True)
-        b1 = _sbs.make("BUZZ DRIVE",    "sa-btn")
-        b2 = _sbs.make("BUZZ SELECTOR", "sa-btn")
-        b1.connect("clicked", self._send, "SA_BUZZ_CHECK MOTOR=drive")
-        b2.connect("clicked", self._send, "SA_BUZZ_CHECK MOTOR=selector")
-        row.attach(b1, 0, 0, 1, 1)
-        row.attach(b2, 1, 0, 1, 1)
-        box.pack_start(row, False, False, 0)
-        box.pack_start(self._expect(
-            "Drive: first move pushes filament toward the toolhead (forward).\n"
-            "Selector: first move travels away from the endstop toward higher path numbers.\n"
-            "Both motors click/buzz, return to where they started, then ask "
-            "which way they went."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "No movement \u2192 check motor wiring and driver power.\n"
-            "Wrong direction \u2192 answer WRONG WAY; no rewiring needed.\n"
-            "Very weak \u2192 increase driver current in hardware.cfg."),
-            False, False, 0)
-
-    def _step_servo(self, box, sa):
-        """Find the engage angle without letting the servo strip its gears.
-
-        Placed after the selector calibration because the engage search is
-        judged by watching the drive gear grip filament, which needs a path
-        that can be selected. Everything before that -- arm off, move to
-        rest, arm back on -- is bench work.
-        """
-        eng = float(sa.get("servo_engaged_angle", 0.0))
-        dis = float(sa.get("servo_disengaged_angle", 0.0))
-        box.pack_start(self._status(
-            "Engaged %.0f\u00b0    Disengaged %.0f\u00b0" % (eng, dis), _GREY),
-            False, False, 0)
-        box.pack_start(self._hint(
-            "Load filament to the drive gear on the selected path first. "
-            "You will be asked to REMOVE the servo arm before anything moves, "
-            "then refit it at the rest position, then step toward the gear "
-            "until it grips."),
-            False, False, 0)
-        btn = _sbs.make("CAL SERVO", "sa-btn")
-        btn.connect("clicked", self._send, "SA_CALIBRATE_SERVO")
-        box.pack_start(btn, False, False, 0)
-        box.pack_start(self._expect(
-            "Arm off \u2192 servo moves to the rest angle \u2192 refit the arm "
-            "resting against the servo body, away from the drive gear "
-            "\u2192 step in 1/5/10\u00b0 until the gear just grips \u2192 save.\n"
-            "Effective immediately, no restart."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "Take the arm OFF when asked. Fitted at the wrong angle, its "
-            "whole travel is a hard stop and the gears strip in seconds.\n"
-            "Arm moves away from the gear as the angle rises \u2192 the servo "
-            "is reversed; press WRONG WAY.\n"
-            "Near the grip point move in 1\u00b0 steps \u2192 past it the arm is "
-            "pushing on the mechanism."),
-            False, False, 0)
-
-    def _step_endstop(self, box):
-        """Prove the endstop works BEFORE anything drives at it.
-
-        Homing stops on the endstop signal, so it is the first thing that
-        trusts the switch -- and it finds out by driving the carriage at it. A
-        switch that never triggers means homing runs into the hard stop; one
-        stuck triggered means homing stops instantly and calls that zero. Both
-        are cheap to catch by hand and expensive to catch by driving.
-        """
-        box.pack_start(self._hint(
-            "Move the selector carriage BY HAND onto the endstop and off "
-            "again while this watches. Nothing is driven -- this only reads "
-            "the switch."),
-            False, False, 0)
-        btn = _sbs.make("TEST ENDSTOP", "sa-btn")
-        btn.connect("clicked", self._send, "SA_TEST_ENDSTOP DURATION=30")
-        box.pack_start(btn, False, False, 0)
-        box.pack_start(self._expect(
-            "Reads 'open' off the switch and 'TRIGGERED' on it, and reports "
-            "every change for 30s. It should end with ENDSTOP OK."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "Never triggers → check wiring and the SA_SELECTOR_STOP pin.\n"
-            "Always triggered → polarity is inverted; check the '^!' on the "
-            "endstop pin in hardware.cfg.\n"
-            "Do not run HOME until this passes."),
-            False, False, 0)
-
-    def _step_home(self, box, homed):
-        box.pack_start(
-            self._status("\u2713 Homed" if homed else "\u2715 Not homed",
-                         _GREEN if homed else _AMBER),
-            False, False, 0)
-        box.pack_start(self._hint(
-            "Moves the selector to the physical endstop and zeros its position. "
-            "Required before any selector movement."),
-            False, False, 0)
-        btn = _sbs.make("HOME SELECTOR", "sa-btn")
-        btn.connect("clicked", self._send, "SA_HOME")
-        box.pack_start(btn, False, False, 0)
-        box.pack_start(self._expect(
-            "Selector moves toward endstop, slows, touches, backs off, touches again "
-            "to confirm position."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "Moves away from endstop \u2192 go back to step 1 and answer "
-            "WRONG WAY for the selector.\n"
-            "Never triggers \u2192 check endstop wiring and SA_SELECTOR_STOP pin.\n"
-            "Slams hard \u2192 reduce selector_homing_speed in hardware.cfg."),
-            False, False, 0)
-
-    def _step_selector(self, box, sel_pos, cal_state, num):
-        has_cal = (bool(sel_pos) and
-                   any(abs(sel_pos[i] - i * 21.0) > 1.0 for i in range(len(sel_pos))))
-        if has_cal:
-            pos_str = "  ".join("T%d:%.1f" % (i, sel_pos[i]) for i in range(len(sel_pos)))
-            box.pack_start(self._status("\u2713 Calibrated  " + pos_str, _GREEN),
-                           False, False, 0)
-        else:
-            box.pack_start(self._status("\u2715 Using defaults (run to calibrate)", _AMBER),
-                           False, False, 0)
-        if cal_state:
-            box.pack_start(self._status("In progress: %s" % cal_state, _AMBER),
-                           False, False, 0)
-        box.pack_start(self._hint(
-            "Sweeps the full rail using stallguard to find the far end, then "
-            "homes back to measure total travel and calculate even path spacing."),
-            False, False, 0)
-        btn = _sbs.make("CAL SELECTOR", "sa-btn")
-        btn.connect("clicked", self._send, "SA_CALIBRATE_SELECTOR")
-        box.pack_start(btn, False, False, 0)
-        box.pack_start(self._expect(
-            "Homes, sweeps outward until stall detected or end reached, homes back. "
-            "Reports total travel (~105\u2013130 mm for 6 paths) and even spacing (~21 mm)."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "Stalls mid-rail \u2192 increase selector_stall_threshold in hardware.cfg.\n"
-            "Misses far end \u2192 decrease selector_stall_threshold.\n"
-            "Spacing wrong \u2192 verify rail is unobstructed and re-run."),
-            False, False, 0)
-
-    def _step_drive(self, box, drv_rot):
-        if drv_rot and drv_rot > 0:
-            box.pack_start(
-                self._status("\u2713 rotation_distance = %.4f" % drv_rot, _GREEN),
-                False, False, 0)
-        else:
-            box.pack_start(self._status("\u2715 Not calibrated", _AMBER),
-                           False, False, 0)
-        box.pack_start(self._hint(
-            "Filament must reach the drive gear. You set its tip flush with "
-            "the gate exit by turning the drive knob, it feeds 100 mm, and you "
-            "measure what is sticking out. No tape or pen -- the gate exit is "
-            "the datum."),
-            False, False, 0)
-        btn = _sbs.make("CAL DRIVE", "sa-btn")
-        btn.connect("clicked", self._send, "SA_CALIBRATE_DRIVE")
-        box.pack_start(btn, False, False, 0)
-        box.pack_start(self._expect(
-            "Filament moves forward ~100 mm. Measure the actual distance moved "
-            "and enter it when prompted. Typical rotation_distance: 22\u201326."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "No movement \u2192 engage servo first (SA_ENGAGE), check drive gear.\n"
-            "Filament slips \u2192 tighten idler, or re-run step 5 for a "
-            "firmer engage angle.\n"
-            "Result far from 100 mm \u2192 re-check microstep and full_steps_per_rotation settings."),
-            False, False, 0)
-
-    def _step_enc_speed(self, box, enc_max):
-        if enc_max and enc_max > 0:
-            box.pack_start(
-                self._status("\u2713 Max = %.1f mm/s  (blast = %.1f mm/s)"
-                             % (enc_max, enc_max * 0.75), _GREEN),
-                False, False, 0)
-        else:
-            box.pack_start(
-                self._status("\u2715 Not calibrated  (blast defaults to 75 mm/s)", _AMBER),
-                False, False, 0)
-        box.pack_start(self._hint(
-            "Ramps feed speed up until the encoder starts slipping, then saves "
-            "the highest reliable speed. Run with filament loaded through the drive gear."),
-            False, False, 0)
-        btn = _sbs.make("CAL ENCODER SPEED", "sa-btn")
-        btn.connect("clicked", self._send, "SA_CALIBRATE_ENCODER_SPEED")
-        box.pack_start(btn, False, False, 0)
-        box.pack_start(self._expect(
-            "Speed ramps up in steps. Stops when encoder falls behind. "
-            "Saves max reliable speed (typically 100\u2013200 mm/s)."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "Saves very low speed (<50 mm/s) \u2192 check encoder wiring and position on shaft.\n"
-            "Fails immediately \u2192 encoder not counting, verify SA_ENCODER pin.\n"
-            "Inconsistent results \u2192 ensure filament has no resistance in tube."),
-            False, False, 0)
-
-    def _step_encoder(self, box, enc_mpp, num):
-        box.pack_start(self._hint(
-            "Measures mm of filament per encoder pulse. "
-            "Run per path with filament loaded past the drive gear."),
-            False, False, 0)
-        grid = Gtk.Grid(column_spacing=6, row_spacing=6)
-        grid.set_column_homogeneous(True)
-        for i in range(num):
-            mpp  = enc_mpp[i] if i < len(enc_mpp) else 0.0
-            done = mpp > 0.0
-            fg   = _GREEN if done else _GREY
-            lbl  = Gtk.Label(halign=Gtk.Align.CENTER)
-            lbl.set_markup('<span foreground="%s" font_size="small">T%d\n%s</span>'
-                           % (fg, i, ("%.4f" % mpp) if done else "\u2715"))
-            lbl.set_size_request(-1, int(self._gtk.font_size * 1.9))
-            grid.attach(lbl, i % 3, i // 3 * 2,     1, 1)
-            btn = _sbs.make("T%d" % i, "sa-btn")
-            btn.connect("clicked", self._pick_tool, "SA_CALIBRATE_ENCODER TOOL={t}", i)
-            grid.attach(btn, i % 3, i // 3 * 2 + 1, 1, 1)
-        box.pack_start(grid, False, False, 0)
-        box.pack_start(self._expect(
-            "Each path runs filament ~100 mm through the drive gear and compares "
-            "encoder count to actual distance. Typical value: 0.010\u20130.020 mm/pulse."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "Value near 0 \u2192 encoder not counting, check wiring and SA_ENCODER pin.\n"
-            "Values differ wildly between paths \u2192 filament not fully engaged, "
-            "re-seat and retry.\n"
-            "Value way off (>0.05) \u2192 wrong encoder resolution in sa_encoder config."),
-            False, False, 0)
-
-    def _step_bowden(self, box, bowden_lens, num):
-        box.pack_start(self._hint(
-            "Loads filament from the drive gear to the extruder sensor and "
-            "records the distance. Run per path after encoder is calibrated."),
-            False, False, 0)
-        grid = Gtk.Grid(column_spacing=6, row_spacing=6)
-        grid.set_column_homogeneous(True)
-        for i in range(num):
-            blen = bowden_lens[i] if i < len(bowden_lens) else 800.0
-            done = abs(blen - 800.0) > 5.0
-            fg   = _GREEN if done else _GREY
-            lbl  = Gtk.Label(halign=Gtk.Align.CENTER)
-            lbl.set_markup('<span foreground="%s" font_size="small">T%d\n%s</span>'
-                           % (fg, i, ("%.0fmm" % blen) if done else "\u2715"))
-            lbl.set_size_request(-1, int(self._gtk.font_size * 1.9))
-            grid.attach(lbl, i % 3, i // 3 * 2,     1, 1)
-            btn = _sbs.make("T%d" % i, "sa-btn")
-            btn.connect("clicked", self._pick_tool, "SA_CALIBRATE_BOWDEN TOOL={t}", i)
-            grid.attach(btn, i % 3, i // 3 * 2 + 1, 1, 1)
-        box.pack_start(grid, False, False, 0)
-        box.pack_start(self._expect(
-            "Filament loads until the extruder sensor triggers. Distance is saved "
-            "per path. Values should be consistent across paths (within ~10 mm)."),
-            False, False, 0)
-        box.pack_start(self._warn(
-            "Sensor never triggers \u2192 check extruder sensor wiring and pin polarity.\n"
-            "Distance too short \u2192 filament may have buckled in the PTFE tube, "
-            "check routing.\n"
-            "Large variation between paths \u2192 PTFE tube lengths differ, "
-            "check tube routing for each path."),
-            False, False, 0)
-
-    # ── Tool picker page ──────────────────────────────────────────────────────
-
-    def _build_tool_page(self):
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-
-        lbl = Gtk.Label()
-        lbl.set_markup('<b><span font_size="large">Select Path</span></b>')
-        lbl.set_margin_top(10)
-        lbl.set_margin_bottom(6)
-        outer.pack_start(lbl, False, False, 0)
-
-        self._tool_grid = Gtk.Grid(row_homogeneous=True, column_homogeneous=True,
-                                   row_spacing=6, column_spacing=6,
-                                   margin_start=8, margin_end=8)
-        outer.pack_start(self._tool_grid, True, True, 0)
-
-        back_btn = _sbs.make("\u2190  Cancel", "sa-btn-nav")
-        back_btn.set_margin_start(8)
-        back_btn.set_margin_end(8)
-        back_btn.set_margin_top(6)
-        back_btn.set_margin_bottom(8)
-        back_btn.connect("clicked", lambda w: self._stack.set_visible_child_name("pages"))
-        outer.pack_start(back_btn, False, False, 0)
-        return outer
-
-    def _rebuild_tool_buttons(self, num_paths, preselected=None):
-        for child in self._tool_grid.get_children():
-            self._tool_grid.remove(child)
-        for i in range(num_paths):
-            style = "sa-btn" if i == preselected else "sa-btn"
-            btn = _sbs.make("T%d" % i, style)
-            btn.connect("clicked", self._tool_selected, i)
-            self._tool_grid.attach(btn, i % 3, i // 3, 1, 1)
-        self._tool_grid.show_all()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -573,18 +306,6 @@ class Panel(ScreenPanel):
         nothing at all.
         """
         self._screen._ws.klippy.gcode_script(gcode)
-
-    def _pick_tool(self, widget, gcode_template, preselected=None):
-        self._pending_cmd = gcode_template
-        self._rebuild_tool_buttons(self._num_paths, preselected)
-        self._stack.set_visible_child_name("tool")
-
-    def _tool_selected(self, widget, tool_idx):
-        if self._pending_cmd:
-            cmd = self._pending_cmd.replace("{t}", str(tool_idx))
-            self._screen._ws.klippy.gcode_script(cmd)
-            self._pending_cmd = None
-        self._stack.set_visible_child_name("pages")
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
