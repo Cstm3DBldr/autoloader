@@ -1649,7 +1649,7 @@ class SACalibration:
         if group == 'entry':
             return [
                 {'want': {'entry': False},
-                 'confirm': "Is path %d's entry empty?" % path,
+                 'confirm': "Path %d is empty" % path,
                  'ask': "Take any filament out of path %d's entry, then "
                         "confirm." % path,
                  'why': "This is the one reading nothing else can check. Every "
@@ -1665,7 +1665,7 @@ class SACalibration:
             ]
         return [
             {'want': {'extruder': False, 'toolhead': False},
-             'confirm': "Is toolhead %d empty, with the Bowden off?" % path,
+             'confirm': "Toolhead %d is empty" % path,
              'ask': "Detach the Bowden from toolhead %d and take out any "
                     "filament, then confirm." % path,
              'why': "This is the one reading nothing else can check. Every "
@@ -1767,7 +1767,7 @@ class SACalibration:
              + ("Nothing is driven." if asking else
                 "Nothing is driven — this waits for the readings to change.")
              + NL + "Stage %d of %d." % (d['stage'] + 1, len(d['plan']))),
-            ([(stage['confirm'].upper().replace("?", ""), 'yes', 'primary'),
+            ([(stage['confirm'], 'yes', 'primary'),
               ("NOT YET", 'no', 'secondary')] if asking else []),
             footer=[("STOP", "abort", "error")])
 
