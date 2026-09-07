@@ -599,7 +599,7 @@ If you add a new file to the project, add its destination here AND update
 | `scripts/patch_klipperscreen.sh` | edits `~/KlipperScreen/screen.py` | **re-applied by post_update.sh on every update.** A KlipperScreen update replaces screen.py and takes the hook with it silently, so this runs every time rather than once. `install.sh --uninstall` reverts it, but only when no other add-on is left using it |
 | `KlipperScreen/sa_klipperscreen.conf` | `~/printer_data/config/sa_klipperscreen.conf` | direct copy (post_update.sh) |
 | `web/mainsail/AutoloaderPanel.vue` | compiled into `~/mainsail/assets/*.js` | manual rebuild from VS source — not auto-synced |
-| `web/mainsail-plugin/dist/*.js` | served anywhere the browser can reach; registered in the Moonraker DB | `npm run build`, then deploy the one file — not auto-synced |
+| `web/mainsail-plugin/dist/*.js` | `~/mainsail/plugins/autoloader-panel-plugin.js`; registered in the Moonraker DB | `bash scripts/deploy_mainsail_plugin.sh` — builds, copies, and rewrites the registration's `entryUrl` to carry the built file's hash. The URL was fixed, so browsers cached it forever and every update needed a manual Ctrl+Shift+R; without one a shipped change looks like a failed deploy. Runs from the dev machine (needs npm); `SA_HOST=` to retarget |
 | `web/fluidd/AutoloaderPanel.vue` | depends on Fluidd host setup | user-managed |
 
 ### Rename-class changes — extra steps beyond the routine deploy
