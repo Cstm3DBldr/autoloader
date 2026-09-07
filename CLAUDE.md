@@ -81,14 +81,32 @@ knows what manual hooks to reapply.
 
 ## Branching and what counts as a fix
 
-    main     what end users install. Update Manager points here (install.sh
-             writes primary_branch: main). One commit per confirmed fix.
-    dev      where the work happens. Forked from main, so main is its
-             ancestor and a merge is a fast-forward rather than a graft.
-    old-dev  the 505-commit build history from before 2026-09-07.
+    main         what end users install. Update Manager points here
+                 (install.sh writes primary_branch: main). Fast-forwarded
+                 from dev at the end of a confirmed day.
+    dev          one commit per CONFIRMED fix. Forked from main, so main is
+                 its ancestor and a merge is a fast-forward, not a graft.
+    printer-dev  what this printer runs. Messy by design: commit whatever it
+                 takes to get code onto the machine and test it.
+    old-dev      the 505-commit build history from before 2026-09-07.
 
-This printer follows **dev** (`primary_branch: dev` in its moonraker.conf, a
-manual edit). End users follow **main**.
+This printer follows **printer-dev** (`primary_branch: printer-dev` in its
+moonraker.conf, a manual edit). End users follow **main**.
+
+**The cycle, per fix:**
+
+1. Work on `printer-dev`. Commit and push as often as it takes — Update
+   Manager pulls it, so pushing IS the deploy. Nobody reads this log.
+2. Verify on the machine. Measured, not assumed.
+3. Transpose the confirmed change onto `dev` as ONE commit, with a message
+   saying what was measured.
+4. Reset `printer-dev` back onto `dev` so the two cannot drift:
+   `git push -f origin origin/dev:refs/heads/printer-dev`, then on the
+   printer `git fetch && git reset --hard origin/printer-dev`.
+
+Step 4 is the one that gets skipped. Without it `printer-dev` accumulates
+history that `dev` never sees, and the next transposed diff is taken against
+the wrong baseline.
 
 **A commit is a CONFIRMED fix, not an attempted one.** Deploy it, verify it on
 the machine, and only then commit. The message says what was measured, not what
@@ -107,12 +125,9 @@ committed, deployed and reported before anyone checked:
 Each one is a commit claiming a fix that was not one, and the last hid three
 other bugs behind it.
 
-**Deploying before committing:** the Python extras and the Moonraker component
-are symlinked from `~/autoloader`, so `scp` a working-tree file straight over
-the checkout and restart the service to test it. The printer's tree is dirty
-until the real pull; `git checkout -- .` then pull once the fix is confirmed
-and pushed. Do not use a commit as the delivery mechanism for something
-untested.
+`printer-dev` is what makes that rule practical: an untested change still needs
+to reach the printer, and a commit is the delivery mechanism. Putting those
+commits on a branch nobody reads means `dev` never carries an unconfirmed one.
 
 **End of day:** `dev` fast-forwards into `main`. Every commit on it is
 already a confirmed fix, so nothing needs squashing.
