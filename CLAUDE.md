@@ -837,6 +837,13 @@ anything above that is invisible, and what survives is whichever paragraph
 happens to be last. That is how a yes/no question came to show only its
 footnote about what to do when the answer is no.
 
+- **Send the body as ONE `prompt_text`.** KlipperScreen's `prompts.py` does
+  `self.text = data.replace('prompt_text ', '')` — an ASSIGNMENT — so it keeps
+  only the LAST line and throws the rest away. Mainsail concatenates them, so
+  sending a line each looks right there and shows one sentence on the
+  touchscreen: a yes/no question arrived as "Is it?" with nothing above it.
+  Paragraph breaks are lost on Mainsail; that is the price of the other screen
+  showing anything at all.
 - **Lead with the instruction**, not the reading and not the diagnosis. Nothing
   has gone wrong yet, and text about what to check when it does reads as though
   something has.

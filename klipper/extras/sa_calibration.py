@@ -232,16 +232,23 @@ class SACalibration:
         try:
             r("// action:prompt_end")
             r("// action:prompt_begin %s" % title)
-            # One prompt_text per line. Each "//" line is a separate command,
-            # so an embedded newline would truncate the dialog at the first
-            # one -- which is why "Accept these positions?" appeared with no
-            # positions under it while they went to the console instead.
-            for line in str(text).split(NL):
-                line = line.rstrip()
-                if line:
-                    r("// action:prompt_text %s" % line)
-                else:
-                    r("// action:prompt_text  ")
+            # ONE prompt_text, carrying the whole body.
+            #
+            # Each "//" line is a separate command, so a newline cannot be sent
+            # inside one -- and sending a line each looked right because
+            # Mainsail concatenates them. KlipperScreen does not: prompts.py
+            # does `self.text = data.replace('prompt_text ', '')`, an
+            # assignment, so every line but the LAST is thrown away. The
+            # touchscreen has been showing one sentence of every prompt, which
+            # is why a yes/no question arrived as "Is it?" with nothing above
+            # it, and why the endstop wait screen showed only its footnote.
+            #
+            # So the body goes as one line. Paragraph breaks are lost on
+            # Mainsail, which is a cheap price for the other screen showing
+            # anything at all -- and the bodies are short now.
+            body = " ".join(
+                part.strip() for part in str(text).split(NL) if part.strip())
+            r("// action:prompt_text %s" % body)
             if buttons:
                 step = columns if columns and columns > 0 else len(buttons)
                 for i in range(0, len(buttons), step):
@@ -2113,15 +2120,19 @@ class SACalibration:
                 "'%s').%s    Check that the selector's manual_stepper has an "
                 "endstop_pin in hardware.cfg." % (name, NL))
             return
+        # Start by confirming the state it is ALREADY in, rather than waiting
+        # blind for a change. The switch is in one of two states right now and
+        # the operator can see which -- so ask about that one, then ask them to
+        # move to the other. Waiting first meant the screen opened with an
+        # instruction to move somewhere the carriage might already be.
         owner._cal_data = {
             'name': name,
             'first': bool(state),
-            'seen': [],
+            'seen': [bool(state)],
             'deadline': owner.reactor.monotonic() + self._END_TIMEOUT,
         }
-        owner._cal_state = 'end_wait'
-        self._end_render_wait(gcmd)
-        self._end_arm(owner)
+        owner._cal_state = 'end_confirm'
+        self._end_render_confirm(gcmd)
 
     def _end_arm(self, owner, delay=0.25):
         """Re-arm the poll. A delayed_gcode rather than a loop, so the mutex is
@@ -2146,20 +2157,11 @@ class SACalibration:
         # Action first, and no fault language: nothing has gone wrong yet, and
         # leading with what to check when it does reads as though something
         # has. The stuck screen says all that, at the point where it is true.
-        do = ("Push the selector carriage ON to the switch by hand, until you "
-              "feel it press." if want else
-              "Now pull the selector carriage back OFF the switch.")
+        do = ("Now push the carriage ON to the switch." if want else
+              "Now move the carriage OFF the switch.")
         self._emit_ui_prompt(
             gcmd, self._ui_title(),
-            ("Endstop test — %d of 2" % (len(d['seen']) + 1) + NL + NL
-             + do + NL + NL
-             + "Nothing is driven. Your hand moves it; this only watches the "
-               "switch." + NL
-             + "The moment the reading changes it stops and asks you to "
-               "confirm what happened." + NL + NL
-             + "Reading now:  %s" % self._end_word(now).upper() + NL
-             + "Both states have to be seen, so a switch stuck either way "
-               "fails rather than passing quietly."),
+            (do + " It reads %s until you do." % self._end_word(now).upper()),
             [],
             footer=[("STOP", "abort", "error")])
 
@@ -2208,10 +2210,8 @@ class SACalibration:
             # saying what the reading MEANS scrolled off the top -- leaving a
             # yes/no question with the answer above the fold. What to do when
             # it is backwards has its own screen; it does not belong here.
-            ("Endstop test  (%d of 2)" % len(d['seen']) + NL + NL
-             + "It now reads %s." % self._end_word(now).upper() + NL
-             + "That means %s." % self._end_meaning(now) + NL + NL
-             + "Is it?"),
+            ("It reads %s, which means %s. Is it?"
+             % (self._end_word(now).upper(), self._end_meaning(now))),
             [("YES, THAT IS RIGHT", "yes", "primary"),
              ("NO, IT IS BACKWARDS", "no", "warning"),
              ("START OVER", "restart", "secondary")],
