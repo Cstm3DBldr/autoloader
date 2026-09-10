@@ -640,4 +640,33 @@ Point-in-time captures of what works and what doesn't live in `docs/`:
 
 ---
 
+---
+
+## Licence
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Copyright (C) 2026 Cstm3DBldr
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. It is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+GPL-3.0 rather than something permissive because everything this plugs into is
+already copyleft, and a Klipper extra runs inside Klipper's own process:
+
+| Project | Licence |
+|---|---|
+| Klipper | GPL-3.0 |
+| Moonraker | GPL-3.0 |
+| KlipperScreen | **AGPL-3.0** |
+| Mainsail | GPL-3.0 |
+
+The KlipperScreen panels are the strictest case — AGPL-3.0 — so anything
+derived from them carries that obligation regardless of what this file says.
+
+
 *Last updated: 2026-08-30 — added the printer backup script and the first systems-test log.*

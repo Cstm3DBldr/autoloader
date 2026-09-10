@@ -727,6 +727,22 @@ nothing was missed.
 
 ---
 
+## Licence
+
+GPL-3.0-or-later (LICENSE, added 2026-09-10). The repo had no licence until
+then, which meant all rights reserved by default -- nobody could legally use
+or redistribute it, despite `main` being what end users install.
+
+GPL-3.0 because the whole stack already is: Klipper, Moonraker and Mainsail
+are GPL-3.0, and KlipperScreen is AGPL-3.0. A Klipper extra is imported into
+and runs inside Klipper's process using its internal APIs, so a permissive
+licence here would have been a claim the project could not really make.
+
+This is what makes reading Happy Hare (GPL-3.0) for reference safe. It does
+NOT change the rule below -- reusing its code would still make this a
+derivative of a 1000-star project rather than its own thing, and the
+architectures differ. Reference, do not copy.
+
 ## Happy Hare — Reference Rules
 
 Happy Hare (https://github.com/moggieuk/Happy-Hare) is referenced for:
