@@ -124,6 +124,7 @@ class Autoloader:
         # Which paths have had their sensors proved by hand. Not derived from
         # anything -- a sensor reading CLEAR is indistinguishable from one that
         # is not wired, which is exactly what the test exists to tell apart.
+        self._endstop_ok            = False
         self._entry_sensor_ok       = []
         self._toolhead_sensor_ok    = []
         self._entry_sensor_names    = []
@@ -1112,6 +1113,7 @@ class Autoloader:
         # same way sa_encoder applies its calibrated mm_per_pulse. This used to
         # rewrite hardware.cfg and ask for another restart, which does not
         # survive post_update.sh copying the repo's hardware.cfg over it.
+        self._endstop_ok = str(svars.get('endstop_ok', '')).lower() == 'true'
         saved_rd = svars.get('drive_rotation_distance', None)
         if saved_rd is not None:
             try:
@@ -1985,6 +1987,7 @@ class Autoloader:
             'tip_form_cooling_moves'  : self.tip_form_cooling_moves,
             'encoder_max_speed'       : self._get_encoder_max_speed(),
             'bowden_lengths'          : list(self._bowden_lengths),
+            'endstop_ok'              : bool(self._endstop_ok),
             'entry_sensor_ok'         : list(self._entry_sensor_ok),
             'toolhead_sensor_ok'      : list(self._toolhead_sensor_ok),
             'selector_positions'      : list(self._selector_positions),

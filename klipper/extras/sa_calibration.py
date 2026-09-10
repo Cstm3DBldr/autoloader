@@ -430,7 +430,7 @@ class SACalibration:
                   "Wrong direction — answer WRONG WAY; no rewiring needed.",
                   "Very weak — raise run_current in hardware.cfg."]},
 
-        {'title': "Test the selector endstop", 'status': None,
+        {'title': "Test the selector endstop", 'status': 'endstop',
          'hint': "Move the selector carriage by hand onto the endstop and off "
                  "again while this watches. Nothing is driven.",
          'buttons': [("TEST ENDSTOP", "SA_TEST_ENDSTOP DURATION=30")],
@@ -1105,6 +1105,13 @@ class SACalibration:
             rd = float(st.get('drive_rotation_distance') or 0.0)
             return (("rotation_distance %.4f" % rd) if rd > 0
                     else "Not calibrated", 'ok' if rd > 0 else 'warn')
+        if key == 'endstop':
+            # Whether it has been proved, not what the pin reads now: reading
+            # the pin means QUERY_ENDSTOPS, and this runs on every status
+            # query. Same answer the two sensor pages give.
+            if bool(st.get('endstop_ok')):
+                return ("Proved — both states seen", 'ok')
+            return ("Not tested", 'warn')
         if key == 'enc_speed':
             mx = float(st.get('encoder_max_speed') or 0.0)
             if mx <= 0:
@@ -1124,6 +1131,7 @@ class SACalibration:
                tuple(st.get('bowden_lengths') or ()),
                tuple(st.get('entry_sensor_ok') or ()),
                tuple(st.get('toolhead_sensor_ok') or ()),
+               bool(st.get('endstop_ok')),
                st.get('drive_rotation_distance'), st.get('encoder_max_speed'),
                st.get('servo_engaged_angle'), st.get('servo_disengaged_angle'),
                st.get('drive_dir_invert'), st.get('selector_dir_invert'),
@@ -1148,12 +1156,12 @@ class SACalibration:
                     # is the word itself. Anything with a placeholder is a
                     # measurement and gets formatted.
                     if field and v:
-                        text = (fmt % v) if '%' in fmt else fmt
+                        cell = (fmt % v) if '%' in fmt else fmt
                     else:
-                        text = ""
+                        cell = ""
                     cells.append({
                         'tool': t,
-                        'value': text,
+                        'value': cell,
                         'done': bool(field and v),
                         'gcode': cmd.replace('{t}', str(t)),
                     })
@@ -2284,6 +2292,8 @@ class SACalibration:
             self._clear()
             gcmd.respond_info(
                 "SA CAL: ENDSTOP OK — both states read the right way round.")
+            self.owner._endstop_ok = True
+            self._save_variable('endstop_ok', 'True')
             self._offer_next(gcmd, 'endstop')
             return
 
