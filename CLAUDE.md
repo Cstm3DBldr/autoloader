@@ -132,6 +132,63 @@ commits on a branch nobody reads means `dev` never carries an unconfirmed one.
 **End of day:** `dev` fast-forwards into `main`. Every commit on it is
 already a confirmed fix, so nothing needs squashing.
 
+## One source of truth, and a check that proves it
+
+Every place that restates something becomes a place that goes stale. This has
+bitten the project four times, months apart, each found by hand by someone
+counting:
+
+- the calibration step list lived in `_GUIDE`, a KlipperScreen wizard, a
+  Mainsail wizard and this file. When the chain grew to eleven steps both
+  wizards went on showing nine, one of them clamping the extras onto the last
+  page it knew.
+- the macros panel kept a fifth copy, listing five of the eleven.
+- this file's Calibration Sequence never mentioned `SA_CALIBRATE_ENCODER_SPEED`
+  at all, and carried the encoder steps in an order the code had already
+  changed.
+- the command reference was missing four registered commands.
+
+**The rule, in order of preference:**
+
+1. **Derive, do not restate.** One place owns the fact and everything else asks
+   it at runtime. `_GUIDE` is the model: the backend resolves the pages into
+   the status object and every UI renders what it is given. Adding a step is
+   one edit, and no UI can disagree because no UI describes it.
+2. **When it cannot be derived, make it checkable.** Two copies a script can
+   compare are survivable. Two copies only a human can compare are not. Add
+   the comparison to `scripts/check_drift.py`.
+3. **Only then write it twice** — and say in each place that the other exists,
+   the way the KlipperScreen menu note does.
+
+**Run `python3 scripts/check_drift.py` before any commit touching this file,
+the guide, the command list or parameters.cfg.** No printer, no arguments,
+exits non-zero on drift. It proves:
+
+| Check | Compares |
+|---|---|
+| command reference | this file's GCode table against every `register_command` |
+| guide step numbering | `_GUIDE`, `_STEP_TOTAL`, `_STEP_NAMES` and both lookup tables |
+| parameters | every setting in `parameters.cfg` against what the code reads |
+
+It also catches the prefix-ordering trap: `SA_CALIBRATE_ENCODER` listed before
+`SA_CALIBRATE_ENCODER_SPEED` makes the longer one unreachable, and the symptom
+is a step number reported wrong with nothing logged.
+
+**Add a duplication, add its check.** Where that is not possible, say why here.
+The known unchecked pairs:
+
+- `autoloader/*.cfg` vs `installer/templates/*.cfg` — the templates carry
+  `{{VAR}}` and `{% for path %}`, so they cannot be compared line by line:
+  hardware.cfg has 31 sections against the template's 7. Change both.
+- `~/printer_data/config/KlipperScreen.conf` vs the repo's
+  `sa_klipperscreen.conf` — nothing includes the repo copy, so it is inert on
+  this printer and kept only for a fresh install. Change both, or the change
+  appears to do nothing.
+- `scripts/verify.sh` covers the other direction, printer against repo, and
+  needs the machine. `check_drift.py` is the half that does not.
+
+---
+
 ## Operational Permissions (set by user)
 Claude has full autonomous control of this printer and repository. No need to ask
 before deploying or pushing — just do it and report the result.
@@ -357,6 +414,7 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `web/fluidd/AutoloaderPanel.vue` | Fluidd UI panel |
 | `KlipperScreen/panels/sa_*.py` | KlipperScreen touchscreen panels |
 | `KlipperScreen/addons/sa_autoloader.py` | Runs at KlipperScreen startup and starts watching, so a touchscreen that has opened no autoloader panel still follows a guide opened in Mainsail |
+| `scripts/check_drift.py` | Fails when two places that describe the same thing disagree: the command reference against `register_command`, the guide's step numbering against itself, and `parameters.cfg` against what the code reads. No printer, no arguments. Run it before committing changes to CLAUDE.md, the guide, the command list or parameters.cfg — see **One source of truth** above |
 | `scripts/patch_klipperscreen.sh` | Adds the `addons/` hook to KlipperScreen's `screen.py`. Generic and does not mention the autoloader — it is what we would propose upstream. Guarded: refuses unless the exact anchor matches, idempotent, backs up, byte-compiles and restores on failure, `--revert` undoes it |
 | `KlipperScreen/sa_filament_db.py` | Filament profile DB loader (shared with Moonraker) |
 | `filaments/brands/*.cfg` | Per-brand filament profile files |
