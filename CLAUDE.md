@@ -420,6 +420,7 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `KlipperScreen/sa_filament_db.py` | Filament profile DB loader (shared with Moonraker) |
 | `filaments/brands/*.cfg` | Per-brand filament profile files |
 | `References/hardware_pinouts/` | Board pinout images — local + GitHub only, NOT on printer |
+| `TODO.md` | Open work, and what proves each item done. Items a check already catches are listed for visibility only — `check_drift.py` goes green on its own and the file needs no edit. Anything nothing checks needs removing by hand |
 | `CLAUDE.md` | This file |
 
 On the printer, Python extras and the Moonraker component are symlinked from the repo:
