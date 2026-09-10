@@ -408,6 +408,7 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `klipper/extras/sa_sequences.py` | Load and unload sequences |
 | `klipper/extras/sa_calibration.py` | All calibration routines (drive, encoder, selector, bowden), **and `_GUIDE` — the one definition of the calibration guide.** Title, live status line, hint, buttons or a per-path grid, what to expect and what to check, per step. `guide_pages()` resolves it against the live status and it ships in the status object; every UI renders what it is given. There used to be three copies — this file's chain, a nine-page wizard in KlipperScreen and a seven-page one in Mainsail — and when the chain grew to eleven steps both wizards went on showing nine, one of them clamping the extras onto the last page it knew. Adding a step is one edit here |
 | `klipper/extras/sa_encoder.py` | Encoder driver — pulse counting via Klipper buttons module |
+| `klipper/extras/sa_led_animator.py` | Background LED animator for the toolhead LEDs, ~500 lines. One reactor timer drives two things: a slow white breathing pulse on the logo LED of each unloaded toolhead while idle, and a temp-aware nozzle colour on the active tool when not printing — red-orange while the hotend is still warm, otherwise the same load-state colours as the docked tools. Pauses cleanly during a print or any autoloader operation. Symlinked like the other extras. **Only does anything with the opt-in LED configs**, so a printer without them loads it and it stays quiet |
 | `moonraker/sa_moonraker.py` | Moonraker component — REST endpoints + status broadcast |
 | `web/mainsail-plugin/` | Autoloader panel as a runtime-loaded Mainsail plugin — one self-contained `.mjs`, no Mainsail fork required. Needs Mainsail with custom-panel support. See its README |
 | `web/mainsail/AutoloaderPanel.vue` | Mainsail UI panel (in-tree fork variant, superseded by `web/mainsail-plugin/`) |
@@ -427,6 +428,7 @@ On the printer, Python extras and the Moonraker component are symlinked from the
 - `~/klipper/klippy/extras/sa_sequences.py` → `~/autoloader/klipper/extras/sa_sequences.py`
 - `~/klipper/klippy/extras/sa_calibration.py` → `~/autoloader/klipper/extras/sa_calibration.py`
 - `~/klipper/klippy/extras/sa_encoder.py` → `~/autoloader/klipper/extras/sa_encoder.py`
+- `~/klipper/klippy/extras/sa_led_animator.py` → `~/autoloader/klipper/extras/sa_led_animator.py`
 - `~/moonraker/moonraker/components/sa_moonraker.py` → `~/autoloader/moonraker/sa_moonraker.py`
 
 KlipperScreen panels are NOT symlinked — copy directly to `~/KlipperScreen/panels/` and `~/KlipperScreen/`.
@@ -676,7 +678,7 @@ For .cfg-only changes, `FIRMWARE_RESTART` is fine and faster.
 [ -d ~/autoloader ] || git clone https://github.com/Cstm3DBldr/autoloader.git ~/autoloader; ~/autoloader/install.sh
 ```
 
-`install.sh` creates the 6 symlinks (5 Klipper extras + Moonraker component),
+`install.sh` creates the 7 symlinks (6 Klipper extras + Moonraker component),
 runs `post_update.sh` for the initial file sync, registers the repo with the
 Update Manager, and restarts services.
 
@@ -717,7 +719,7 @@ If you add a new file to the project, add its destination here AND update
 
 | Repo path | On-printer destination | Sync mechanism |
 |---|---|---|
-| `klipper/extras/autoloader.py` + 4 `sa_*.py` | `~/klipper/klippy/extras/` | symlink (install.sh) |
+| `klipper/extras/autoloader.py` + 5 `sa_*.py` | `~/klipper/klippy/extras/` | symlink (install.sh) |
 | `moonraker/sa_moonraker.py` | `~/moonraker/moonraker/components/sa_moonraker.py` | symlink (install.sh) |
 | `autoloader/*.cfg` | `~/printer_data/config/autoloader/` | direct copy (post_update.sh) |
 | `autoloader/examples/*.cfg` | `~/printer_data/config/autoloader/examples/` | direct copy (post_update.sh) |

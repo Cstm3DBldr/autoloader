@@ -155,10 +155,70 @@ def check_parameters():
            "promise the machine does not keep")
 
 
+# ── 4. every Klipper extra is installed and documented ──────────────────
+def check_extras():
+    import glob
+
+    on_disk = {os.path.basename(p)
+               for p in glob.glob(os.path.join(ROOT, "klipper", "extras", "*.py"))}
+    installed = set()
+    for line in read("install.sh").splitlines():
+        if "for f in" in line and ".py" in line:
+            installed |= set(re.findall(r"([a-z_]+\.py)", line))
+    doc = read("CLAUDE.md")
+
+    problems = []
+    for f in sorted(on_disk - installed):
+        problems.append("in klipper/extras/ but install.sh never symlinks it: %s" % f)
+    for f in sorted(installed - on_disk):
+        problems.append("install.sh symlinks a file that does not exist: %s" % f)
+    for f in sorted(on_disk):
+        if f not in doc:
+            problems.append("in klipper/extras/ but CLAUDE.md never mentions it: %s" % f)
+    report("Klipper extras are installed and documented", problems,
+           "add it to install.sh's symlink loop, the Project File Structure "
+           "table and the symlink list -- a whole module missing from the map "
+           "is how sa_led_animator.py went 504 lines unmentioned")
+
+
+# ── 5. every installer question changes something ───────────────────────
+def check_kconfig():
+    import glob
+
+    opts = set()
+    kconfig_text = ""
+    for path in glob.glob(os.path.join(ROOT, "installer", "**", "*"), recursive=True):
+        if os.path.isfile(path) and "Kconfig" in os.path.basename(path):
+            body = open(path, encoding="utf-8", errors="replace").read()
+            kconfig_text += body
+            opts |= set(re.findall(r"^config ([A-Z_0-9]+)", body, re.M))
+
+    consumers = ""
+    for rel in ("installer/generate.py", "installer/detect.py", "install.sh"):
+        consumers += read(rel)
+    for path in glob.glob(os.path.join(ROOT, "installer", "templates", "*")):
+        if os.path.isfile(path):
+            consumers += open(path, encoding="utf-8", errors="replace").read()
+
+    problems = []
+    for o in sorted(opts):
+        # Its own declaration does not count. Anything else does -- a "depends
+        # on" in Kconfig is real use, and so is a template or generate.py.
+        internal = len(re.findall(r"\b%s\b" % o, kconfig_text)) - 1
+        external = o in consumers or ("CONFIG_" + o) in consumers
+        if internal <= 0 and not external:
+            problems.append("asked but never acted on: %s" % o)
+    report("every installer question changes something", problems,
+           "the menu asks, the user answers, and nothing reads it -- wire it "
+           "up in generate.py or install.sh, or drop the question")
+
+
 print("Drift checks -- places that describe the same thing twice\n")
 check_commands()
 check_guide_numbering()
 check_parameters()
+check_extras()
+check_kconfig()
 
 print()
 if failures:
