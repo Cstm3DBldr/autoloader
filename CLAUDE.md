@@ -532,7 +532,11 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_CALIBRATE_SERVO` | Find the engage angle. Ordered to protect the servo: arm off first, then move to the rest angle, then the arm goes back on at the end that is safe by definition (resting on the selector body, away from the drive gear), and only the far angle is searched. A `WRONG WAY` button mirrors both angles for a reversed servo — and takes the arm off again before crossing the travel |
 | `SA_CALIBRATE_SELECTOR` | Auto sweep + measure total travel → calculate path positions |
 | `SA_CALIBRATE_DRIVE` | Interactive drive motor rotation_distance calibration |
-| `SA_CALIBRATE_ENCODER TOOL=N` | Measure mm_per_pulse for encoder N |
+| `SA_CALIBRATE_ENCODER TOOL=N` | Measure mm_per_pulse for encoder N. Feeds at a fixed `feed_speed × 0.5`, which is below any aliasing threshold, so it needs nothing from the speed sweep — the sweep needs this |
+| `SA_CALIBRATE_ENCODER_SPEED [TOOL=N]` | Find the fastest feed the encoder still counts reliably and save it as `encoder_max_speed`. Reports in mm/s, which is counts × mm_per_pulse, so run `SA_CALIBRATE_ENCODER` first. The saved global is the MINIMUM of the per-path ceilings — the fastest speed the slowest channel can hold — so a low value means a bad path, not a stale number |
+| `SA_VERIFY_FEED [TOOL=N] [SPEED=mm/s] [DIST=mm]` | Drive one pass and check it against a ruler. The referee for a disputed encoder reading: the encoder and the stepper are the machine's only two references, and a motor losing steps looks exactly like an encoder missing counts |
+| `SA_PARK TOOL=N` | Park filament at the drive encoder — load phases 0–2 only, no heat and no extruder |
+| `SA_SET_CONFIG PARAM=name VALUE=val` | Stage a config value for `SAVE_CONFIG` |
 | `SA_CALIBRATE_BOWDEN TOOL=N` | Measure Bowden tube length for path N |
 | `SA_ENCODER_QUERY [TOOL=N] [RESET=1]` | Snapshot encoder distances |
 | `SA_ENCODER_WATCH [TOOL=N] [DURATION=30] [INTERVAL=0.5]` | Live encoder delta stream |
@@ -709,21 +713,35 @@ nothing was missed.
 
 ## Calibration Sequence (first-time setup)
 
-1. **Flash and connect** the BTT MMB CAN V2.0 board.
-2. **Update `canbus_uuid`** in `hardware.cfg`.
-3. **Test motors:** `SA_BUZZ_CHECK MOTOR=drive` then `MOTOR=selector` — confirm both move, and answer which way. A wrong answer is fixed in software; no rewiring.
-4. **Test servo:** `SA_ENGAGE` then `SA_DISENGAGE` — confirm servo moves. On a NEW build do `SA_CALIBRATE_SERVO` (step 9) first instead: an arm fitted at the wrong angle turns `SA_ENGAGE` into a hard stop, and the calibration is the routine that takes the arm off before anything moves. Its final grip search is the only part that needs filament, so it can be started here and finished after step 8.
-5. **Test endstop:** `SA_TEST_ENDSTOP` — push the carriage onto the switch by hand and off again. Do this BEFORE homing: homing is the first thing that trusts the switch, and it finds out by driving the carriage at it.
-5b. **Test entry sensors:** `SA_TEST_ENTRY_SENSORS TOOL=N` for each path — insert filament by hand, then remove it.
-6. **Home selector:** `SA_HOME` — confirm endstop triggers and carriage returns.
-7. **Calibrate selector:** `SA_CALIBRATE_SELECTOR` — auto-calculates path positions via stallguard sweep.
-8. **Load filament** on path 0 past the drive gear.
-9. **Calibrate servo:** `SA_CALIBRATE_SERVO` — finds the engage angle. Needs filament at the drive gear, which is why it comes after the selector and the first load.
-10. **Calibrate drive motor:** `SA_CALIBRATE_DRIVE` — sets `rotation_distance`.
-11. **Calibrate encoders:** `SA_CALIBRATE_ENCODER TOOL=N` for each path.
-11b. **Test toolhead sensors:** `SA_TEST_TOOLHEAD_SENSORS TOOL=N` for each path, Bowden detached. Must come BEFORE the Bowden measurement — that one blasts filament most of a metre at speed and stops on the extruder sensor.
-12. **Calibrate Bowden lengths:** `SA_CALIBRATE_BOWDEN TOOL=N` for each path (requires extruder sensors).
-13. **Test full load:** `SA_LOAD TOOL=0` — verify complete sequence.
+**The guide is the sequence.** `_GUIDE` in `klipper/extras/sa_calibration.py`
+holds all eleven steps in order, each with its live value, what to expect and
+what to check when it misbehaves, and both UIs render exactly that. Open it
+with `SA_GUIDE OPEN=1`, or Autoloader → Calibration on the touchscreen.
+
+This section used to repeat the list. That made it a fourth place the order
+was written down, and it went stale like the other three: it never mentioned
+`SA_CALIBRATE_ENCODER_SPEED` at all, and still had the encoder steps in the
+order the guide itself had wrong until 2026-09-10. **Do not list the steps
+here again.** If the order needs to change, change `_GUIDE` — every UI follows
+it, and nothing else describes it.
+
+What belongs here is only what the guide cannot cover, because it happens
+before the guide or outside it:
+
+- **Flash and connect the board**, and put its `canbus_uuid` in
+  `hardware.cfg`. Find it with
+  `~/klippy-env/bin/python ~/klipper/scripts/canbus_query.py can0`.
+- **On a NEW build, run `SA_CALIBRATE_SERVO` before ever sending `SA_ENGAGE`.**
+  An arm fitted at the wrong angle turns `SA_ENGAGE` into a hard stop, and the
+  calibration is the routine that takes the arm off before anything moves.
+- **Load filament on path 0, past the drive gear, before the servo step.**
+  The engage-angle search is the only part that needs filament, so that step
+  can be started earlier and finished once filament is in.
+- **The Bowden step needs the extruder sensors**, and the toolhead sensor test
+  must pass first — the guide orders those correctly, but the Bowden step also
+  needs the tube physically attached, which nothing can check for you.
+- **Finish with `SA_LOAD TOOL=0`.** The guide proves each step in isolation;
+  a full load is the only thing that proves the sequence.
 
 ---
 
