@@ -519,6 +519,24 @@ class SACalibration:
                   "Passes disagree by more than a few percent — that is "
                   "measurement scatter, not the machine; re-seat and repeat."]},
 
+        {'title': "Encoder mm/pulse (per tool)", 'status': None,
+         'hint': "Per path. Sets how far one encoder count means. Feeds until "
+                 "the encoder reads the datum, you measure what came out of "
+                 "the gate, three times, averaged.",
+         'buttons': [],
+         'grid': ('encoder_mpp', "%.4f", "SA_CALIBRATE_ENCODER TOOL={t}"),
+         'expect': ["Three passes at the same starting value, so they are "
+                    "three samples rather than a chain.",
+                    "The spread is shown next to the mean; passes disagreeing "
+                    "by more than a few percent are refused rather than "
+                    "averaged into a confident wrong answer."],
+         'warn': ["Value near zero — the encoder is not counting; check the "
+                  "wiring and pin.",
+                  "Paths differ by more than about 1% — the odd one out is "
+                  "worth looking at rather than accepting.",
+                  "Every distance downstream is measured in these units, so "
+                  "Bowden lengths must be re-measured after this changes."]},
+
         {'title': "Encoder max speed", 'status': 'enc_speed',
          'hint': "Finds the fastest feed each encoder still counts accurately. "
                  "Tests every path in turn, because the faults this finds are "
@@ -541,24 +559,6 @@ class SACalibration:
                   "the speed. Check the wheel and its wiring.",
                   "The shared speed is the slowest path's, so fix a bad path "
                   "rather than accepting the number it produces."]},
-
-        {'title': "Encoder mm/pulse (per tool)", 'status': None,
-         'hint': "Per path. Sets how far one encoder count means. Feeds until "
-                 "the encoder reads the datum, you measure what came out of "
-                 "the gate, three times, averaged.",
-         'buttons': [],
-         'grid': ('encoder_mpp', "%.4f", "SA_CALIBRATE_ENCODER TOOL={t}"),
-         'expect': ["Three passes at the same starting value, so they are "
-                    "three samples rather than a chain.",
-                    "The spread is shown next to the mean; passes disagreeing "
-                    "by more than a few percent are refused rather than "
-                    "averaged into a confident wrong answer."],
-         'warn': ["Value near zero — the encoder is not counting; check the "
-                  "wiring and pin.",
-                  "Paths differ by more than about 1% — the odd one out is "
-                  "worth looking at rather than accepting.",
-                  "Every distance downstream is measured in these units, so "
-                  "Bowden lengths must be re-measured after this changes."]},
 
         {'title': "Toolhead sensor check (per tool)", 'status': None,
          'hint': "Per path. It changes to that toolhead and brings it to the "
@@ -610,8 +610,8 @@ class SACalibration:
         5: "Selector positions",
         6: "Servo engage angle",
         7: "Drive rotation distance",
-        8: "Encoder speed",
-        9: "Encoder mm/pulse",
+        8: "Encoder mm/pulse",
+        9: "Encoder speed",
         10: "Toolhead sensors",
         11: "Bowden length",
     }
@@ -626,8 +626,8 @@ class SACalibration:
         ("SA_CALIBRATE_SELECTOR",       5),
         ("SA_CALIBRATE_SERVO",          6),
         ("SA_CALIBRATE_DRIVE",          7),
-        ("SA_CALIBRATE_ENCODER_SPEED",  8),
-        ("SA_CALIBRATE_ENCODER",        9),
+        ("SA_CALIBRATE_ENCODER_SPEED",  9),
+        ("SA_CALIBRATE_ENCODER",        8),
         ("SA_TEST_TOOLHEAD_SENSORS",   10),
         ("SA_CALIBRATE_BOWDEN",        11),
     )
@@ -643,8 +643,8 @@ class SACalibration:
         ("drv_", 7),
         # More specific first: the loop takes the first match, and
         # "enc_speed_run" starts with "enc_" too.
-        ("enc_speed", 8),
-        ("enc_", 9),
+        ("enc_speed", 9),
+        ("enc_", 8),
         ("sen_th", 10),
         ("bow_", 11),
     )
@@ -1036,18 +1036,22 @@ class SACalibration:
          "CALIBRATE DRIVE", "SA_CALIBRATE_DRIVE"),
 
         ('drive',      "Drive rotation distance",
-         "Calibrate encoder speed next?",
-         "Finds the fastest feed the encoder can still count reliably, which "
-         "is what the Bowden measurement then uses.",
-         "CALIBRATE ENCODER SPEED", "SA_CALIBRATE_ENCODER_SPEED"),
-
-        ('enc_speed',  "Encoder max speed",
          "Calibrate encoder mm/pulse next?",
-         "Per path. Sets how far one encoder pulse means, which every slip "
-         "check and every park depends on.",
+         "Per path. Sets what one encoder count means, which every slip check "
+         "and every park depends on. It comes before the speed sweep because "
+         "that sweep reports its answer in mm/s, and mm/s is counts times this "
+         "number.",
          "CALIBRATE ENCODER T{TOOL}", "SA_CALIBRATE_ENCODER TOOL={TOOL}"),
 
         ('encoder',    "Encoder mm/pulse",
+         "Calibrate encoder speed next?",
+         "Finds the fastest feed the encoder can still count reliably, which "
+         "is what the Bowden measurement then uses. It feeds at a fixed "
+         "25mm/s, so it needs nothing from the sweep -- the sweep needs the "
+         "scale above.",
+         "CALIBRATE ENCODER SPEED", "SA_CALIBRATE_ENCODER_SPEED"),
+
+        ('enc_speed',  "Encoder max speed",
          "Test the toolhead sensors next?",
          "Per path, and worth doing before the Bowden measurement rather than "
          "after: that one blasts filament most of a meter at speed and stops "
