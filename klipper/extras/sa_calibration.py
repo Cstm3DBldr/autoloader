@@ -1139,7 +1139,10 @@ class SACalibration:
             mx = float(st.get('encoder_max_speed') or 0.0)
             if mx <= 0:
                 return ("Not calibrated — blast defaults to 75mm/s", 'warn')
-            return ("Max %.0fmm/s   blast %.0fmm/s" % (mx, mx * 0.75), 'ok')
+            # The blast runs AT the saved figure now, so this no longer
+            # recomputes a derate the code does not apply -- that is exactly
+            # the kind of second copy that goes stale.
+            return ("Max %.0fmm/s — blasts at this speed" % mx, 'ok')
         return ("", 'idle')
 
     def guide_pages(self, st):
