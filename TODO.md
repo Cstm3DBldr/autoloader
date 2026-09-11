@@ -56,6 +56,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* one pass from step 1 to step 11 without dropping out of the
       guide, on Mainsail and on the touchscreen.
 
+- [ ] **Mid-print runout is designed but not built** — `docs/RUNOUT_MIDPRINT.md`.
+      Today a roll running out mid-print sets the path `empty` and wipes the
+      profile after 10s (`autoloader.py:636-645`) while the print carries on
+      consuming the ~1400mm still in the tube. Designed: a `low` state that
+      keeps the profile, a countdown refereed by the extruder sensor, a pause
+      before the tail reaches the gears, and
+      `purge = tracked_remaining + runout_purge_extra`.
+      **This is what stops runouts producing the state `RECOVERY.md` exists
+      for.** Open fork: whether the pause targets infill (needs Moonraker to
+      index the file — Klipper cannot see `;TYPE:`) or lands where it lands.
+      *Done when:* a real mid-print runout warns, pauses with the tail still
+      short of the gears, swaps and resumes with no colour carry-over.
+
 - [ ] **Runout recovery is designed but not built** — `docs/RECOVERY.md`.
       A path with entry clear and filament still in the head is currently
       refused by both load and unload. Settled: the new roll pushes the
