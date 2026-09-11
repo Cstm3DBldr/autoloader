@@ -30,6 +30,40 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
 ## Confirmed bugs, not yet fixed
 
+- [ ] **Guide step 12: toolhead geometry, measured by the encoder.** The four
+      toolhead distances are guesses today and one of them is provably wrong.
+      The encoders are locked to their paths and count whatever the filament
+      does -- including while the EXTRUDER is moving it and the drive gear is
+      disengaged. That is what makes these measurable without a ruler, and what
+      makes first power-up self-configuring.
+
+      Measure three, derive two:
+
+      | Distance | How |
+      |---|---|
+      | extruder sensor -> toolhead sensor | **already happens.** `_sync_feed_to_toolhead_sensor` runs drive+extruder until the toolhead sensor fires and throws the number away. Record it, with a step finer than `feed_step_size` -- the 40.0mm reading on 2026-09-11 was quantised to 10mm |
+      | toolhead sensor -> nozzle tip (`fill_nozzle_length`) | hot nozzle, extrude slowly from the toolhead-sensor edge, operator presses a button when filament appears at the tip. Operator-confirmed because nothing senses the tip |
+      | extruder sensor -> gear nip (`sensor_to_gear`) | **retract, never push.** Drive DISENGAGED, retract with the extruder: the path encoder still counts because it is fixed on the lane. It stops the instant the tip leaves the nip -- extruder turning, nothing moving. Then drive back until the extruder sensor clears; that gap is the answer |
+      | `nozzle_to_sensor_dist` | **derived** = toolhead-to-nozzle + sensor-to-toolhead |
+      | `nozzle_distance` (gears -> tip) | **derived** = (sensor-to-toolhead - sensor-to-gear) + toolhead-to-nozzle |
+
+      **Pull, do not push, for the gear nip.** Feeding a tip into stationary
+      gears would locate them too, and would buckle filament in the tube on
+      overshoot. Losing grip on a retract is harmless.
+
+      Per-path, like `bowden_length_N` -- toolheads can differ, the guide
+      already renders per-path grids, and the three scalars it replaces are
+      global only because nobody measured them.
+
+      Step 12, after Bowden length: it needs filament reaching the extruder
+      sensor and the toolhead sensors already proved. Touches `_GUIDE`,
+      `_STEP_TOTAL`, `_STEP_NAMES` and both lookup tables -- `check_drift.py`
+      covers all five.
+      *Done when:* a fresh machine runs the guide end to end with the four
+      distances measured rather than defaulted, and an unload clears the
+      extruder sensor without the fallback firing.
+
+
 - [ ] **`nozzle_to_sensor_dist` is wrong and the machine compensates.** The tip
       former's Phase 3 targets `nozzle_to_sensor_dist x 1.05` = 52.5mm to put
       the tip past the extruder sensor. On the 2026-09-11 T1 unload it reported
