@@ -70,8 +70,11 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       `past gears, tip at 52mm` and the very next line was `Extruder sensor
       still active — sync drive+extruder to pull filament clear`. The fallback
       works, so nothing fails — it just does an extra retract every unload.
-      The geometry says ~90mm: extruder sensor to toolhead sensor is 40mm
-      (measured on the load) and `fill_nozzle_length` is 50. All three of
+      Rebuilt from the unload's own moves the span is nearer **110mm**
+      (33.5 shear + 17.5 clear + 59.4 retract-to-clear, two of the three
+      encoder-measured). An earlier ~90 estimate here added the measured 40mm
+      sensor-to-sensor span to the `fill_nozzle_length` default; this is better
+      evidence and supersedes it. All three of
       `nozzle_to_sensor_dist`, `fill_nozzle_length` and `nozzle_distance` sit
       at their 50.0 default and describe different spans, so none of them has
       been measured.

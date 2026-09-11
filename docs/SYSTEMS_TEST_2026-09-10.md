@@ -172,11 +172,30 @@ the extruder sensor had NOT cleared. The fallback sync retract handled it, so
 the unload was fine — but the parameter is wrong and the machine is
 compensating for it every time.
 
-`nozzle_to_sensor_dist` is 50.0, its default, never measured. The load says
-extruder sensor to toolhead sensor is 40mm, and `fill_nozzle_length` (toolhead
-sensor to nozzle) is 50 — also a default — which would put nozzle to extruder
-sensor near 90mm, not 50. Three overlapping distances all sitting at 50 is the
-signature of nothing here having been measured.
+`nozzle_to_sensor_dist` is 50.0, its default, never measured. Rebuilding the
+span from the unload's own moves puts it near **110mm**, two legs of three
+encoder-measured:
+
+```
+  cold shear draw    33.5   measured
+  clear move        +17.5   commanded
+  retract to clear  +59.4   measured, encoder reset immediately before it
+                    -----
+                    110.4   against a parameter of 50.0
+```
+
+An earlier note in this file put it near 90 by adding the measured 40mm
+sensor-to-sensor span to `fill_nozzle_length`. That was one measurement plus
+one default; the reconstruction above is better evidence and supersedes it.
+Both are estimates — the 33.5 leg assumes the shear datum is the nozzle tip —
+and either way the parameter is short by roughly half. Three overlapping
+distances all sitting at 50.0 is the signature of nothing here having been
+measured.
+
+**The geometry is stable, which is what makes step 12 worth building.** Two
+unloads an hour apart reported `29.7` / `33.5` / `59.4` identical to 0.1mm, and
+all three are exact integer pulse counts for path 1 — 31, 35 and 62 at
+0.95825 mm/pulse. These are repeatable readings, not noise.
 
 Blast time: 9.1s for 1451mm. The load ran 12:10 to 12:13 including homing, a
 toolchange, heating to 200C, a 60mm extra purge and a park.
