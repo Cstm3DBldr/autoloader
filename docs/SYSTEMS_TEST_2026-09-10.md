@@ -48,7 +48,7 @@ The rungs used to jump 200 -> 250, so anything in that band was recorded as
 ```
                      mm/pulse    safe speed    bowden (mm)   selector (mm)
   T0                  0.96555        160.0        1516.56        0.00
-  T1                  0.94334        160.0        1451.49       24.69
+  T1                  0.95825        160.0        1487.52       24.69   (re-run, see below)
   T2                  0.96155        160.0        1453.22       49.38
   T3                  0.96706        160.0        1430.93       74.07
   T4                  0.96881        160.0        1390.24       98.76
