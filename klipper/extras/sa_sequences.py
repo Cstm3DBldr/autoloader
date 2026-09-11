@@ -1636,25 +1636,117 @@ class SASequences:
         limit     = owner._bowden_lengths[path] + 100.0
         no_motion = 0
 
-        while owner._entry_sensor_active(path) and retracted < limit:
-            prev = abs(enc.get_distance())
-            motion.drive_move(-owner.feed_step_size)
-            owner.reactor.pause(owner.reactor.monotonic() + owner.sensor_delay)
-            moved = abs(enc.get_distance()) - prev
-            retracted += owner.feed_step_size
-            if moved < owner.feed_step_size * 0.2:
-                no_motion += 1
-                if no_motion >= 3:
-                    gcmd.respond_info(
-                        "SA: ERROR — encoder not moving for 3 steps on path %d "
-                        "(%.0fmm driven, %.1fmm encoder). "
-                        "Drive gear lost grip or filament jammed."
-                        % (path, retracted, abs(enc.get_distance())))
-                    motion.servo_disengage()
-                    owner.path_states[path] = 'unknown'
-                    return
-            else:
-                no_motion = 0
+        # Branch B arrives here with the tip still IN the extruder gears, and
+        # they grip it. A drive-only retract is then pulling against a closed
+        # vice: measured 40mm driven against 5-11mm at the encoder. So the
+        # extruder has to run with the drive for as long as its sensor still
+        # reads filament, and stop the moment it clears -- past the gears
+        # there is nothing left to sync with, and turning the extruder on
+        # would only grind on nothing.
+        #
+        # Branch C arrives with the filament already clear of the gears, so it
+        # never enters the synced case at all and behaves exactly as before.
+        #
+        # No heating. The tip is at the gears, not in the melt, which is one
+        # of the two cases _allow_cold_extrude was written for -- its own
+        # docstring calls it "dragging an already-formed tip back past the
+        # gears with the heater off".
+        dn   = owner._drv_name()
+        cold = None
+        if owner._extruder_sensor_active(path):
+            # Say it, or the log cannot tell a synced retract from a plain one
+            # and the only evidence is arithmetic after the fact.
+            gcmd.respond_info(
+                "SA: Filament still in the extruder — syncing drive and "
+                "extruder until its sensor clears (path %d)." % path)
+            cold = self._allow_cold_extrude(path)
+            owner.gcode.run_script_from_command("M83")
+            motion._cancel_timeout(dn)
+            owner.gcode.run_script_from_command(
+                "MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
+
+        # Once the extruder lets go there is nothing gripping the filament and
+        # nothing to sync with, so stepping feed_step_size at a time down a
+        # metre and a half of tube is waste: measured at 148 iterations and two
+        # minutes on path 1. Take it in long runs instead, and return to small
+        # steps for the last stretch so the entry sensor is found accurately.
+        # Capped rather than one blind run to the end, so a jam costs one step
+        # and not the whole tube.
+        tail = 150.0
+        fast = 300.0
+        # Long runs have to be EARNED. The no-motion check is three strikes,
+        # so making a strike 300mm made a blind drive cost 900mm instead of
+        # 30: measured on a path parked before the encoder, which drove 900mm
+        # reading 0.0mm the whole way. Stay at feed_step_size until the
+        # encoder has actually shown motion once, then escalate.
+        proved = False
+
+        try:
+            while owner._entry_sensor_active(path) and retracted < limit:
+                syncing = (cold is not None
+                           and owner._extruder_sensor_active(path))
+                if syncing or not proved:
+                    step = owner.feed_step_size
+                else:
+                    remaining = owner._bowden_lengths[path] - retracted - tail
+                    step = max(owner.feed_step_size, min(remaining, fast))
+                    if step > owner.feed_step_size:
+                        gcmd.respond_info(
+                            "SA: %.0fmm back, nothing gripping — running "
+                            "%.0fmm." % (retracted, step))
+
+                prev = abs(enc.get_distance())
+                if syncing:
+                    # SYNC=0 starts the drive without waiting on the extruder
+                    # queue; the G1 E queues right behind so both run together
+                    # over the same distance. _drv_sign() because the
+                    # direction flip is applied per move rather than baked
+                    # into the stepper config -- drive_move does the same, and
+                    # a raw MANUAL_STEPPER here would ignore it.
+                    owner.gcode.run_script_from_command(
+                        "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.3f "
+                        "SPEED=%.1f SYNC=0"
+                        % (dn, motion._drv_sign() * -owner.feed_step_size,
+                           owner.feed_speed))
+                    owner.gcode.run_script_from_command(
+                        "G1 E-%.2f F%d"
+                        % (owner.feed_step_size, int(owner.feed_speed * 60.0)))
+                    owner.gcode.run_script_from_command("M400")
+                else:
+                    motion.drive_move(-step)
+                owner.reactor.pause(owner.reactor.monotonic() + owner.sensor_delay)
+                moved = abs(enc.get_distance()) - prev
+                retracted += owner.feed_step_size if syncing else step
+
+                # The encoder only counts while filament is ON it. Once the tip
+                # has retreated past it -- roughly a bowden length back, since
+                # it sits encoder_to_gear_distance from the gear -- it goes
+                # blind, and a blind encoder is not a lost grip. Measured on
+                # path 1: 1530mm driven against 1485mm at the encoder, then a
+                # false jam that aborted an otherwise good unload and left the
+                # path 'unknown' for the monitor to park.
+                if moved >= step * 0.2:
+                    proved = True
+                if retracted > owner._bowden_lengths[path]:
+                    no_motion = 0
+                elif moved < step * 0.2:
+                    no_motion += 1
+                    if no_motion >= 3:
+                        gcmd.respond_info(
+                            "SA: ERROR — encoder not moving for 3 steps on path %d "
+                            "(%.0fmm driven, %.1fmm encoder). "
+                            "Drive gear lost grip or filament jammed."
+                            % (path, retracted, abs(enc.get_distance())))
+                        motion.servo_disengage()
+                        owner.path_states[path] = 'unknown'
+                        return
+                else:
+                    no_motion = 0
+        finally:
+            # Restore on every exit, including the error returns above: the
+            # floor is global to that heater and leaving it lowered would let
+            # a later cold extrude through silently.
+            self._restore_extrude_floor(cold)
 
         if owner._entry_sensor_active(path):
             gcmd.respond_info(
