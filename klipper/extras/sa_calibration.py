@@ -178,7 +178,8 @@ class SACalibration:
         return NL.join(lines)
 
     def _emit_ui_prompt(self, gcmd, title, text, buttons, footer=(),
-                        columns=None, expect=(), warn=()):
+                        columns=None, expect=(), warn=(), restate=False,
+                        ks_line=None):
         """Send one action:prompt_* sequence.
 
         `buttons` and `footer` are (label, value, style) triples; each becomes a
@@ -230,7 +231,13 @@ class SACalibration:
 
         r = gcmd.respond_raw
         try:
-            r("// action:prompt_end")
+            # restate: this dialog is already on screen and only its
+            # contents change. prompt_end would remove the window and
+            # prompt_begin build another, which is the flash on every tap of a
+            # +/- prompt. prompt_begin alone clears the text and buttons on
+            # both UIs, so the window survives and only its contents move.
+            if not restate:
+                r("// action:prompt_end")
             r("// action:prompt_begin %s" % title)
             # ONE prompt_text, carrying the whole body.
             #
@@ -246,9 +253,30 @@ class SACalibration:
             # So the body goes as one line. Paragraph breaks are lost on
             # Mainsail, which is a cheap price for the other screen showing
             # anything at all -- and the bodies are short now.
-            body = " ".join(
-                part.strip() for part in str(text).split(NL) if part.strip())
-            r("// action:prompt_text %s" % body)
+            if ks_line:
+                # The two UIs disagree about prompt_text, and the disagreement
+                # can be used rather than worked around. Mainsail renders ONE
+                # PARAGRAPH PER prompt_text -- MacroPromptText.vue is
+                # instantiated per event, each emitting its own <p> -- while
+                # KlipperScreen assigns, keeping only the LAST.
+                #
+                # So detail first, then a line that stands on its own: the web
+                # panel gets every row, the touchscreen gets the one line that
+                # matters, from a single emission with nothing to keep in step.
+                #
+                # ks_line must make sense ALONE. Anything whose meaning depends
+                # on the lines above it must not use this -- that is the bug
+                # the single-line rule was written for, where a yes/no question
+                # arrived as "Is it?" with nothing above it.
+                for part in str(text).split(NL):
+                    part = part.strip()
+                    if part:
+                        r("// action:prompt_text %s" % part)
+                r("// action:prompt_text %s" % str(ks_line).strip())
+            else:
+                body = " ".join(
+                    part.strip() for part in str(text).split(NL) if part.strip())
+                r("// action:prompt_text %s" % body)
             if buttons:
                 step = columns if columns and columns > 0 else len(buttons)
                 for i in range(0, len(buttons), step):
@@ -525,8 +553,12 @@ class SACalibration:
                  "the gate, three times, averaged.",
          'buttons': [],
          'grid': ('encoder_mpp', "%.4f", "SA_CALIBRATE_ENCODER TOOL={t}"),
-         'expect': ["Three passes at the same starting value, so they are "
+         'expect': ["Most of the datum is fed in one continuous move, then "
+                    "the last 50mm in small steps.",
+                    "Three passes at the same starting value, so they are "
                     "three samples rather than a chain.",
+                    "The path is parked once its value is saved, so it ends "
+                    "ready rather than with the tip at the gate.",
                     "The spread is shown next to the mean; passes disagreeing "
                     "by more than a few percent are refused rather than "
                     "averaged into a confident wrong answer."],
@@ -721,7 +753,7 @@ class SACalibration:
         d['_np_steps'] = tuple(steps or self._NUM_STEPS)
         self._numeric_render(gcmd)
 
-    def _numeric_render(self, gcmd):
+    def _numeric_render(self, gcmd, restate=False):
         d     = self.owner._cal_data
         val   = float(d.get('_np_val', 0.0))
         unit  = d.get('_np_unit', 'mm')
@@ -741,7 +773,7 @@ class SACalibration:
             gcmd, self._ui_title(), text, buttons,
             footer=[("ACCEPT  %.2f %s" % (val, unit), "%.4f" % val, 'primary'),
                     ("ABORT", "abort", "error")],
-            columns=len(steps))
+            columns=len(steps), restate=restate)
 
     def _numeric_adjust(self, gcmd, delta):
         """Apply one +/- tap and re-raise the prompt with the new value."""
@@ -756,12 +788,12 @@ class SACalibration:
         # The servo phase moves to the new angle as you step, so the operator
         # is watching the mechanism rather than reading a number.
         if (self.owner._cal_state or '').startswith('srv_'):
-            self._srv_render(gcmd)
+            self._srv_render(gcmd, restate=True)
             return
         if self.owner._cal_state == 'sel_tune':
-            self._sel_tune_render(gcmd)
+            self._sel_tune_render(gcmd, restate=True)
             return
-        self._numeric_render(gcmd)
+        self._numeric_render(gcmd, restate=True)
 
     def _save_variable(self, key, value):
         """Write a calibration value to save_variables immediately — no restart needed."""
@@ -1364,7 +1396,7 @@ class SACalibration:
                      ("SWEEP AGAIN", "resweep", "secondary")],
             columns=3)
 
-    def _sel_tune_render(self, gcmd):
+    def _sel_tune_render(self, gcmd, restate=False):
         """Show the positions the current offset/spacing would produce."""
         owner = self.owner
         d     = owner._cal_data
@@ -1428,7 +1460,7 @@ class SACalibration:
               "instead." % watch + moved,
             buttons,
             footer=[("ABORT", "abort", "error")],
-            columns=3)
+            columns=3, restate=restate)
         owner._cal_prompt = head
 
     def _sel_tune_respond(self, gcmd, value):
@@ -1594,7 +1626,7 @@ class SACalibration:
                 % d['dis'])
             return
 
-    def _srv_render(self, gcmd):
+    def _srv_render(self, gcmd, restate=False):
         """Re-ask the engage question at the current angle, moving there first.
 
         Every angle is approached from the rest position rather than stepped to
@@ -1642,7 +1674,7 @@ class SACalibration:
             + "If the arm is moving AWAY from the gear, press WRONG WAY.",
             buttons,
             footer=[("CANCEL", "abort", "error")],
-            columns=3)
+            columns=3, restate=restate)
         owner._cal_prompt = "Servo: %.1f deg" % ang
 
 
@@ -2596,6 +2628,9 @@ class SACalibration:
                    "  ✓ done" if done else ""))
 
             if done:
+                # While the gear still holds it: after servo_disengage there
+                # is nothing left to drive the filament with.
+                self._enc_return(gcmd, measured)
                 motion.servo_disengage()
                 owner._cal_state = 'drv_save'
                 self._prompt(gcmd,
@@ -2603,9 +2638,11 @@ class SACalibration:
                     "SA_RESPOND VALUE=yes",
                     "SA_RESPOND VALUE=no")
             else:
-                # Back to the datum. The previous pass left the tip proud of
-                # the gate, and the motor holding it, so neither the reference
-                # nor the knob is usable until both are reset.
+                # Back to the datum. The pass left the tip proud of the gate by
+                # what was measured, so wind that back before releasing rather
+                # than making the operator turn the knob 100mm every pass.
+                # _ENC_CAL_LEAVE is left for them to nudge flush.
+                self._enc_return(gcmd, measured)
                 motion.drive_disable()
                 owner._cal_state = 'drv_mark'
                 self._prompt(gcmd,
@@ -2659,6 +2696,12 @@ class SACalibration:
     # Left sticking out of the gate for the operator to nudge flush by hand.
     # Enough to see and pinch, little enough to be quick.
     _ENC_CAL_LEAVE = 10.0
+    # How much of the datum is approached in small steps. The rest is one
+    # continuous move: stepping the whole way means a full stop every 10mm,
+    # which is 25 of them for a 300mm datum and most of the time this took.
+    # The stepping exists so the encoder can be read between moves -- reading
+    # it once after a long move is the same thing with less stopping.
+    _ENC_CAL_PECK = 50.0
 
     def _enc_return(self, gcmd, actual):
         """Drive the filament back to roughly the datum.
@@ -2774,6 +2817,14 @@ class SACalibration:
             slow_step     = 3.0
             slow_threshold = target - 15.0
             travelled     = 0.0
+
+            # The bulk in one move, the last _ENC_CAL_PECK in steps. Guarded
+            # so a short LENGTH= still pecks the whole way rather than making
+            # one blind move at a datum too small to correct afterwards.
+            opening = target - self._ENC_CAL_PECK
+            if opening > fast_step:
+                motion.drive_move(opening, speed=cal_speed)
+                travelled += opening
 
             while enc.get_distance() < target and travelled < max_travel:
                 step = slow_step if enc.get_distance() >= slow_threshold else fast_step
@@ -2931,9 +2982,23 @@ class SACalibration:
                         "SA CAL: Encoder %d mm_per_pulse=%.5f saved to "
                         "variables.cfg. Could not auto-update hardware.cfg (%s)."
                         % (path, new_mpp, result))
+                # Back to the guide FIRST, then park. The UI shows the guide
+                # only while guide_open and no prompt is waiting, so parking
+                # before this ran left it hidden for the whole move -- which
+                # reads as "you are finished" rather than "wait". Now the page
+                # is already up and the park happens underneath it.
                 self._offer_next_path(gcmd, 'encoder', path,
                                       'SA_CALIBRATE_ENCODER TOOL=%d',
                                       'Encoder mm/pulse')
+                # Say it before it moves: filament moving on its own with no
+                # explanation is worse than the wait.
+                gcmd.respond_info("SA CAL: Parking path %d..." % path)
+                try:
+                    self.owner.sequences.park_filament(gcmd, path)
+                except Exception as e:
+                    gcmd.respond_info(
+                        "SA CAL: mm_per_pulse saved, but parking path %d "
+                        "failed: %s" % (path, e))
             else:
                 enc.mm_per_pulse = orig_mpp
                 gcmd.respond_info(
@@ -3215,7 +3280,13 @@ class SACalibration:
     # ladder ended where the old fixed distance ran out. Going higher needs
     # the distance to grow with the speed, which _encspeed_distance does.
     _ENC_SPEEDS = [25, 50, 75, 100, 125, 150, 175, 200,
-                   250, 300, 350, 400, 450, 500]
+                   # Finer through the region the ceiling actually falls in:
+                   # 2ms pin sampling puts the design limit near 219mm/s, and
+                   # a single 200 -> 250 rung recorded everything in that band
+                   # as 200. Coarse again above it, where the answer is only
+                   # "faster than anything this will be asked for".
+                   215, 230, 245, 265, 285, 305, 325,
+                   350, 400, 450, 500]
 
     # How much cruise to buy on top of the ramp. A move that only touches the
     # speed measures the ramp; holding it for half the ramp again means most of
@@ -3369,28 +3440,34 @@ class SACalibration:
 
     def _encspeed_show(self, gcmd, note=""):
         d    = self.owner._cal_data
-        rows = ["  %3dmm/s  %s" % (sp, txt) for sp, txt in d.get('per_speed', [])]
+        # A row per rung again: Mainsail renders each as its own paragraph,
+        # so this is a readable table there. The touchscreen gets the head
+        # line instead, passed as ks_line below.
+        done = d.get('per_speed', [])
+        rows = ["%3dmm/s  %s" % (sp, txt) for sp, txt in done]
         si   = d.get('si', 0)
         speed = (self._ENC_SPEEDS[si] if si < len(self._ENC_SPEEDS) else 0)
         dist, cruise = d.get('dist', 0.0), d.get('cruise', 0.0)
-        geom = ("  (%.0fmm pass, %.0fmm of it at speed)" % (dist, cruise)
+        geom = ("  %.0fmm pass, %.0fmm at speed" % (dist, cruise)
                 if dist else "")
         if dist:
             try:
                 mpp = float(self.owner._encoder(d.get('at', 0)).mm_per_pulse)
-                geom += "  %d encoder counts" % int(dist / mpp)
+                geom += ", %d counts" % int(dist / mpp)
             except Exception:
                 pass
-        head = (note or ("Now: %dmm/s, pass %d of 3%s"
+        head = (note or ("Now %dmm/s, pass %d/3%s"
                          % (speed, d.get('ai', 0) + 1, geom)))
         self._emit_ui_prompt(
             self.owner.gcode if gcmd is None else gcmd, self._ui_title(),
-            ("Encoder speed test — path %d" % d.get('at', 0) + NL + NL
-             + self._encspeed_explain() + NL + NL
-             + head
-             + (NL + NL + NL.join(rows) if rows else "")),
+            ("Encoder speed test — path %d" % d.get('at', 0)
+             + (NL + NL.join(rows) if rows else "")),
             [],
-            footer=[("STOP", "abort", "error")])
+            footer=[("STOP", "abort", "error")],
+            # Last, and self-sufficient: names the path's speed, which pass it
+            # is on and how much of the move was at speed. A touchscreen
+            # showing only this still knows what the machine is doing.
+            ks_line="Path %d — %s" % (d.get('at', 0), head))
 
     def encspeed_step(self, gcmd):
         """One pass. Length follows the speed and the encoder's resolution.
@@ -3556,14 +3633,18 @@ class SACalibration:
                    ("REPEAT PATH %d" % path, "again", "secondary")]
         self._emit_ui_prompt(
             gcmd, self._ui_title(),
-            ("Encoder speed test — path %d done" % path + NL + NL
-             + verdict + NL + NL
-             + NL.join("  %3dmm/s  %s" % (sp, txt)
-                       for sp, txt in d.get('per_speed', []))
+            ("Encoder speed test — path %d done" % path
+             + NL + verdict
+             + NL + NL.join("%3dmm/s  %s" % (sp, txt)
+                            for sp, txt in d.get('per_speed', []))
              + scale_note
              + NL + NL + self._encspeed_explain()),
             buttons,
-            footer=[("STOP", "abort", "error")])
+            footer=[("STOP", "abort", "error")],
+            # The verdict alone is the answer this screen exists to give, and
+            # it names the path, so it holds up as the only line a touchscreen
+            # keeps.
+            ks_line="Path %d — %s" % (path, verdict))
 
     def _encspeed_summary(self, gcmd):
         """All channels side by side, with a way to redo any of them."""
@@ -3597,15 +3678,20 @@ class SACalibration:
                    for p in sorted(res)]
         buttons.append(("DONE", "done", "primary"))
         owner._cal_state = 'enc_speed_all'
+        slowest = ("shared speed %.0fmm/s (slowest path)" % (min(speeds) * 0.8)
+                   if speeds else "no path counted accurately")
         self._emit_ui_prompt(
             gcmd, self._ui_title(),
-            ("Encoder speed — all paths" + NL + NL
-             + NL.join(rows) + note + NL + NL
+            ("Encoder speed — all paths"
+             + NL + NL.join(rows) + note + NL + NL
              + "Inspect, clean or repair a path and retest just that one; the "
                "others keep their results."),
             buttons,
             footer=[("STOP", "abort", "error")],
-            columns=3)
+            columns=3,
+            # The shared speed is the whole point of the sweep: every path runs
+            # at the slowest one's pace, so that is the number to carry away.
+            ks_line="All paths done — %s" % slowest)
 
     def _encspeed_respond(self, gcmd, state, value):
         owner = self.owner

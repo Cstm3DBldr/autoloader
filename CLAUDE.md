@@ -1004,13 +1004,23 @@ anything above that is invisible, and what survives is whichever paragraph
 happens to be last. That is how a yes/no question came to show only its
 footnote about what to do when the answer is no.
 
-- **Send the body as ONE `prompt_text`.** KlipperScreen's `prompts.py` does
+- **Send the body as ONE `prompt_text` — unless you pass `ks_line`.**
+  KlipperScreen's `prompts.py` does
   `self.text = data.replace('prompt_text ', '')` — an ASSIGNMENT — so it keeps
-  only the LAST line and throws the rest away. Mainsail concatenates them, so
-  sending a line each looks right there and shows one sentence on the
-  touchscreen: a yes/no question arrived as "Is it?" with nothing above it.
-  Paragraph breaks are lost on Mainsail; that is the price of the other screen
-  showing anything at all.
+  only the LAST line and throws the rest away. Mainsail renders **one
+  paragraph per `prompt_text`**: `MacroPromptText.vue` is instantiated per
+  event and emits its own `<p>`. So sending a line each looks right on the web
+  and shows one sentence on the touchscreen — a yes/no question arrived as
+  "Is it?" with nothing above it.
+- **`_emit_ui_prompt(..., ks_line=…)` uses that disagreement instead of
+  working around it.** The body goes out a line at a time, which Mainsail
+  renders as a table, and `ks_line` goes LAST — which is precisely what
+  KlipperScreen keeps. One emission, both screens served, nothing to keep in
+  step. The encoder speed sweep is the worked example: a row per rung on the
+  web, the current pass on the touchscreen.
+  **`ks_line` must stand entirely on its own.** Anything whose meaning depends
+  on the lines above it must use the single-line form — that dependency is the
+  bug the rule was written for.
 - **Lead with the instruction**, not the reading and not the diagnosis. Nothing
   has gone wrong yet, and text about what to check when it does reads as though
   something has.
