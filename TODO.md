@@ -11,26 +11,32 @@ Anything nothing checks needs a line here, and needs removing by hand.
 
 ## Blocked on hardware
 
-The wheels and the servo are being replaced. Nothing below can be measured
-until the machine is back together.
+The rebuild is done and measured — see `docs/SYSTEMS_TEST_2026-09-10.md`.
+Ceilings went from 50–175 (3.5x spread) to 200–215 (1.075x), and the shared
+speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
-- [ ] **Re-run the calibration guide end to end** on the rebuilt hardware.
-      Open with `SA_GUIDE OPEN=1`; the guide is the sequence.
-      *Done when:* all eleven steps pass in order on one machine, both UIs
-      following, and `SA_LOAD TOOL=0` completes.
-- [ ] **Six new `mm_per_pulse` and six new `bowden_length_N`.** Every stored
-      value predates the wheel reprint and the servo swap, so all twelve are
-      wrong by an unknown amount.
-      *Done when:* `variables.cfg` carries twelve values measured after the
-      rebuild.
-- [ ] **Confirm the two known faults are gone.** Wheel-to-housing rub shedding
-      dust into the sensor eye, and the MG90S weakening under repeated cycles.
-      Both were real; the reprint and the SX108 address one each.
-      *Done when:* the six per-path ceilings come back CLOSE TO EACH OTHER.
-      Before the rebuild they were 140 / 80 / 40 / 140 / 40 / 120 mm/s. Six
-      similar numbers is the pass — a surviving spread means something else is
-      per-path. `encoder_max_speed` is their minimum and rises on its own; it
-      is not stale and must not be "fixed" by hand.
+- [ ] **Prove the sequence, not just the steps.** `SA_LOAD TOOL=0` — a real
+      load through to the nozzle. The guide proves each step in isolation and
+      nothing yet proves them in order.
+      *Done when:* one full load completes and the path reads `loaded`.
+- [ ] **T1's `mm_per_pulse` is about 1.4% low** — 0.94334 against 0.95892–
+      0.96881 for the other five. `SA_VERIFY_FEED TOOL=1 SPEED=25 DIST=200`
+      gave commanded 200.0 / ruler 198.0 / encoder 195.3; scaling by
+      198.0/195.3 lands it at 0.9564, inside the family.
+      *Done when:* `SA_CALIBRATE_ENCODER TOOL=1` puts it with the others, or
+      shows it genuinely differs.
+- [ ] **`SA_VERIFY_FEED`'s verdict logic overstates.** It called a 1.4%
+      residual an "ENCODER ceiling … counts going missing around 25mm/s". At
+      25mm/s a state lasts ~37ms against 2ms sampling — about 19 samples —
+      so aliasing cannot happen there, and the speed sweep's whole reference
+      design depends on that. It should attribute a low-speed residual to
+      scale or to ruler scatter, not to sampling.
+      *Done when:* the verdict names scale first at speeds where aliasing is
+      impossible.
+- [ ] **`drive_rotation_distance` unchanged at 5.6911** through the rebuild,
+      and the verify's ruler read 198.0 against a commanded 200.0.
+      *Done when:* the same check on two more paths says whether that 1% is
+      the drive (one fix) or per-path scatter (nothing to fix).
 
 ## Confirmed bugs, not yet fixed
 

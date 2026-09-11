@@ -1,0 +1,104 @@
+# Systems test — 2026-09-10
+
+First full run of the eleven-step guide on rebuilt hardware, start to finish
+through the Mainsail panel. Every value below was measured on the machine.
+
+## What changed in hardware
+
+- **All six encoder wheels reprinted** in ASA (unchanged material) on a better
+  printer. The old ones rubbed their housings, wore thin and shed dust into
+  the optical slot, which blocked the eye intermittently — the wheel reads as
+  stopped while it is turning.
+- **Engage servo replaced**: TowerPro MG90S → Spektrum SX108. Both analog;
+  +37% stall torque (30.55 → 41.8 oz-in at 6V) and dual bearings instead of a
+  bushing. The MG90S was weakening under repeated cycles, which let the drive
+  gear slip on the filament under load.
+
+Both faults were real. Neither alone explained the readings.
+
+## The result
+
+**Encoder speed ceiling, per path** — the question the rebuild existed to
+answer. `variables.cfg` stores the 80% safe speed; the maxima are given here.
+
+| Path | Before | After | |
+|---|---|---|---|
+| T0 | 175 | **200** | |
+| T1 | 100 | **200** | |
+| T2 | **50** | **200** | 4x |
+| T3 | 175 | **200** | |
+| T4 | **50** | **215** | 4.3x |
+| T5 | 150 | **200** | |
+
+Spread went from **3.5x** (50–175) to **1.075x** (200–215). The pass criterion
+written down before the rebuild was "six ceilings close to each other, not any
+single number" — that is what happened, and the two paths that were worst are
+now indistinguishable from the rest.
+
+Shared speed is the slowest path's: **160mm/s** safe, up from 40mm/s. That
+figure is the minimum of the six by design and rises on its own; it was never
+stale.
+
+T4 reaching 215 while the rest stop at 200 is the finer ladder earning itself.
+The rungs used to jump 200 -> 250, so anything in that band was recorded as
+200 and the real edge was invisible.
+
+## Saved values
+
+```
+                     mm/pulse    safe speed    bowden (mm)   selector (mm)
+  T0                  0.96555        160.0        1516.56        0.00
+  T1                  0.94334        160.0        1451.49       24.69
+  T2                  0.96155        160.0        1453.22       49.38
+  T3                  0.96706        160.0        1430.93       74.07
+  T4                  0.96881        160.0        1390.24       98.76
+  T5                  0.95892        172.0        1359.11      123.45
+
+  drive_rotation_distance  5.6911
+  servo_engaged_angle      100.0     (was 160.0 with the MG90S)
+  servo_disengaged_angle    10.0
+  encoder_max_speed        160.0     shared = slowest path
+  encoder_edges_0..5           2     both edges counted
+```
+
+All twelve sensor checks and the endstop check pass and are recorded:
+`endstop_ok`, `entry_sensor_ok_0..5`, `toolhead_sensor_ok_0..5` all True.
+
+**The servo angle moved 160 -> 100.** The numbers in the config are not
+degrees — `maximum_servo_angle: 180` against a 1000-2000us pulse range is
+Klipper's default mapping, not either servo's real travel. They are scale
+points, and a different servo lands somewhere else entirely. This is why
+`SA_CALIBRATE_SERVO` has to run on a servo swap.
+
+## Open, from this run
+
+- **T1's `mm_per_pulse` looks about 1.4% low.** It is the outlier at 0.94334
+  against 0.95892–0.96881 for the other five. `SA_VERIFY_FEED TOOL=1 SPEED=25
+  DIST=200` returned: commanded 200.0, ruler 198.0, encoder 195.3. Scaling
+  0.94334 by 198.0/195.3 gives 0.9564, which lands it inside the family.
+  Re-running `SA_CALIBRATE_ENCODER TOOL=1` is the cheap check.
+
+- **That verify's own verdict is wrong and should be softened.** It reported an
+  "ENCODER ceiling … counts start going missing around 25mm/s". At 25mm/s a
+  state spans about 0.94mm, so 37ms, which is ~19 of Klipper's 2ms samples —
+  aliasing cannot happen there, and the sweep's whole design rests on that
+  being true. Its derived "0.05mm active window" also contradicts the wheel
+  geometry measured off the STL (12 slots, 45% open). The residual is far more
+  likely scale error plus ruler scatter: eyeballing a tip flush is a fixed
+  ±1mm, which is ±0.5% on a 200mm datum, and two such readings differ by
+  about the 1.4% seen.
+
+- **`drive_rotation_distance` is unchanged at 5.6911.** Either step 7 was not
+  re-run or it landed on the same figure. The ruler read 198.0 against a
+  commanded 200.0 in the verify above, which is 1% and worth a second look —
+  if several paths report the same residual it is the drive, one fix rather
+  than six.
+
+- **All six paths are in `partial` state** after the run, since step 8 now
+  parks each one as it finishes.
+
+## Not yet done
+
+The Bowden lengths are recorded but the guide's own end-to-end proof —
+`SA_LOAD TOOL=0`, a real load through to the nozzle — has not been run. The
+guide proves each step in isolation; only a full load proves the sequence.
