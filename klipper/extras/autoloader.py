@@ -1829,23 +1829,40 @@ class Autoloader:
         self.path_purge_speeds[path]  = purge_speed
         self.path_purge_lengths[path] = purge_length
 
-        sv = self.printer.lookup_object('save_variables', None)
-        if sv:
-            def _save(var, val):
-                self.gcode.run_script_from_command(
-                    "SAVE_VARIABLE VARIABLE=%s VALUE=\"'%s'\"" % (var, str(val)))
-            _save('sa_material_%d'      % path, material)
-            _save('sa_brand_%d'         % path, brand)
-            _save('sa_product_line_%d'  % path, product_line)
-            _save('sa_color_name_%d'    % path, color_name)
-            _save('sa_color_hex_%d'     % path, color_hex)
-            _save('sa_color_type_%d'    % path, color_type)
-            _save('sa_color_hex2_%d'    % path, color_hex2)
-            _save('sa_color_hex3_%d'    % path, color_hex3)
-            _save('sa_load_temp_%d'     % path, load_temp)
-            _save('sa_unload_temp_%d'   % path, unload_temp)
-            _save('sa_purge_speed_%d'   % path, purge_speed)
-            _save('sa_purge_length_%d'  % path, purge_length)
+        # ONE file rewrite, not twelve.
+        #
+        # This used to issue twelve separate SAVE_VARIABLE gcode commands, and
+        # every one of them rewrites the whole of variables.cfg synchronously
+        # on the host. Setting two profiles back to back was therefore ~24 full
+        # file rewrites in a couple of seconds, and Klipper's host process is
+        # single-threaded: while it is blocked in that I/O it is not feeding
+        # the MCUs. The autoloader board polls twelve button pins every 2ms and
+        # bit-bangs SPI for two TMC5160s, so it is the one with no slack -- and
+        # it shut down with "Timer too close" three times, each one immediately
+        # after two profiles were set in the same second.
+        #
+        # _persist_variables already existed for exactly this reason; its own
+        # docstring describes collapsing "a dozen separate SAVE_VARIABLE
+        # commands -- each of which rewrites the entire file -- into one
+        # write". This command simply never used it.
+        #
+        # str() on every value on purpose: the gcode form wrote VALUE="'%s'",
+        # so these have always been stored as strings and the readers expect
+        # that. Changing the encoding here would be a different bug.
+        self._persist_variables({
+            'sa_material_%d'     % path: str(material),
+            'sa_brand_%d'        % path: str(brand),
+            'sa_product_line_%d' % path: str(product_line),
+            'sa_color_name_%d'   % path: str(color_name),
+            'sa_color_hex_%d'    % path: str(color_hex),
+            'sa_color_type_%d'   % path: str(color_type),
+            'sa_color_hex2_%d'   % path: str(color_hex2),
+            'sa_color_hex3_%d'   % path: str(color_hex3),
+            'sa_load_temp_%d'    % path: str(load_temp),
+            'sa_unload_temp_%d'  % path: str(unload_temp),
+            'sa_purge_speed_%d'  % path: str(purge_speed),
+            'sa_purge_length_%d' % path: str(purge_length),
+        })
 
         gcmd.respond_info(
             "SA: Path %d profile set — %s %s %s | %s %s | "

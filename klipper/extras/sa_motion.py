@@ -324,12 +324,13 @@ class SAMotion:
         if sv is None:
             return
         try:
-            owner.gcode.run_script_from_command(
-                "SAVE_VARIABLE VARIABLE=sa_selector_pos VALUE=%.3f"
-                % self._selector_position)
-            owner.gcode.run_script_from_command(
-                "SAVE_VARIABLE VARIABLE=sa_current_path VALUE=%d"
-                % owner.current_path)
+            # One rewrite, not two. Same reason as SA_SET_MATERIAL: every
+            # SAVE_VARIABLE rewrites the whole file synchronously, and this
+            # runs after every park.
+            owner._persist_variables({
+                'sa_selector_pos': round(float(self._selector_position), 3),
+                'sa_current_path': int(owner.current_path),
+            })
             logging.debug("SAMotion: position saved (sel=%.3f path=%d)",
                           self._selector_position, owner.current_path)
         except Exception as e:
