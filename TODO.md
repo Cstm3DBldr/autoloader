@@ -56,6 +56,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* one pass from step 1 to step 11 without dropping out of the
       guide, on Mainsail and on the touchscreen.
 
+- [ ] **Runout recovery is designed but not built** — `docs/RECOVERY.md`.
+      A path with entry clear and filament still in the head is currently
+      refused by both load and unload. Settled: the new roll pushes the
+      remnant out (the extruder cannot move what it no longer grips), heat to
+      `max(old, new)`, confirm the stashed profile first, explicit
+      `SA_RECOVER TOOL=N` rather than automatic.
+      *Done when:* the routine exists AND a real broken-filament path recovers
+      to a normal loaded state, verified by all three sensors.
+
 ## Repo hygiene
 
 None of this changes behaviour. It is what makes the repo followable.

@@ -402,6 +402,7 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `installer/generate.py` | `.config` + templates → `pin_aliases.cfg`, `hardware.cfg`, `parameters.cfg`. Refresh mode puts existing values back and reports dropped ones |
 | `installer/templates/` | The three generated cfgs, with `{{VAR}}` / `{% for path %}` / `{% if %}` |
 | `docs/INSTALL.md` | The user-facing install guide — plain language, for someone who has never seen the project. Includes the prompt flow and what is safe from updates |
+| `docs/RECOVERY.md` | **Design note, nothing built.** How a path with the entry sensor clear but filament still in the head should be recovered: the new roll is the only thing that can push the remnant out, since the extruder can only move what its gears grip. Records the settled decisions — heat to the higher of the two materials, confirm the stashed profile first, never automatic — and the failure modes the encoder cannot see |
 | `docs/LEDS.md` | How to turn LEDs on, what to change for your hardware, and the `STATUS_*` collision |
 | `klipper/extras/autoloader.py` | Main controller — config parsing, GCode registration, status object |
 | `klipper/extras/sa_motion.py` | Motion primitives (servo, selector, drive, idle timeouts) |
