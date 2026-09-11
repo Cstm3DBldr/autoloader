@@ -219,6 +219,16 @@ class Autoloader:
         self.selector_end_offset     = config.getfloat('selector_end_offset',   0.0)
         self.path_width              = config.getfloat('path_width',            0.0)
         self.encoder_to_gear_distance    = config.getfloat('encoder_to_gear_distance',  20.0)
+
+        # Toolhead geometry, per path, measured by SA_CALIBRATE_TOOLHEAD
+        # (guide step 12). 0.0 means "never measured" and the global config
+        # value is used instead -- which is where nozzle_to_sensor_dist,
+        # fill_nozzle_length and nozzle_distance all sat at 50.0 while
+        # describing three different spans. A toolhead can differ from its
+        # neighbour, so these are per path like bowden_length_N.
+        self._sensor_to_toolhead = [0.0] * self.num_paths  # ext sensor -> th sensor
+        self._toolhead_to_nozzle = [0.0] * self.num_paths  # th sensor  -> nozzle tip
+        self._sensor_to_gear     = [0.0] * self.num_paths  # ext sensor -> gear nip
         self.sensor_retry_dist           = config.getfloat('sensor_retry_dist',          20.0)
 
         # ── Park positions ────────────────────────────────────────────────────
@@ -658,6 +668,10 @@ class Autoloader:
         # runout_timeout_seconds anyway, so polling faster doesn't help.
         return eventtime + 1.0
 
+    # Seconds between one auto-park finishing and the next starting. Lets the
+    # toolhead flush before another STOP_ON_ENDSTOP home is queued behind it.
+    PARK_SETTLE = 0.5
+
     def _queue_park(self, path):
         """Ask for an auto-park on *path*, serialised behind any other.
 
@@ -754,6 +768,19 @@ class Autoloader:
         New paths appended while a park is in flight are picked up by
         this same loop, so a burst of insertions still parks every one.
         """
+        # ONE park per callback, then come back. Draining the whole queue in
+        # a single callback issues park N+1's homing moves immediately behind
+        # park N's with no chance for the toolhead to flush -- and homing is
+        # STOP_ON_ENDSTOP, the most timing-sensitive move the selector makes.
+        #
+        # On 2026-09-11 two profiles were set in the same second, which queued
+        # two parks, and the autoloader MCU shut down with "Timer too close"
+        # as the drain started homing. That fault is older than this queue
+        # (it appears in logs from 2025-10-20 and 2026-09-06), so this is not
+        # a proven fix -- but back-to-back homing from one callback is a
+        # plausible contributor and costs nothing to remove.
+        #
+        # Skips are free and keep looping; only real work ends the callback.
         try:
             while self._park_queue:
                 path = self._park_queue.pop(0)
@@ -777,8 +804,121 @@ class Autoloader:
                 except Exception:
                     logging.exception(
                         "Autoloader: auto-park of path %d failed", path)
+                break
         finally:
-            self._park_active = False
+            if self._park_queue:
+                try:
+                    self.reactor.register_callback(
+                        self._drain_park_queue,
+                        self.reactor.monotonic() + self.PARK_SETTLE)
+                except Exception:
+                    self._park_active = False
+                    logging.exception(
+                        "Autoloader: could not reschedule the park queue")
+            else:
+                self._park_active = False
+
+    # ── Toolhead geometry ────────────────────────────────────────────────
+    #
+    # Five distances, three measured and two derived. Each falls back to the
+    # global config value when step 12 has not been run, so a machine that
+    # never runs it behaves exactly as before.
+    #
+    #   extruder sensor --[a]-- gear nip --...-- toolhead sensor --[b]-- tip
+    #   \________________[c]________________/
+    #
+    #   c = sensor_to_toolhead   measured: fine sync feed between the sensors
+    #   b = toolhead_to_nozzle   measured: extrude until the operator sees it
+    #   a = sensor_to_gear       measured: retract until the extruder lets go
+    #   nozzle_to_sensor = b + c            (derived)
+    #   gear_to_nozzle   = (c - a) + b      (derived)
+
+    def th_sensor_to_toolhead(self, path):
+        v = self._sensor_to_toolhead[path] if path < len(self._sensor_to_toolhead) else 0.0
+        return v if v > 0 else 0.0
+
+    def th_toolhead_to_nozzle(self, path):
+        v = self._toolhead_to_nozzle[path] if path < len(self._toolhead_to_nozzle) else 0.0
+        return v if v > 0 else self.fill_nozzle_length
+
+    def th_sensor_to_gear(self, path):
+        v = self._sensor_to_gear[path] if path < len(self._sensor_to_gear) else 0.0
+        return v if v > 0 else 0.0
+
+    def th_nozzle_to_sensor(self, path):
+        """Nozzle tip -> extruder sensor. What the tip former aims past."""
+        c = self.th_sensor_to_toolhead(path)
+        if c <= 0:
+            return self.nozzle_to_sensor_dist
+        return self.th_toolhead_to_nozzle(path) + c
+
+    def th_gear_to_nozzle(self, path):
+        """Extruder gear nip -> nozzle tip. The volume a purge has to displace."""
+        c = self.th_sensor_to_toolhead(path)
+        a = self.th_sensor_to_gear(path)
+        if c <= 0 or a <= 0:
+            return self.nozzle_distance
+        return max(0.0, c - a) + self.th_toolhead_to_nozzle(path)
+
+    def th_estimated(self, path):
+        """True when this path's geometry rests on the operator's eye.
+
+        `a` and `c` are found by the machine against sensor edges -- measured
+        0.17mm and 0.76mm apart across three identical toolheads. `b` is the
+        operator saying when filament appeared at the tip, so it carries their
+        judgement and the resolution of whatever button they last pressed.
+        Anything derived from `b` is an ESTIMATE and is labelled one.
+        """
+        return self.th_measured(path)
+
+    def th_color_changed(self, path):
+        """True when the filament now on this path is a different colour from
+        the one the last profile recorded.
+
+        Unknown counts as unchanged. A fresh machine has no stash and a proper
+        unload empties the nozzle anyway, so treating "do not know" as a colour
+        change would purge generously on every first load for nothing.
+        """
+        try:
+            svars = self.printer.lookup_object('save_variables').allVariables
+            prev = svars.get('sa_lastprofile_%d' % path, None)
+            if not isinstance(prev, dict):
+                return False
+            was = str(prev.get('color_hex', '') or '').strip().lower()
+            now = str(self.path_color_hexes[path] or '').strip().lower()
+            if not was or not now:
+                return False
+            return was != now
+        except Exception:
+            return False
+
+    def purge_for_load(self, path):
+        """How much to purge after the nozzle is full. Returns (mm, why).
+
+        Same colour, or unknown: the profile's own figure. The nozzle was
+        emptied by the unload and this is priming, not clearing.
+
+        Colour change: the whole gear-nip-to-tip column has to leave, and that
+        volume is th_gear_to_nozzle -- an estimate, because its `b` term is an
+        eye rather than a sensor. Accuracy is not what matters here; the error
+        is asymmetric. Under-purging puts the old colour in the print,
+        over-purging costs a few millimetres into the bucket.
+        """
+        base = float(self.path_purge_lengths[path])
+        if not self.th_color_changed(path):
+            return base, "same colour"
+        volume = self.th_gear_to_nozzle(path)
+        if volume <= base:
+            return base, "colour change, profile figure already covers it"
+        return volume, ("colour change — clearing the %.0fmm gear-to-tip column"
+                        % volume)
+
+    def th_measured(self, path):
+        """True when step 12 has measured all three on this path."""
+        return (self.th_sensor_to_toolhead(path) > 0
+                and self.th_sensor_to_gear(path) > 0
+                and (path < len(self._toolhead_to_nozzle)
+                     and self._toolhead_to_nozzle[path] > 0))
 
     def _is_printing(self):
         """True only during a real print job.
@@ -1097,6 +1237,15 @@ class Autoloader:
                 self._selector_positions[i] = float(svars['selector_position_%d' % i])
             if ('bowden_length_%d' % i) in svars:
                 self._bowden_lengths[i] = float(svars['bowden_length_%d' % i])
+            for _nm, _lst in (('sensor_to_toolhead', self._sensor_to_toolhead),
+                              ('toolhead_to_nozzle', self._toolhead_to_nozzle),
+                              ('sensor_to_gear',     self._sensor_to_gear)):
+                _k = '%s_%d' % (_nm, i)
+                if _k in svars:
+                    try:
+                        _lst[i] = float(svars[_k])
+                    except (TypeError, ValueError):
+                        pass
             self._entry_sensor_ok[i] = bool(
                 svars.get('entry_sensor_ok_%d' % i, False))
             self._toolhead_sensor_ok[i] = bool(
@@ -1319,6 +1468,9 @@ class Autoloader:
             ('SA_CALIBRATE_BOWDEN',
              self._cmd_calibrate_bowden,
              "Guided Bowden tube length calibration. TOOL=N"),
+            ('SA_CALIBRATE_TOOLHEAD',
+             self._cmd_calibrate_toolhead,
+             "Measure toolhead geometry with the encoder. TOOL=N"),
             ('SA_CALIBRATE_ENCODER_SPEED',
              self._cmd_calibrate_encoder_speed,
              "Find max reliable encoder speed and save as encoder_max_speed"),
@@ -1743,6 +1895,15 @@ class Autoloader:
                 "MANUAL_STEPPER STEPPER=%s MOVE=%.1f SPEED=%.1f" % (sn, -distance, speed))
             self.gcode.run_script_from_command("M400")
         self.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=0" % sn)
+        # A buzz does SET_POSITION=0 and then cuts the power, so for the
+        # selector it destroys the origin twice over. Anything that can leave
+        # the carriage somewhere the origin does not describe has to say so,
+        # or the next move is absolute against a lie.
+        if sn == self._sel_name():
+            self._selector_homed = False
+            gcmd.respond_info(
+                "SA: Selector buzzed — position no longer known, it will "
+                "re-home on the next move.")
         gcmd.respond_info("SA: Buzz complete — did the motor move?")
 
     def _cmd_buzz_drive(self, gcmd):
@@ -1772,6 +1933,9 @@ class Autoloader:
 
     def _cmd_calibrate_bowden(self, gcmd):
         self.calibration.calibrate_bowden(gcmd)
+
+    def _cmd_calibrate_toolhead(self, gcmd):
+        self.calibration.calibrate_toolhead(gcmd)
 
     def _cmd_calibrate_encoder_speed(self, gcmd):
         self.calibration.calibrate_encoder_speed(gcmd)
@@ -2041,6 +2205,17 @@ class Autoloader:
             'tip_form_cooling_moves'  : self.tip_form_cooling_moves,
             'encoder_max_speed'       : self._get_encoder_max_speed(),
             'bowden_lengths'          : list(self._bowden_lengths),
+            'sensor_to_toolhead'      : list(self._sensor_to_toolhead),
+            'toolhead_to_nozzle'      : list(self._toolhead_to_nozzle),
+            'sensor_to_gear'          : list(self._sensor_to_gear),
+            'toolhead_geom_ok'        : [self.th_measured(i)
+                                         for i in range(self.num_paths)],
+            # The guide grid renders ONE value per path, so give it the
+            # number that matters: nozzle to extruder sensor, the span the
+            # tip former aims past and the one that was 50.0 by default.
+            'toolhead_geom_mm'        : [
+                (self.th_nozzle_to_sensor(i) if self.th_measured(i) else 0.0)
+                for i in range(self.num_paths)],
             'endstop_ok'              : bool(self._endstop_ok),
             'entry_sensor_ok'         : list(self._entry_sensor_ok),
             'toolhead_sensor_ok'      : list(self._toolhead_sensor_ok),

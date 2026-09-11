@@ -97,6 +97,11 @@ class SASequences:
             owner.gcode.run_script_from_command("PARK_ON_COOLING_PAD")
         owner.gcode.run_script_from_command("M400")
 
+    # How cold a hot-pull shear may go, whatever the drop is set to. Below
+    # this the filament grips harder than the extruder can pull, which is the
+    # failure the shear stage was designed to avoid in the first place.
+    TIP_FORM_HOT_SHEAR_MIN = 115.0
+
     def _move_to_purge_position(self, gcmd, is_printing):
         """After heating, move toolhead to the purge/extrude position."""
         owner = self.owner
@@ -116,11 +121,41 @@ class SASequences:
             self.owner.gcode.run_script_from_command("M400")
 
     def _ensure_selector(self, gcmd, path):
-        """Always home selector before moving to *path* — guarantees accurate position."""
+        """Put the carriage on *path*, homing only when the position is stale.
+
+        This used to home unconditionally, every single time, and the comment
+        said so: "guarantees accurate position". It did -- by brute force, and
+        it was the right call at the time. An earlier attempt at trusting the
+        stored position went wrong in the worst way: the machine assumed it was
+        home when it was not, moved a path's distance from wherever it actually
+        stood, and stacked -- asking for T3 from T2's position landed on T5.
+
+        What makes trusting it safe now is that the position has an owner. It
+        is valid only while the selector has been ENERGISED continuously since
+        the last home, and the idle timeout that de-energises it also clears
+        _selector_homed (sa_motion._arm_timeout). So there is no state in which
+        the carriage is unpowered and the code still believes the origin. A
+        Klipper restart clears the flag too, and a restored save_variables
+        position is deliberately NOT treated as homed.
+
+        The moves themselves were never the stacking risk: MANUAL_STEPPER MOVE=
+        is absolute against the stepper's own origin, and selector_move_to does
+        not reset that origin the way drive_move deliberately does. The risk was
+        only ever the origin going stale underneath it.
+
+        This matters beyond the wasted seconds. Homing is STOP_ON_ENDSTOP on the
+        autoloader MCU -- the most timing-critical thing that board does, while
+        it also bit-bangs SPI for two TMC5160s and polls six encoder pins every
+        2ms. That board reports 41x the per-task time of the main MCU, and it
+        has shut down with "Timer too close" during exactly this operation.
+        Homing less often is not just faster, it is less exposure.
+        """
         owner = self.owner
         motion = owner.motion
-        gcmd.respond_info("SA: Homing selector...")
-        motion.selector_home()
+        if not owner._selector_homed:
+            gcmd.respond_info(
+                "SA: Selector position not trusted — homing first...")
+            motion.selector_home()
         motion.servo_disengage()
         motion.selector_move_to(owner._selector_positions[path])
         owner.current_path = path
@@ -392,16 +427,32 @@ class SASequences:
         # Break only after park_unload_quiet_iters consecutive sub-pulse
         # chunks; a single dropped pulse can't end the retract early.
         enc.set_direction(forward=False)
-        max_chunks = int(owner.park_unload_max / owner.park_unload_chunk)
         quiet_iters  = 0
         retracted_mm = 0.0
-        for _ in range(max_chunks):
+
+        # Confirming "quiet" used to cost park_unload_quiet_iters FULL chunks:
+        # 2 x 10mm = 20mm of retract past the point the filament left the
+        # encoder. encoder_to_gear_distance is 20.0, so the confirmation
+        # overshoot exactly equalled the distance to the drive gear and every
+        # park finished balanced on the edge of its own grip -- one chunk more
+        # and the tip is upstream of the gear with nothing able to push it
+        # back. Reported from the machine as parks that overshoot and
+        # sometimes lose the filament.
+        #
+        # So: coarse chunks while the encoder is plainly still turning, fine
+        # ones the moment it goes quiet. The confirmation then costs ~6mm
+        # instead of 20 and stays well inside the gear. Same shape as the
+        # unload retract, which runs long until something happens and steps
+        # small near the boundary it actually cares about.
+        fine_chunk = max(2.0, min(owner.park_unload_chunk,
+                                  owner.encoder_to_gear_distance * 0.15))
+        while retracted_mm < owner.park_unload_max:
+            chunk = fine_chunk if quiet_iters > 0 else owner.park_unload_chunk
             enc.reset_distance()
-            motion.drive_move(-owner.park_unload_chunk,
-                              speed=owner.park_unload_speed)
+            motion.drive_move(-chunk, speed=owner.park_unload_speed)
             owner.reactor.pause(
                 owner.reactor.monotonic() + owner.park_unload_pause)
-            retracted_mm += owner.park_unload_chunk
+            retracted_mm += chunk
             if abs(enc.get_distance()) < mpp:
                 quiet_iters += 1
                 if quiet_iters >= owner.park_unload_quiet_iters:
@@ -647,12 +698,16 @@ class SASequences:
         """Fill nozzle + purge at volumetric flow rate. Extruder must be hot."""
         owner = self.owner
         f = self._extrude_speed_mmm()
+        # Toolhead sensor to tip, measured by step 12 where it has been run.
+        fill = owner.th_toolhead_to_nozzle(path)
+        purge, why = owner.purge_for_load(path)
         gcmd.respond_info(
-            "SA: Filling nozzle %.1fmm + purge %.1fmm at %dmm/min..."
-            % (owner.fill_nozzle_length, owner.purge_length, f))
+            "SA: Filling nozzle %.1fmm + purge %.1fmm at %dmm/min — %s.%s"
+            % (fill, purge, f, why,
+               "" if owner.th_measured(path) else "  (config default)"))
         owner.gcode.run_script_from_command("M83")
-        self._extrude_mm(owner.fill_nozzle_length, f)
-        self._extrude_mm(owner.purge_length, f)
+        self._extrude_mm(fill, f)
+        self._extrude_mm(purge, f)
 
     def _sync_feed_to_toolhead_sensor(self, gcmd, path):
         """Run drive motor and extruder together at feed_speed until toolhead sensor fires.
@@ -672,14 +727,15 @@ class SASequences:
         sync_f     = int(sync_speed * 60)
         step       = owner.feed_step_size
         # Safety ceiling: 2× fill_nozzle_length or 200mm, whichever is larger
-        max_dist   = max(owner.fill_nozzle_length * 2.0, 200.0)
+        max_dist   = max(owner.th_toolhead_to_nozzle(path) * 2.0, 200.0)
 
         if not has_sensor:
             gcmd.respond_info(
                 "SA: No toolhead sensor — extruding %.1fmm to fill nozzle..."
-                % owner.fill_nozzle_length)
+                % owner.th_toolhead_to_nozzle(path))
             owner.gcode.run_script_from_command("M83")
-            self._extrude_mm(owner.fill_nozzle_length, self._extrude_speed_mmm())
+            self._extrude_mm(owner.th_toolhead_to_nozzle(path),
+                             self._extrude_speed_mmm())
             motion.servo_disengage()
             return True
 
@@ -1163,6 +1219,7 @@ class SASequences:
         extruder_name = owner._extruder_names[path]
         current_temp  = self._extruder_temp(path)
 
+
         # A good tip forms below klipper's min_extrude_temp, which it enforces
         # on every E move -- and it fails part way in, once the toolhead has
         # already parked and cooled. So lower the threshold for the duration
@@ -1183,15 +1240,21 @@ class SASequences:
                     "SA: tip_form_temp %.0f is below the %.0f°C floor — refusing "
                     "to form that cold." % (temp, owner.TIP_FORM_TEMP_FLOOR))
                 return
+            # The floor has to clear the COLDEST move this run will make, which
+            # on a hot pull is the shear, not tip_form_temp. Leave it at 150
+            # and Klipper refuses the draw with "Extrude below minimum temp"
+            # the moment the nozzle passes below it -- the same wall that
+            # stopped step 12 on its first run.
+            form_floor = owner.TIP_FORM_TEMP_FLOOR
             saved_min = heater.min_extrude_temp
-            heater.min_extrude_temp = owner.TIP_FORM_TEMP_FLOOR
+            heater.min_extrude_temp = form_floor
             # can_extrude only updates on a temperature callback; let one land
             # rather than racing the first move.
-            heater.can_extrude = (heater.smoothed_temp >= owner.TIP_FORM_TEMP_FLOOR)
+            heater.can_extrude = (heater.smoothed_temp >= form_floor)
             owner.reactor.pause(owner.reactor.monotonic() + 0.5)
             gcmd.respond_info(
                 "SA: min_extrude_temp %.0f → %.0f for tip forming; restored after."
-                % (saved_min, owner.TIP_FORM_TEMP_FLOOR))
+                % (saved_min, form_floor))
 
         try:
             self._form_tip_moves(gcmd, path, is_printing, temp, extruder_name,
@@ -1384,7 +1447,11 @@ class SASequences:
         than pushing it into a cold nozzle.
         """
         owner  = self.owner
-        target = owner.nozzle_to_sensor_dist * 1.05
+        # Measured per path by step 12 where it has been run, the config
+        # default otherwise. This is the number that was wrong: at 50.0 the
+        # move ended with the extruder sensor still triggered on every unload
+        # and the fallback sync retract quietly covered for it.
+        target = owner.th_nozzle_to_sensor(path) * 1.05
         clear  = target - cooling_pos
         if clear <= 0:
             gcmd.respond_info(
@@ -1748,10 +1815,45 @@ class SASequences:
             # a later cold extrude through silently.
             self._restore_extrude_floor(cold)
 
+        # The entry sensor sits on the ROLL side of the drive gears, so with a
+        # spool still attached it cannot clear -- the filament exits the gears
+        # long before the tail reaches it. Branch A already knows this and says
+        # so in its own comment, then parks at the encoder and asks the
+        # operator to pull. This loop did not, so a perfectly good unload ran
+        # to bowden_length + 100 and reported a jam that had not happened.
+        #
+        # Measured 2026-09-11 on the first real Branch B unload: 1517.9mm
+        # retracted, nothing wrong, "Check for jam."
         if owner._entry_sensor_active(path):
             gcmd.respond_info(
-                "SA: WARNING — entry sensor still active after %.0fmm on path %d. "
-                "Check for jam." % (retracted, path))
+                "SA: Retracted %.0fmm on path %d — the filament is clear of "
+                "the gears. The entry sensor is on the roll side and stays "
+                "triggered until the spool is pulled, so this is the end of "
+                "the retract, not a fault." % (retracted, path))
+            owner.path_states[path] = 'partial'
+            parked = False
+            try:
+                parked = bool(self._park_filament_at_encoder(gcmd, path))
+            except Exception:
+                logging.exception(
+                    "Autoloader: could not park path %d after retract", path)
+            motion.servo_disengage()
+            motion.save_position()
+            if parked:
+                gcmd.respond_info(
+                    "SA: Filament parked at drive gear — path %d. "
+                    "Pull from roll end to remove." % path)
+            else:
+                # Saying "parked" after the park reported failure is worse than
+                # saying nothing: the operator reads the last line, and on
+                # path 4 the two lines contradicted each other.
+                owner.path_states[path] = 'unknown'
+                gcmd.respond_info(
+                    "SA: Path %d retracted but NOT parked — see the reason "
+                    "above. The filament is out of the toolhead either way; "
+                    "push it in until it stops and run SA_PARK TOOL=%d."
+                    % (path, path))
+            return
 
         motion.servo_disengage()
         owner.path_states[path] = 'empty'

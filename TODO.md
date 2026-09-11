@@ -133,6 +133,28 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* the routine exists AND a real broken-filament path recovers
       to a normal loaded state, verified by all three sensors.
 
+- [ ] **The blast is derated twice.** `_blast_and_approach` uses
+      `blast_speed = saved_max * 0.75`, but `encoder_max_speed` is ALREADY the
+      80% safe figure the sweep saved. So a path measured at 200mm/s blasts at
+      120 — 60% of what was proved. The sweep applies its own margin; this
+      applies a second one. Mike's call whether to drop the 0.75.
+      *Done when:* decided, and the reasoning is written next to the constant.
+
+- [ ] **Unloading a path parked BEFORE the encoder always errors.** The park
+      leaves the tip ~5mm short of the encoder, so the encoder reads 0.0mm and
+      the grip check trips — measured on path 1: "900mm driven, 0.0mm
+      encoder". The filament IS there and the retract IS valid; the encoder
+      simply cannot see it yet. Same blind-spot as the end of a retract, at
+      the other end.
+      *Done when:* a parked path unloads without a false jam.
+
+- [ ] **Try a lower drive current for the wiggle check.** Mike's read from
+      watching it: the drive is strong enough to rip filament out of the
+      extruder gears rather than ease it. `selector_stall_current` already
+      shows the pattern for a temporarily reduced current.
+      *Done when:* a Branch B unload eases the tip out rather than snatching
+      it, judged by watching the idler.
+
 ## Repo hygiene
 
 None of this changes behaviour. It is what makes the repo followable.

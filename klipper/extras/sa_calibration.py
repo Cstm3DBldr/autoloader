@@ -20,6 +20,7 @@ if _extras_dir not in sys.path:
 
 NL = chr(10)
 
+import ast as _ast
 import logging
 
 
@@ -88,6 +89,11 @@ class SACalibration:
                 self._enc_respond(gcmd, state, val)
             elif state.startswith('bow_'):
                 self._bow_respond(gcmd, state, val)
+            elif state.startswith('thg_unload_'):
+                self._thg_unload_respond(
+                    gcmd, int(state.rsplit('_', 1)[-1]), val)
+            elif state.startswith('thg_'):
+                self._thg_respond(gcmd, state, val)
             elif state == 'load_purge':
                 self.owner.sequences._load_purge_respond(gcmd, val)
             elif state == 'unload_done':
@@ -112,6 +118,44 @@ class SACalibration:
         self._end_disarm(self.owner)
         self.owner.motion.servo_disengage()
         self._clear()
+
+    def _select_path(self, gcmd, path):
+        """Put the carriage on *path* before driving any filament through it.
+
+        Homing alone is NOT this. selector_home() leaves the carriage on the
+        endstop, which is position 0 -- T0's gate -- so a routine that only
+        homes drives every path at T0. And a routine that homes only when the
+        position is untrusted drives at wherever the LAST operation left the
+        carriage, which is worse because it usually looks right.
+
+        That is exactly what happened on 2026-09-11: step 12 parked paths 3, 4
+        and 5 in turn, leaving the carriage at T5, and SA_CALIBRATE_TOOLHEAD
+        TOOL=3 then hunted for path 3's filament at path 5's gate. It had
+        passed on T0, T1 and T2 only because each had been parked immediately
+        before being measured, so the carriage happened to be in the right
+        place.
+
+        Every routine that drives filament for a given path goes through here.
+        """
+        self.owner.sequences._ensure_selector(gcmd, path)
+
+    def _assert_on_path(self, gcmd, path):
+        """Refuse to drive filament when the carriage is not on *path*.
+
+        The failure this catches is silent by nature: the drive gear engages
+        whatever is in front of it and reports perfectly healthy encoder
+        motion, because the filament it is pushing IS moving -- just the wrong
+        path's. Only the operator noticing "that is the wrong gate" catches it
+        otherwise.
+        """
+        cur = getattr(self.owner, 'current_path', -1)
+        if cur == path:
+            return True
+        raise gcmd.error(
+            "SA CAL: Carriage is on path %s but this is path %d. Refusing to "
+            "drive filament at the wrong gate — run SA_SELECT TOOL=%d, or "
+            "re-run this step so it selects for you."
+            % ("none" if cur is None or cur < 0 else cur, path, path))
 
     def _safe_selector_move(self, motion, position_mm):
         """Disengage servo if engaged, move selector, restore servo state."""
@@ -618,9 +662,39 @@ class SACalibration:
                   "the tube routing.",
                   "This is stored in encoder millimeters, so re-measure it "
                   "whenever mm/pulse changes."]},
+
+        {'title': "Toolhead geometry (per tool)", 'status': 'toolhead_geom',
+         'hint': "Per path. Measures the three distances inside the toolhead "
+                 "with this path's own encoder, and derives the other two. "
+                 "Needs the Bowden step done and the toolhead EMPTY — it "
+                 "starts from an unloaded head.",
+         'buttons': [],
+         'grid': ('toolhead_geom_mm', "%.1fmm",
+                  "SA_CALIBRATE_TOOLHEAD TOOL={t}"),
+         'expect': ["Two run on their own and cold: the span between the two "
+                    "toolhead sensors, then the gear nip — found by retracting "
+                    "until the extruder stops moving filament, which the "
+                    "encoder can see because it is fixed on this lane.",
+                    "Then it heats and asks you to watch the nozzle. Nudge "
+                    "until filament just appears and say so; that is the last "
+                    "distance and nothing but an eye can measure it.",
+                    "It feeds to the toolhead sensor twice and prints both "
+                    "readings. They should agree within a millimetre or two.",
+                    "Ends with all five distances, three measured and two "
+                    "derived, saved per path."],
+         'warn': ["\"The extruder never lost grip\" — the encoder is not "
+                  "counting on this lane, or the drive did not release. "
+                  "Nothing was measured; no value is saved.",
+                  "The two repeat readings disagree by more than a couple of "
+                  "millimetres — a slipping encoder wheel or a tight tube.",
+                  "If it reports parameters.cfg disagreeing with the measured "
+                  "figure, believe the measurement: the defaults were three "
+                  "different spans all left at 50.0.",
+                  "Measure it again after any toolhead change — a different "
+                  "hotend or extruder moves every one of these."]},
     ]
 
-    _STEP_TOTAL = 11
+    _STEP_TOTAL = 12
     _STEP_NAMES = {
         1: "Motor direction",
         2: "Endstop test",
@@ -633,6 +707,7 @@ class SACalibration:
         9: "Encoder speed",
         10: "Toolhead sensors",
         11: "Bowden length",
+        12: "Toolhead geometry",
     }
 
     # Longest prefix first: SA_CALIBRATE_ENCODER_SPEED would otherwise match
@@ -649,6 +724,7 @@ class SACalibration:
         ("SA_CALIBRATE_ENCODER",        8),
         ("SA_TEST_TOOLHEAD_SENSORS",   10),
         ("SA_CALIBRATE_BOWDEN",        11),
+        ("SA_CALIBRATE_TOOLHEAD",      12),
     )
 
     # load_purge and unload_done are deliberately absent: they are load/unload
@@ -666,6 +742,7 @@ class SACalibration:
         ("enc_", 8),
         ("sen_th", 10),
         ("bow_", 11),
+        ("thg_", 12),
     )
 
     def _step_after(self, step_n):
@@ -781,6 +858,30 @@ class SACalibration:
             self._sel_tune_render(gcmd, restate=True)
             return
         self._numeric_render(gcmd, restate=True)
+
+    def _save_variables(self, updates):
+        """Persist several calibration values in ONE file rewrite.
+
+        Every SAVE_VARIABLE rewrites the whole of variables.cfg synchronously,
+        and Klipper's host is single-threaded: while it is blocked in that I/O
+        it is not feeding the MCUs. Twelve of them in a row is what shut the
+        autoloader board down with "Timer too close" three times -- see the
+        SA_SET_MATERIAL fix. A loop over six paths is the same shape.
+
+        Values are literal_eval'd first because that is exactly what
+        SAVE_VARIABLE does with its unquoted VALUE=, so "24.69" lands as a
+        float and "True" as a bool. Skipping that would silently change the
+        stored type of every calibration value this touches.
+        """
+        parsed = {}
+        for key, value in updates.items():
+            if isinstance(value, str):
+                try:
+                    value = _ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    pass
+            parsed[key] = value
+        self.owner._persist_variables(parsed)
 
     def _save_variable(self, key, value):
         """Write a calibration value to save_variables immediately — no restart needed."""
@@ -1086,6 +1187,14 @@ class SACalibration:
          "CALIBRATE BOWDEN T{TOOL}", "SA_CALIBRATE_BOWDEN TOOL={TOOL}"),
 
         ('bowden',     "Bowden length",
+         "Measure the toolhead geometry next?",
+         "The last distances in the machine are still defaults -- three of "
+         "them sit at 50.0 while describing different spans. This measures "
+         "three with the encoder and derives the other two, so the tip former "
+         "stops aiming at a figure nobody checked.",
+         "MEASURE TOOLHEAD", "SA_CALIBRATE_TOOLHEAD TOOL={TOOL}"),
+
+        ('toolhead_geom', "Toolhead geometry",
          None, None, None, None),
     ]
 
@@ -1103,6 +1212,40 @@ class SACalibration:
                     % ("INVERTED" if drv else "normal",
                        "INVERTED" if sel else "normal"),
                     'warn' if (drv or sel) else 'idle')
+        if key == 'toolhead_geom':
+            ok  = list(st.get('toolhead_geom_ok') or [])
+            num = int(st.get('num_paths') or 0)
+            done = sum(1 for v in ok[:num] if v)
+            if done == 0:
+                return ("Not measured — using the config defaults", 'warn')
+            stg = list(st.get('sensor_to_gear') or [])
+            stt = list(st.get('sensor_to_toolhead') or [])
+            ttn = list(st.get('toolhead_to_nozzle') or [])
+            # Every measured path, not the first one found. This used to
+            # `return` inside the loop, so it named T0 for ever and looked
+            # frozen while the grid beside it filled in.
+            vals = []
+            for i in range(min(num, len(stg), len(stt), len(ttn))):
+                if stg[i] and stt[i] and ttn[i]:
+                    vals.append((max(0.0, stt[i] - stg[i]) + ttn[i], i))
+            if not vals:
+                return ("%d/%d measured" % (done, num),
+                        'ok' if done >= num else 'warn')
+            lo, hi = min(vals), max(vals)
+            tone = 'ok' if done >= num else 'warn'
+            if len(vals) == 1:
+                return ("%d/%d measured — T%d gear to tip %.1fmm"
+                        % (done, num, lo[1], lo[0]), tone)
+            spread = hi[0] - lo[0]
+            # These are nominally identical toolheads, so the spread is the
+            # reading that matters -- a single number hides the one that is
+            # out, which is the only thing worth acting on.
+            txt = ("%d/%d measured — gear to tip %.1f-%.1fmm"
+                   % (done, num, lo[0], hi[0]))
+            if spread > 5.0:
+                txt += ", T%d is %.1fmm off the rest" % (hi[1], spread)
+                tone = 'warn'
+            return (txt, tone)
         if key == 'homed':
             if owner._selector_homed:
                 return ("Homed", 'ok')
@@ -1155,6 +1298,10 @@ class SACalibration:
                tuple(st.get('selector_positions') or ()),
                tuple(st.get('encoder_mpp') or ()),
                tuple(st.get('bowden_lengths') or ()),
+               tuple(st.get('sensor_to_gear') or ()),
+               tuple(st.get('sensor_to_toolhead') or ()),
+               tuple(st.get('toolhead_to_nozzle') or ()),
+               tuple(st.get('toolhead_geom_mm') or ()),
                tuple(st.get('entry_sensor_ok') or ()),
                tuple(st.get('toolhead_sensor_ok') or ()),
                bool(st.get('endstop_ok')),
@@ -1475,13 +1622,15 @@ class SACalibration:
 
         if self._yes(v):
             positions = d.get('_preview') or []
+            batch = {}
             for i, pos in enumerate(positions):
                 owner._selector_positions[i] = pos
-                self._save_variable('selector_position_%d' % i, '%.2f' % pos)
+                batch['selector_position_%d' % i] = round(float(pos), 2)
             if d.get('_tune') == 'offset':
                 owner.selector_end_offset = float(d.get('_np_val', 0.0))
-                self._save_variable('sa_selector_end_offset',
-                                    '%.2f' % owner.selector_end_offset)
+                batch['sa_selector_end_offset'] = round(
+                    float(owner.selector_end_offset), 2)
+            self._save_variables(batch)
             self._clear()
             gcmd.respond_info(
                 "SA CAL: Selector positions saved — effective now, no restart "
@@ -1599,9 +1748,10 @@ class SACalibration:
             if self._yes(value):
                 eng = float(d.get('_np_val', d['eng']))
                 owner.servo_engaged_angle = eng
-                self._save_variable('sa_servo_engaged_angle', '%.1f' % eng)
-                self._save_variable('sa_servo_disengaged_angle',
-                                    '%.1f' % d['dis'])
+                self._save_variables({
+                    'sa_servo_engaged_angle':    round(float(eng), 1),
+                    'sa_servo_disengaged_angle': round(float(d['dis']), 1),
+                })
                 move(d['dis'])
                 self._clear()
                 gcmd.respond_info(
@@ -2451,9 +2601,11 @@ class SACalibration:
                 return
             if self._yes(value):
                 positions = owner._cal_data['positions']
+                batch = {}
                 for i, pos in enumerate(positions):
                     owner._selector_positions[i] = pos
-                    self._save_variable('selector_position_%d' % i, '%.2f' % pos)
+                    batch['selector_position_%d' % i] = round(float(pos), 2)
+                self._save_variables(batch)
                 self._clear()
                 gcmd.respond_info(
                     "SA CAL: Selector positions saved immediately — "
@@ -2484,6 +2636,8 @@ class SACalibration:
             self._busy(gcmd)
             return
 
+        # No select here: this routine ASKS which path has filament, so there
+        # is nothing to select yet. _drv_respond does it once the answer is in.
         if not owner._selector_homed:
             gcmd.respond_info("SA CAL: Selector not homed — homing now...")
             owner.motion.selector_home()
@@ -2953,14 +3107,19 @@ class SACalibration:
 
             if self._yes(value):
                 enc.mm_per_pulse = new_mpp
-                self._save_variable('encoder_mpp_%d' % path, '%.5f' % new_mpp)
                 # Record which edge counting produced it, so a later change of
-                # mode can tell a measured value from a legacy one.
+                # mode can tell a measured value from a legacy one. Written
+                # WITH the scale in one rewrite: they describe the same
+                # measurement and a file rewrite each is the pattern that
+                # starved the autoloader MCU.
                 try:
                     edges = 2 if self.owner._encoder(path).count_both_edges else 1
                 except Exception:
                     edges = 2
-                self._save_variable('encoder_edges_%d' % path, '%d' % edges)
+                self._save_variables({
+                    'encoder_mpp_%d'   % path: round(float(new_mpp), 5),
+                    'encoder_edges_%d' % path: int(edges),
+                })
                 ok, result = self._patch_hardware_cfg(
                     'sa_encoder %d' % path, 'mm_per_pulse', '%.5f' % new_mpp)
                 if ok:
@@ -3727,6 +3886,565 @@ class SACalibration:
     # ══════════════════════════════════════════════════════════════════════════
     # SA_CALIBRATE_BOWDEN
     # ══════════════════════════════════════════════════════════════════════════
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Step 12 — toolhead geometry, measured with the path's own encoder
+    # ══════════════════════════════════════════════════════════════════════
+    #
+    # Three measured, two derived:
+    #
+    #   extruder sensor --[a]-- gear nip --...-- toolhead sensor --[b]-- tip
+    #   \________________________[c]________________________/
+    #
+    #   c  fine sync feed between the two sensors
+    #   a  retract until the extruder stops moving filament -- that is the nip
+    #   b  extrude until the operator sees filament leave the nozzle
+    #
+    # Order is c, a, b and it is not arbitrary. `a` has to be measured while
+    # the tip is short of the melt zone, so it happens straight after `c` and
+    # before anything is heated: pulling a hot tip back past the gears is what
+    # tip forming exists for, and doing it here would need the tip former,
+    # whose own "clear past gears" move destroys the very event `a` measures.
+    # After `a` the tip sits at the extruder sensor edge, so the re-feed for
+    # `b` is only `c` millimetres -- and it doubles as a repeatability check.
+
+    _THG_STEP       = 2.0    # mm per increment while hunting an edge
+    _THG_SYNC_MAX   = 200.0  # cap: extruder sensor -> toolhead sensor
+    _THG_GRIP_MAX   = 200.0  # cap: retract hunting the gear nip
+    _THG_CLEAR_MAX  = 200.0  # cap: drive retract to the extruder sensor edge
+    _THG_NOZZLE_MAX = 250.0  # cap: total extruded hunting the nozzle tip
+    _THG_COARSE     = 10.0   # mm per press, coarse
+    _THG_FINE       = 1.0    # mm per press, fine
+
+    def calibrate_toolhead(self, gcmd):
+        """Measure c and a cold, then heat and ask the operator for b."""
+        owner = self.owner
+        seq   = owner.sequences
+        path  = gcmd.get_int('TOOL', minval=0, maxval=owner.num_paths - 1)
+
+        if owner._cal_state is not None:
+            self._busy(gcmd)
+            return
+
+        if not owner._extruder_sensor_names[path]:
+            raise gcmd.error(
+                "SA CAL: No extruder_sensor_%d configured — step 12 needs it."
+                % path)
+        if not owner._toolhead_sensor_names[path]:
+            raise gcmd.error(
+                "SA CAL: No toolhead_sensor_%d configured — step 12 needs it."
+                % path)
+        if not owner._entry_sensor_active(path):
+            raise gcmd.error(
+                "SA CAL: No filament at entry of path %d. Load a spool first."
+                % path)
+        if owner._bowden_lengths[path] <= 0:
+            raise gcmd.error(
+                "SA CAL: Bowden length for path %d is not calibrated — run "
+                "step 11 first." % path)
+        if owner._toolhead_sensor_active(path):
+            raise gcmd.error(
+                "SA CAL: Path %d still has filament at the toolhead. This step "
+                "measures from an empty toolhead — unload it first." % path)
+
+        gcmd.respond_info(
+            "SA TOOLHEAD GEOMETRY — Path %d\n"
+            "==============================" % path)
+
+        if not seq._is_homed():
+            gcmd.respond_info("SA CAL: Printer not homed — running G28...")
+            owner.gcode.run_script_from_command("G28")
+
+        # Before ANY G1 E. _allow_cold_extrude lowers the floor on THIS path's
+        # heater, but G1 E moves whichever extruder the toolhead has active --
+        # so with another tool mounted the allowance lands on one extruder and
+        # the move on another, and Klipper rejects it with "Extrude below
+        # minimum temp". Measured exactly that on the first run of this step.
+        seq._switch_tool(gcmd, path)
+
+        # Select, do not merely home. This is the bug that sent path 3's
+        # measurement to path 5's gate.
+        self._select_path(gcmd, path)
+
+        owner._cal_data  = {'path': path}
+        owner._cal_state = 'thg_run_%d' % path
+
+        cold = None
+        try:
+            cold = seq._allow_cold_extrude(path)
+            owner.gcode.run_script_from_command("M83")
+
+            c = self._thg_measure_c(gcmd, path)
+            if c is None:
+                self._clear()
+                return
+            a = self._thg_measure_a(gcmd, path, c)
+            if a is None:
+                self._clear()
+                return
+        except Exception:
+            # Never leave the state set on the way out. The first run raised
+            # here and left _cal_state at 'thg_run_1', which makes every later
+            # calibration answer "busy" until Klipper restarts.
+            self._clear()
+            raise
+        finally:
+            seq._restore_extrude_floor(cold)
+
+        owner._cal_data['c'] = c
+        owner._cal_data['a'] = a
+        gcmd.respond_info(
+            "SA CAL: extruder sensor -> toolhead sensor %.2fmm · "
+            "extruder sensor -> gear nip %.2fmm." % (c, a))
+
+        # b needs a hot nozzle and an eye on it.
+        self._thg_begin_b(gcmd, path, c)
+
+    # ── c: the span between the two toolhead sensors ─────────────────────
+    def _thg_measure_c(self, gcmd, path):
+        owner  = self.owner
+        seq    = owner.sequences
+        motion = owner.motion
+        enc    = owner._encoder(path)
+
+        # Belt and braces for the failure that produced this guard: driving
+        # the wrong gate reports perfectly healthy encoder motion, because the
+        # filament being pushed IS moving -- just the wrong path's.
+        self._assert_on_path(gcmd, path)
+
+        if not owner._extruder_sensor_active(path):
+            gcmd.respond_info(
+                "SA CAL: Feeding path %d to the extruder sensor..." % path)
+            motion.servo_engage()
+            if not seq._engage_check(gcmd, path):
+                gcmd.respond_info("SA CAL: Could not confirm grip — aborted.")
+                return None
+            if not seq._blast_and_approach(gcmd, path):
+                gcmd.respond_info(
+                    "SA CAL: Extruder sensor never triggered — aborted.")
+                return None
+        else:
+            motion.servo_engage()
+
+        # Back off to the sensor's CLEAR edge and start from there.
+        #
+        # Without this the two readings do not measure the same span: the
+        # first starts wherever the approach left the tip -- past the TRIGGER
+        # point by however far its step overshot -- while the repeat starts at
+        # the CLEAR point, and a switch releases at a different position from
+        # where it makes. Measured 2026-09-11 on path 1: 44.08 against 49.83,
+        # 5.75mm apart, which read as poor repeatability and was nothing of
+        # the kind. `a` already ends on the clear edge, so using it here makes
+        # every distance in this step share one datum.
+        if owner._extruder_sensor_active(path):
+            backed = 0.0
+            enc.set_direction(forward=False)
+            enc.reset_distance()
+            while backed < self._THG_CLEAR_MAX:
+                if not owner._extruder_sensor_active(path):
+                    break
+                motion.drive_move(-self._THG_STEP, speed=owner.feed_speed)
+                owner.reactor.pause(
+                    owner.reactor.monotonic() + owner.sensor_delay)
+                backed = abs(enc.get_distance())
+            else:
+                gcmd.respond_info(
+                    "SA CAL: Could not back off to the extruder sensor edge "
+                    "in %.0fmm — aborted." % self._THG_CLEAR_MAX)
+                return None
+
+        gcmd.respond_info(
+            "SA CAL: Measuring extruder sensor -> toolhead sensor in %.0fmm "
+            "steps, from the sensor's release edge..." % self._THG_STEP)
+
+        enc.set_direction(forward=True)
+        enc.reset_distance()
+        moved = 0.0
+        dead  = 0
+        said  = 0.0
+        while moved < self._THG_SYNC_MAX:
+            if owner._toolhead_sensor_active(path):
+                break
+            prev = moved
+            motion.drive_move(self._THG_STEP, speed=owner.feed_speed)
+            owner.gcode.run_script_from_command(
+                "G1 E%.3f F%d"
+                % (self._THG_STEP, int(owner.feed_speed * 60.0)))
+            owner.gcode.run_script_from_command("M400")
+            owner.reactor.pause(
+                owner.reactor.monotonic() + owner.sensor_delay)
+            moved = abs(enc.get_distance())
+
+            # Say something. Stepping 2mm at a time to a 200mm ceiling is
+            # fifty seconds of total silence, which is indistinguishable from
+            # a hang -- and was stopped by hand as one.
+            if moved - said >= 10.0:
+                said = moved
+                gcmd.respond_info(
+                    "SA CAL: %.0fmm fed, waiting for the toolhead sensor..."
+                    % moved)
+
+            # And stop when nothing is actually moving. The encoder is the
+            # only thing here that knows the difference between feeding and
+            # merely commanding a feed.
+            if moved - prev < self._THG_STEP * 0.3:
+                dead += 1
+                if dead >= 3:
+                    gcmd.respond_info(
+                        "SA CAL: Drive commanded %.0fmm with no encoder motion "
+                        "on path %d — the filament is not moving. Check for a "
+                        "jam at the toolhead, or that the drive still has grip. "
+                        "Nothing saved."
+                        % (dead * self._THG_STEP, path))
+                    return None
+            else:
+                dead = 0
+        else:
+            gcmd.respond_info(
+                "SA CAL: Toolhead sensor never triggered in %.0fmm, though the "
+                "filament kept moving. Check the sensor, or that the two are "
+                "not crossed (step 10)." % self._THG_SYNC_MAX)
+            return None
+
+        return abs(enc.get_distance())
+
+    # ── a: where the extruder gears actually are ─────────────────────────
+    def _thg_measure_a(self, gcmd, path, c):
+        """Retract until the extruder stops moving filament, then to the edge.
+
+        Pull, never push. Feeding a tip INTO stationary gears would locate
+        them just as well and buckles filament in the tube the moment it
+        overshoots; losing grip on a retract costs nothing.
+        """
+        owner  = self.owner
+        motion = owner.motion
+        enc    = owner._encoder(path)
+
+        gcmd.respond_info(
+            "SA CAL: Finding the gear nip — retracting with the extruder "
+            "while the drive is released. The encoder still counts because it "
+            "is fixed on this lane.")
+
+        motion.servo_disengage()
+        owner.reactor.pause(owner.reactor.monotonic() + owner.servo_move_delay)
+
+        enc.set_direction(forward=False)
+        enc.reset_distance()
+        pulled   = 0.0
+        no_motion = 0
+        while pulled < self._THG_GRIP_MAX:
+            prev = abs(enc.get_distance())
+            owner.gcode.run_script_from_command(
+                "G1 E-%.3f F%d"
+                % (self._THG_STEP, int(owner.feed_speed * 60.0)))
+            owner.gcode.run_script_from_command("M400")
+            owner.reactor.pause(
+                owner.reactor.monotonic() + owner.sensor_delay)
+            step_moved = abs(enc.get_distance()) - prev
+            pulled = abs(enc.get_distance())
+            if step_moved < self._THG_STEP * 0.3:
+                no_motion += 1
+                # Two in a row, not one: a single short step is quantisation.
+                if no_motion >= 2:
+                    break
+            else:
+                no_motion = 0
+        else:
+            gcmd.respond_info(
+                "SA CAL: The extruder never lost grip in %.0fmm. Either it is "
+                "gripping something it should not, or the encoder is not "
+                "counting — aborted." % self._THG_GRIP_MAX)
+            return None
+
+        gcmd.respond_info(
+            "SA CAL: Extruder let go after %.2fmm — the tip is at the nip. "
+            "Now backing off to the extruder sensor edge." % pulled)
+
+        # The tip sits at the nip, which is `a` DOWNSTREAM of the extruder
+        # sensor, so the sensor still reads filament. Retracting until it
+        # clears travels exactly that gap.
+        if not owner._extruder_sensor_active(path):
+            gcmd.respond_info(
+                "SA CAL: Extruder sensor already clear — it cannot be between "
+                "the sensor and the gears, so this reading would be zero. "
+                "Aborted.")
+            return None
+
+        motion.servo_engage()
+        owner.reactor.pause(owner.reactor.monotonic() + owner.servo_move_delay)
+        enc.set_direction(forward=False)
+        enc.reset_distance()
+        backed = 0.0
+        while backed < self._THG_CLEAR_MAX:
+            if not owner._extruder_sensor_active(path):
+                break
+            motion.drive_move(-self._THG_STEP, speed=owner.feed_speed)
+            owner.reactor.pause(
+                owner.reactor.monotonic() + owner.sensor_delay)
+            backed = abs(enc.get_distance())
+        else:
+            gcmd.respond_info(
+                "SA CAL: Extruder sensor never cleared in %.0fmm — aborted."
+                % self._THG_CLEAR_MAX)
+            return None
+
+        return abs(enc.get_distance())
+
+    # ── b: the operator is the sensor ────────────────────────────────────
+    def _thg_begin_b(self, gcmd, path, c):
+        """Re-feed to the toolhead sensor, heat, then hand over to the eye."""
+        owner  = self.owner
+        seq    = owner.sequences
+        motion = owner.motion
+        enc    = owner._encoder(path)
+
+        gcmd.respond_info(
+            "SA CAL: Feeding back to the toolhead sensor — this repeats the "
+            "first measurement, so the two should agree.")
+
+        cold = None
+        try:
+            cold = seq._allow_cold_extrude(path)
+            owner.gcode.run_script_from_command("M83")
+            motion.servo_engage()
+            enc.set_direction(forward=True)
+            enc.reset_distance()
+            moved = 0.0
+            dead  = 0
+            while moved < self._THG_SYNC_MAX + 50.0:
+                if owner._toolhead_sensor_active(path):
+                    break
+                prev = moved
+                motion.drive_move(self._THG_STEP, speed=owner.feed_speed)
+                owner.gcode.run_script_from_command(
+                    "G1 E%.3f F%d"
+                    % (self._THG_STEP, int(owner.feed_speed * 60.0)))
+                owner.gcode.run_script_from_command("M400")
+                owner.reactor.pause(
+                    owner.reactor.monotonic() + owner.sensor_delay)
+                moved = abs(enc.get_distance())
+                if moved - prev < self._THG_STEP * 0.3:
+                    dead += 1
+                    if dead >= 3:
+                        gcmd.respond_info(
+                            "SA CAL: No encoder motion on the way back to the "
+                            "toolhead sensor — aborted, nothing saved.")
+                        self._clear()
+                        return
+                else:
+                    dead = 0
+            else:
+                gcmd.respond_info(
+                    "SA CAL: Toolhead sensor did not trigger on the way back "
+                    "— aborted.")
+                self._clear()
+                return
+        finally:
+            seq._restore_extrude_floor(cold)
+
+        c2 = abs(enc.get_distance())
+        spread = abs(c2 - c)
+        owner._cal_data['c2'] = c2
+        gcmd.respond_info(
+            "SA CAL: Repeat reading %.2fmm against %.2fmm — %.2fmm apart."
+            % (c2, c, spread))
+
+        seq._heat_for_load(gcmd, path)
+        seq._move_to_purge_position(gcmd, False)
+
+        # The drive is released for the nozzle hunt, so the extruder alone is
+        # dragging filament through a Bowden length. Read what actually moved
+        # rather than what was asked for: the encoder is fixed on this lane and
+        # counts regardless of the drive -- exactly how `a` is measured. Every
+        # other distance in this step is encoder-referenced and this one was
+        # not, which is the one place extruder slip could inflate a saved
+        # number invisibly.
+        motion.servo_disengage()
+        owner.reactor.pause(owner.reactor.monotonic() + owner.servo_move_delay)
+        enc.set_direction(forward=True)
+        enc.reset_distance()
+        owner._cal_data['b'] = 0.0
+        owner._cal_state = 'thg_nozzle_%d' % path
+        self._thg_prompt_b(gcmd, path)
+
+    def _thg_prompt_b(self, gcmd, path):
+        owner = self.owner
+        b = float(owner._cal_data.get('b', 0.0))
+        path_i = int(owner._cal_data.get('path', 0))
+        meas = abs(owner._encoder(path_i).get_distance())
+        self._prompt(
+            gcmd,
+            "Watch the nozzle. Extrude until filament just appears, then say "
+            "so — that distance is the toolhead sensor to the tip.",
+            "SA_RESPOND VALUE=coarse",
+            "SA_RESPOND VALUE=fine",
+            "SA_RESPOND VALUE=seen",
+            detail="Encoder %.1fmm (asked for %.1f)." % (meas, b),
+            choices=[("+%.0fmm" % self._THG_COARSE, "coarse", "secondary"),
+                     ("+%.0fmm" % self._THG_FINE,   "fine",   "secondary"),
+                     ("FILAMENT SHOWING", "seen", "primary")])
+
+    def _thg_cooldown(self, gcmd, path):
+        """Turn the heater off. This step is the only one that heats and then
+        hands control back, so nothing else was going to do it -- it left a
+        nozzle at 200C with the guide back on screen."""
+        try:
+            gcmd.respond_info("SA CAL: Turning off heater...")
+            self.owner.gcode.run_script_from_command(
+                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
+                % self.owner._extruder_names[path])
+        except Exception:
+            logging.exception("SA CAL: could not turn the heater off")
+
+    def _thg_respond(self, gcmd, state, value):
+        owner = self.owner
+        seq   = owner.sequences
+        path  = int(state.rsplit('_', 1)[-1])
+        v     = str(value).strip().lower()
+        b     = float(owner._cal_data.get('b', 0.0))
+
+        if v in ('coarse', 'fine'):
+            step = self._THG_COARSE if v == 'coarse' else self._THG_FINE
+            if b + step > self._THG_NOZZLE_MAX:
+                gcmd.respond_info(
+                    "SA CAL: %.0fmm extruded with nothing at the tip. That is "
+                    "further than any toolhead — stopping rather than pushing "
+                    "more into it." % b)
+                self._thg_cooldown(gcmd, path)
+                self._clear()
+                return
+            owner.gcode.run_script_from_command("M83")
+            seq._extrude_mm(step, seq._extrude_speed_mmm())
+            owner.gcode.run_script_from_command("M400")
+            owner._cal_data['b'] = b + step
+            owner._cal_data['last_step'] = step
+            self._thg_prompt_b(gcmd, path)
+            return
+
+        if v != 'seen':
+            gcmd.respond_info("SA CAL: Press one of the three buttons.")
+            return
+
+        if b <= 0.0:
+            gcmd.respond_info(
+                "SA CAL: Nothing has been extruded yet — nudge it first.")
+            self._thg_prompt_b(gcmd, path)
+            return
+
+        enc_b = abs(owner._encoder(path).get_distance())
+        if enc_b > 0.5:
+            if abs(enc_b - b) > max(2.0, b * 0.05):
+                gcmd.respond_info(
+                    "SA CAL: The extruder was asked for %.1fmm and the encoder "
+                    "saw %.1fmm. It is pulling filament through the whole "
+                    "Bowden on its own here, so the difference is slip — the "
+                    "measured figure is the one being saved." % (b, enc_b))
+            b = enc_b
+        else:
+            gcmd.respond_info(
+                "SA CAL: The encoder saw nothing during the nozzle hunt, so "
+                "the commanded %.1fmm is being saved instead. Worth a look: "
+                "this lane's encoder should count whatever moves." % b)
+
+        # The operator presses until filament SHOWS, so the tip crossed the
+        # nozzle somewhere inside the last press -- never at its end. Saving
+        # the pressed total biases every reading long by up to a full step;
+        # the midpoint is the unbiased estimate of a value known only to lie
+        # in (b - step, b]. Mike's own read of it -- "probably 5mm out of the
+        # 10mm push" -- is that midpoint exactly.
+        last = float(owner._cal_data.get('last_step', 0.0))
+        if last > 0.0:
+            raw = b
+            b = max(0.0, b - last / 2.0)
+            gcmd.respond_info(
+                "SA CAL: Filament showed somewhere inside the last %.0fmm "
+                "press, so %.2fmm is the midpoint of %.2f-%.2f rather than "
+                "the end of the push. Finish on +%.0fmm next time and that "
+                "uncertainty drops to half a millimetre."
+                % (last, b, raw - last, raw, self._THG_FINE))
+
+        c = float(owner._cal_data.get('c', 0.0))
+        c2 = float(owner._cal_data.get('c2', 0.0))
+        if c2 > 0.0:
+            # Both readings are the same span from the same datum, and c2 has
+            # come in 1.9mm low on every run measured so far -- two encoder
+            # pulses, systematic rather than scatter. Averaging is honest
+            # about that; saving whichever happened to be first is not.
+            gcmd.respond_info(
+                "SA CAL: Two readings of that span, %.2f and %.2f — saving "
+                "the mean %.2fmm." % (c, c2, (c + c2) / 2.0))
+            c = (c + c2) / 2.0
+        a = float(owner._cal_data.get('a', 0.0))
+        self._save_variables({
+            'sensor_to_toolhead_%d' % path: round(c, 2),
+            'toolhead_to_nozzle_%d' % path: round(b, 2),
+            'sensor_to_gear_%d'     % path: round(a, 2),
+        })
+        owner._sensor_to_toolhead[path] = c
+        owner._toolhead_to_nozzle[path] = b
+        owner._sensor_to_gear[path]     = a
+
+        nozzle_to_sensor = b + c
+        gear_to_nozzle   = max(0.0, c - a) + b
+        gcmd.respond_info(
+            "SA CAL: === TOOLHEAD GEOMETRY — path %d ===\n"
+            "  extruder sensor -> gear nip        %.2fmm   MEASURED\n"
+            "  extruder sensor -> toolhead sensor %.2fmm   MEASURED\n"
+            "  toolhead sensor -> nozzle tip      %.2fmm   estimate (your eye)\n"
+            "  nozzle -> extruder sensor          %.2fmm   estimate\n"
+            "  gear nip -> nozzle tip             %.2fmm   estimate\n"
+            "The first two are sensor edges and repeat to a fraction of a "
+            "millimetre. The third is you calling when filament showed, "
+            "so everything built on it is an estimate — which is all it "
+            "needs to be: it only sizes purges, and a long purge costs a "
+            "few millimetres into a bucket. A colour change purges the "
+            "%.0fmm gear-to-tip column; same colour uses the profile."
+            % (path, a, c, b, nozzle_to_sensor, gear_to_nozzle,
+               gear_to_nozzle))
+
+        cfg_ns = owner.nozzle_to_sensor_dist
+        if abs(nozzle_to_sensor - cfg_ns) > max(5.0, cfg_ns * 0.15):
+            gcmd.respond_info(
+                "SA CAL: nozzle_to_sensor_dist in parameters.cfg is %.1fmm "
+                "against the measured %.1fmm. The tip former aims past the "
+                "extruder sensor using that figure, so until it is updated it "
+                "keeps falling short and the fallback retract covers for it."
+                % (cfg_ns, nozzle_to_sensor))
+
+        self._thg_cooldown(gcmd, path)
+
+        # Offer to unload before moving on. Measuring six paths with one roll
+        # means taking it back out of each head, and without this the operator
+        # has to leave the guide to do it.
+        owner._cal_data  = {'path': path}
+        owner._cal_state = 'thg_unload_%d' % path
+        self._prompt(
+            gcmd,
+            "Measured. Unload this path so the roll can move to the next one?",
+            "SA_RESPOND VALUE=unload",
+            "SA_RESPOND VALUE=keep",
+            detail="The nozzle is already cooling. Unloading now forms a tip "
+                   "and parks the filament at the gate.",
+            choices=[("UNLOAD IT", "unload", "primary"),
+                     ("LEAVE IT LOADED", "keep", "secondary")])
+
+    def _thg_unload_respond(self, gcmd, path, value):
+        owner = self.owner
+        v = str(value).strip().lower()
+        self._clear()
+        if v == 'unload':
+            gcmd.respond_info("SA CAL: Unloading path %d..." % path)
+            try:
+                owner.gcode.run_script_from_command("SA_UNLOAD TOOL=%d" % path)
+            except Exception:
+                logging.exception("SA CAL: unload after step 12 failed")
+                gcmd.respond_info(
+                    "SA CAL: That unload did not complete — see above. The "
+                    "measurement is saved either way.")
+            return
+        self._offer_next_path(
+            gcmd, 'toolhead_geom', path,
+            "SA_CALIBRATE_TOOLHEAD TOOL=%d", "MEASURE TOOLHEAD")
 
     def calibrate_bowden(self, gcmd):
         """Phase 0 — validate sensors, prompt for estimated tube length."""

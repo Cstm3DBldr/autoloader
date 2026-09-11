@@ -37,7 +37,11 @@ HASH="$(sha256sum "${BUILT}" | cut -c1-10)"
 echo "      $(wc -c <"${BUILT}") bytes, hash ${HASH}"
 
 echo "[2/4] Copying to ${HOST}..."
-scp -q "${BUILT}" "${HOST}:${DEST}" || { echo "ERROR: scp failed." >&2; exit 1; }
+# -O forces the legacy SCP protocol. OpenSSH 9+ defaults to SFTP, which
+# this printer's sshd closes on -- "scp: Connection closed", with no
+# hint that the transport is the problem rather than the file or the
+# host. Measured on 2026-09-11: identical command, -O succeeds.
+scp -O -q "${BUILT}" "${HOST}:${DEST}" || { echo "ERROR: scp failed." >&2; exit 1; }
 
 echo "[3/4] Pointing the registration at the new hash..."
 ssh "${HOST}" "HASH='${HASH}' FILE='${FILE}' python3 - <<'PY'

@@ -30,6 +30,7 @@ class SAMotion:
         self.owner = owner
         # stepper_name → reactor timer handle
         self._timeout_handles = {}
+        self._sel_full = None   # cached selector run current
         # last known selector position in mm from home
         self._selector_position = 0.0
 
@@ -132,6 +133,17 @@ class SAMotion:
                     "MANUAL_STEPPER STEPPER=%s ENABLE=0" % _name)
                 logging.info("SAMotion: auto-disabled stepper '%s' after %.0fs idle",
                              _name, delay)
+                # The carriage position was only ever trustworthy because the
+                # motor was holding it. Cutting the current ends that, so the
+                # home goes with it -- otherwise the next move would be
+                # absolute against an origin nothing is defending any more.
+                # This is the link that makes skipping the home safe at all.
+                if _name == self._owner_sel_name():
+                    owner._selector_homed = False
+                    owner.gcode.respond_info(
+                        "SA: Selector idle %.0fs — motor off, so its position "
+                        "is no longer trusted. It will re-home on the next "
+                        "move." % delay)
             except Exception as e:
                 logging.warning("SAMotion: failed to disable stepper '%s': %s", _name, e)
             # Remove handle from dict
@@ -262,6 +274,55 @@ class SAMotion:
                      "" if post else " (endstop not readable — unverified)")
         self.save_position()
 
+    # Fraction of the configured run current the selector holds at between
+    # moves. It only has to resist being nudged -- nothing pushes on the
+    # carriage while it sits -- and holding at full current is what makes the
+    # driver and the motor hot enough to be worth avoiding.
+    SELECTOR_HOLD_FRACTION = 0.5
+
+    def _sel_run_current(self):
+        """The selector's configured run current, or None if unreadable."""
+        try:
+            tmc = self.owner.printer.lookup_object(
+                'tmc5160 manual_stepper %s' % self._owner_sel_name(), None)
+            if tmc is None:
+                return None
+            return float(tmc.get_status(
+                self.owner.reactor.monotonic())['run_current'])
+        except Exception:
+            return None
+
+    def _sel_set_current(self, amps):
+        try:
+            self.owner.gcode.run_script_from_command(
+                "SET_TMC_CURRENT STEPPER=%s CURRENT=%.3f"
+                % (self._owner_sel_name(), amps))
+            return True
+        except Exception:
+            logging.exception("SAMotion: could not set selector current")
+            return False
+
+    def selector_full_current(self):
+        """Back to full current. Called before anything that moves."""
+        if self._sel_full is not None:
+            self._sel_set_current(self._sel_full)
+
+    def selector_hold_current(self):
+        """Drop to the holding current, staying ENERGISED.
+
+        Energised is the point. The carriage position is only trustworthy
+        while the motor has held it continuously since the last home -- the
+        moment it is de-energised the position becomes a guess about whether
+        anything nudged it. Holding at half current keeps the position real
+        without cooking the driver, which is what lets the selector stop
+        re-homing before every single move.
+        """
+        if self._sel_full is None:
+            self._sel_full = self._sel_run_current()
+        if self._sel_full is None:
+            return
+        self._sel_set_current(self._sel_full * self.SELECTOR_HOLD_FRACTION)
+
     def selector_move_to(self, position_mm):
         """Move selector carriage to *position_mm* (absolute, mm from home).
 
@@ -273,10 +334,14 @@ class SAMotion:
 
         self._cancel_timeout(sn)
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=1" % sn)
+        if self._sel_full is None:
+            self._sel_full = self._sel_run_current()
+        self.selector_full_current()
         owner.gcode.run_script_from_command(
             "MANUAL_STEPPER STEPPER=%s MOVE=%.3f SPEED=%.1f"
             % (sn, self._sel_sign() * position_mm, owner.selector_speed))
         owner.gcode.run_script_from_command("M400")
+        self.selector_hold_current()
         self._arm_timeout(sn)
         self._selector_position = position_mm
         logging.debug("SAMotion: selector moved to %.3fmm", position_mm)

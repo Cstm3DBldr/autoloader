@@ -624,6 +624,7 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_PARK TOOL=N` | Park filament at the drive encoder — load phases 0–2 only, no heat and no extruder |
 | `SA_SET_CONFIG PARAM=name VALUE=val` | Stage a config value for `SAVE_CONFIG` |
 | `SA_CALIBRATE_BOWDEN TOOL=N` | Measure Bowden tube length for path N |
+| `SA_CALIBRATE_TOOLHEAD TOOL=N` | Measure the toolhead's own geometry with that path's encoder — guide step 12. Three measured (extruder sensor to toolhead sensor, toolhead sensor to nozzle tip, extruder sensor to gear nip) and two derived from them (`nozzle_to_sensor_dist`, `nozzle_distance`). Starts from an EMPTY toolhead, measures the first two cold, then heats and asks the operator to say when filament appears — nothing but an eye can see the tip. **Finds the gear nip by pulling, never pushing:** feeding a tip into stationary gears would locate them too and buckles filament in the tube on overshoot. Saved per path, because a toolhead can differ from its neighbour |
 | `SA_ENCODER_QUERY [TOOL=N] [RESET=1]` | Snapshot encoder distances |
 | `SA_ENCODER_WATCH [TOOL=N] [DURATION=30] [INTERVAL=0.5]` | Live encoder delta stream |
 | `SA_GUIDE [OPEN=0\|1] [STEP=n]` | Open, close or page the calibration guide on every UI at once. The printer holds `guide_open` / `guide_step` and both UIs mirror them, the same way prompts already worked — so opening the guide in Mainsail opens it on the touchscreen and either one can page it |
