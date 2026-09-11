@@ -115,8 +115,38 @@ points, and a different servo lands somewhere else entirely. This is why
 - **All six paths are in `partial` state** after the run, since step 8 now
   parks each one as it finishes.
 
-## Not yet done
+## The sequence, proved — 2026-09-11
 
-The Bowden lengths are recorded but the guide's own end-to-end proof —
-`SA_LOAD TOOL=0`, a real load through to the nozzle — has not been run. The
-guide proves each step in isolation; only a full load proves the sequence.
+Two full loads through to the nozzle. `SA_LOAD TOOL=0` first, then
+`SA_LOAD TOOL=1` on the faster blast.
+
+**T1, blast at the calibrated 160mm/s** (`encoder_max_speed`, no second
+derate). Every figure below is off the console.
+
+| Stage | Encoder | Against | |
+|---|---|---|---|
+| grip confirmed | 6.71 | — | |
+| blast commanded | 1451.1 | `(1487.52 x 0.98) - 6.71` = 1451.06 | exact |
+| blast complete | 1442.2 | 1457.77 expected | -1.07% |
+| at extruder sensor | 1481.5 | `bowden_length_1` 1487.52 | **-0.40%** |
+| sync feed to toolhead sensor | 40.0 | — | new measurement |
+
+**The Bowden calibration holds at 160mm/s to 0.40%.** It was measured at a
+slower speed, so this is the figure that says the faster blast did not
+invalidate it.
+
+**The 1.07% at blast end is the encoder under-reading, and the approach phase
+absorbs it.** That is what the approach is for: the blast is deliberately cut
+at 98% of the Bowden and the last stretch runs to a *sensor*, not to a count.
+An encoder that reads 1% light at speed changes how far the approach has to
+go and nothing else. Terminating the load on an encoder count instead would
+have made this a 15mm error.
+
+**New: extruder sensor to toolhead sensor is 40.0mm** — the sync feed drove
+that far before the toolhead sensor fired. Granularity is `feed_step_size`
+(10mm), so the true figure is 30-40mm. The extruder gears sit between those
+two sensors, which **bounds `sensor_to_gear` below 40mm** — the last
+unmeasured distance in `docs/RUNOUT_MIDPRINT.md`.
+
+Blast time: 9.1s for 1451mm. The load ran 12:10 to 12:13 including homing, a
+toolchange, heating to 200C, a 60mm extra purge and a park.

@@ -121,7 +121,15 @@ nothing in the machine can move it — that is `RECOVERY.md`, needing an
 operator and a hot nozzle.
 
 `nozzle_distance` is 50 and `fill_nozzle_length` is 50. `sensor_to_gear` is
-not a parameter. It is now the only unmeasured distance left in this design.
+not a parameter -- but it is now **bounded below 40mm**, measured on the
+2026-09-11 T1 load: the sync feed drove 40.0mm from the extruder sensor before
+the toolhead sensor fired, and the gears sit between the two. Granularity is
+`feed_step_size`, so the real span is 30-40mm.
+
+So the reserve left after the purge-to-clear is `sensor_to_gear + 50`, which is
+**between 50 and 90mm**. That is enough to design against; an exact figure
+still wants a ruler on one toolhead, because it is what decides how much margin
+the purge has before the tail leaves the gears.
 
 ## What the encoder can and cannot be asked
 

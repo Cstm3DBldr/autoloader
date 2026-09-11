@@ -15,10 +15,6 @@ The rebuild is done and measured — see `docs/SYSTEMS_TEST_2026-09-10.md`.
 Ceilings went from 50–175 (3.5x spread) to 200–215 (1.075x), and the shared
 speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
-- [ ] **Prove the sequence, not just the steps.** `SA_LOAD TOOL=0` — a real
-      load through to the nozzle. The guide proves each step in isolation and
-      nothing yet proves them in order.
-      *Done when:* one full load completes and the path reads `loaded`.
 - [ ] **`SA_VERIFY_FEED`'s verdict logic overstates.** It called a 1.4%
       residual an "ENCODER ceiling … counts going missing around 25mm/s". At
       25mm/s a state lasts ~37ms against 2ms sampling — about 19 samples —
@@ -69,9 +65,10 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       `_is_printing()` reads False, so `low` must be excluded unconditionally;
       and net consumption must come from the extruder, never the encoder —
       direction is told, not sensed, so every retraction would count as feed.
-      *Blocked on one measurement:* `sensor_to_gear`, the gap that keeps the
-      tail inside the gears. It is the last unmeasured distance in the design
-      and nothing currently holds it.
+      *`sensor_to_gear` is now bounded below 40mm* by the 2026-09-11 T1 load
+      (sync feed ran 40.0mm from the extruder sensor to the toolhead sensor,
+      and the gears are between them), so the reserve after the purge-to-clear
+      is 50-90mm. An exact figure still wants a ruler on one toolhead.
       *Done when:* a real mid-print runout warns, pauses with the tail still
       short of the gears, swaps and resumes with no colour carry-over.
 

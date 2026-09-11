@@ -547,7 +547,12 @@ class SASequences:
 
         sv = owner.printer.lookup_object('save_variables', None)
         saved_max   = float(sv.allVariables.get('encoder_max_speed', 0)) if sv else 0
-        blast_speed = (saved_max * 0.75) if saved_max > 0 else 75.0
+        # No second derate. encoder_max_speed is ALREADY the sweep's safe
+        # figure -- 80%% of the fastest speed that counted reliably on the
+        # slowest path. Taking another 25%% off ran a 200mm/s channel at
+        # 120, which is 60%% of what was measured, and makes the
+        # calibration something the machine does not actually use.
+        blast_speed = saved_max if saved_max > 0 else 75.0
         target      = owner._bowden_lengths[path]
 
         remaining = (target * 0.98) - enc.get_distance()
