@@ -19,12 +19,6 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       load through to the nozzle. The guide proves each step in isolation and
       nothing yet proves them in order.
       *Done when:* one full load completes and the path reads `loaded`.
-- [ ] **T1's `mm_per_pulse` is about 1.4% low** — 0.94334 against 0.95892–
-      0.96881 for the other five. `SA_VERIFY_FEED TOOL=1 SPEED=25 DIST=200`
-      gave commanded 200.0 / ruler 198.0 / encoder 195.3; scaling by
-      198.0/195.3 lands it at 0.9564, inside the family.
-      *Done when:* `SA_CALIBRATE_ENCODER TOOL=1` puts it with the others, or
-      shows it genuinely differs.
 - [ ] **`SA_VERIFY_FEED`'s verdict logic overstates.** It called a 1.4%
       residual an "ENCODER ceiling … counts going missing around 25mm/s". At
       25mm/s a state lasts ~37ms against 2ms sampling — about 19 samples —

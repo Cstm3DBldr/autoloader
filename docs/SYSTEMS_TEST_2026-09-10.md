@@ -72,11 +72,29 @@ points, and a different servo lands somewhere else entirely. This is why
 
 ## Open, from this run
 
-- **T1's `mm_per_pulse` looks about 1.4% low.** It is the outlier at 0.94334
-  against 0.95892–0.96881 for the other five. `SA_VERIFY_FEED TOOL=1 SPEED=25
-  DIST=200` returned: commanded 200.0, ruler 198.0, encoder 195.3. Scaling
-  0.94334 by 198.0/195.3 gives 0.9564, which lands it inside the family.
-  Re-running `SA_CALIBRATE_ENCODER TOOL=1` is the cheap check.
+- ~~T1's `mm_per_pulse` looks 1.4% low~~ **RESOLVED same day.** It was the
+  outlier at 0.94334 against 0.95892–0.96881. `SA_VERIFY_FEED TOOL=1 SPEED=25
+  DIST=200` gave commanded 200.0 / ruler 198.0 / encoder 195.3, predicting
+  0.9564 once scaled. Re-running `SA_CALIBRATE_ENCODER TOOL=1` produced
+  **0.95825** — inside 0.2% of that, and inside the family. Spread across the
+  six went 2.7% -> 1.1%. `bowden_length_1` was re-measured after it
+  (1451.49 -> 1487.52), which is required: Bowden length is stored in encoder
+  counts, so a changed scale invalidates it.
+
+  **The calibration is not circular** and cannot be fooled by a wrong starting
+  value. With n counts, stored m and true M: the encoder reports n·m, the
+  ruler measures n·M, ratio = M/m, and new = m × M/m = M. One pass lands on
+  the truth however wrong it started — which is why all three passes run at
+  `original_mpp` rather than feeding each other.
+
+  So the error was the one thing in the loop that is not arithmetic: the
+  datum. For the result to come out LOW the ruler must read short, which is a
+  tip sitting inside the gate when it was called flush — 1.6% of a 300mm datum
+  is 4.8mm. All three passes agreed (the >4% spread check passed), so it was
+  systematic rather than scatter: something about judging flush at that gate,
+  or a diagonally cut tip. This is the known floor of the method, already
+  written down in CLAUDE.md — "eyeballing a tip flush and reading a rule is a
+  fixed few mm, which is 3% of a 100mm feed and 1% of a 300mm one".
 
 - **That verify's own verdict is wrong and should be softened.** It reported an
   "ENCODER ceiling … counts start going missing around 25mm/s". At 25mm/s a
