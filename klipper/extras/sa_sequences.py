@@ -1568,7 +1568,9 @@ class SASequences:
             # we park here and let the user physically remove the filament.
             sv          = owner.printer.lookup_object('save_variables', None)
             saved_max   = float(sv.allVariables.get('encoder_max_speed', 0)) if sv else 0
-            blast_spd   = (saved_max * 0.75) if saved_max > 0 else owner.feed_speed
+            # Same reasoning as the load blast: the saved figure is already
+            # the safe one, so it is used as given.
+            blast_spd   = saved_max if saved_max > 0 else owner.feed_speed
             bowden      = owner._bowden_lengths[path]
             blast_dist  = bowden * 0.95
             gcmd.respond_info(

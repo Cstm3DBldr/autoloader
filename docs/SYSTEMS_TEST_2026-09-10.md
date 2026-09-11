@@ -148,5 +148,35 @@ that far before the toolhead sensor fired. Granularity is `feed_step_size`
 two sensors, which **bounds `sensor_to_gear` below 40mm** — the last
 unmeasured distance in `docs/RUNOUT_MIDPRINT.md`.
 
+**T1 unload, Branch A, blast retract at 160mm/s.** Run straight after the
+load, all three sensors reading filament.
+
+```
+  tip ram          5.0mm at 25mm/s
+  cold shear       heater off, drawn out at 40.0mm/s once at 149C, enc 33.5mm
+  clear past gears 17.5mm at 8mm/s
+  blast retract    1413mm at 160mm/s   (95% of bowden 1488mm)
+  park             encoder quiet 2x after 100mm, re-acquired after 26.0mm feed,
+                   parked 5.0mm before the encoder
+```
+
+Tip quality confirmed by eye. No false jam, no lost grip. **Both halves of the
+derate removal are now measured** — the load feeds at 160 and the retract pulls
+at 160.
+
+**One thing the unload exposed.** The tip former reported
+`Clear 17.5mm ... (past gears, tip at 52mm)` and the machine immediately
+disagreed: `Extruder sensor still active — sync drive+extruder to pull filament
+clear`. Phase 3 targets `nozzle_to_sensor_dist x 1.05` = 52.5mm, and at 52mm
+the extruder sensor had NOT cleared. The fallback sync retract handled it, so
+the unload was fine — but the parameter is wrong and the machine is
+compensating for it every time.
+
+`nozzle_to_sensor_dist` is 50.0, its default, never measured. The load says
+extruder sensor to toolhead sensor is 40mm, and `fill_nozzle_length` (toolhead
+sensor to nozzle) is 50 — also a default — which would put nozzle to extruder
+sensor near 90mm, not 50. Three overlapping distances all sitting at 50 is the
+signature of nothing here having been measured.
+
 Blast time: 9.1s for 1451mm. The load ran 12:10 to 12:13 including homing, a
 toolchange, heating to 200C, a 60mm extra purge and a park.

@@ -30,6 +30,21 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
 ## Confirmed bugs, not yet fixed
 
+- [ ] **`nozzle_to_sensor_dist` is wrong and the machine compensates.** The tip
+      former's Phase 3 targets `nozzle_to_sensor_dist x 1.05` = 52.5mm to put
+      the tip past the extruder sensor. On the 2026-09-11 T1 unload it reported
+      `past gears, tip at 52mm` and the very next line was `Extruder sensor
+      still active — sync drive+extruder to pull filament clear`. The fallback
+      works, so nothing fails — it just does an extra retract every unload.
+      The geometry says ~90mm: extruder sensor to toolhead sensor is 40mm
+      (measured on the load) and `fill_nozzle_length` is 50. All three of
+      `nozzle_to_sensor_dist`, `fill_nozzle_length` and `nozzle_distance` sit
+      at their 50.0 default and describe different spans, so none of them has
+      been measured.
+      *Done when:* the three are measured on one toolhead and an unload clears
+      the extruder sensor without the fallback firing.
+
+
 - [ ] **Three installer questions are asked and the answers discarded.**
       `REGISTER_UPDATE_MANAGER` — `install.sh` writes `autoloader.ini`
       unconditionally. `KLIPPERSCREEN_ADDON_HOOK` — `post_update.sh` applies
