@@ -122,25 +122,12 @@ class SACalibration:
         if was_engaged:
             motion.servo_engage()
 
-    def _release_holds(self):
-        """A calibration has finished; let anything it held through happen.
-
-        Auto-park is queued while a calibration runs rather than dropped, so
-        the spool the operator inserted during a sensor test still ends up
-        parked -- just afterwards, rather than halfway through the test.
-        """
-        try:
-            self.owner.drain_pending_parks()
-        except Exception:
-            logging.exception("SA CAL: could not release held auto-parks")
-
     def _clear(self):
-        self.owner._cal_state  = None
-        self.owner._cal_data   = {}
-        self.owner._cal_prompt = ''
-        # After the state is cleared, never before: the drain refuses to start
-        # while a calibration is running, which is the whole point of it.
-        self._release_holds()
+        # Delegates so there is ONE implementation of "clear the state and
+        # release what it held". This module got the pairing right and
+        # sa_sequences did not; a shared method is what makes that impossible
+        # rather than merely unlikely.
+        self.owner.clear_cal_state()
 
     def _yes(self, value):
         return value.lower() in ('yes', 'y', '1', 'true', 'ok')

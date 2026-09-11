@@ -684,7 +684,7 @@ class Autoloader:
         # mutex -- so the test stalled until the load finished. Held rather
         # than dropped: they did insert a spool, and it should end up parked
         # once the calibration is out of the way.
-        if self._cal_state:
+        if self.cal_owns_machine():
             logging.info("Autoloader: auto-park for path %d held while '%s' "
                          "is running", path, self._cal_state)
             return
@@ -698,9 +698,46 @@ class Autoloader:
             self._park_active = False
             logging.exception("Autoloader: could not queue auto-park")
 
+    # A prompt is NOT a calibration. `load_purge` and `unload_done` sit idle
+    # waiting for the operator to answer: nothing is moving, nothing holds the
+    # gcode mutex. The auto-park hold exists because a calibration OWNS the
+    # machine -- parking halfway through the entry-sensor test would break the
+    # test -- and that reasoning does not reach a prompt that is just waiting.
+    # Holding there meant inserting a spool while the unload prompt was open
+    # did nothing, which is not what the operator is standing there expecting.
+    PROMPT_STATES = ('load_purge', 'unload_done')
+
+    def cal_owns_machine(self):
+        """True when a calibration owns the machine, not merely a prompt is open."""
+        return bool(self._cal_state) and self._cal_state not in self.PROMPT_STATES
+
+    def clear_cal_state(self):
+        """Clear the prompt/calibration state AND release what it held.
+
+        ONE call, on purpose. These were two steps joined by convention, and
+        of the six places that cleared the state, five forgot the release:
+        `sa_calibration._clear()` drains because the drain is inside it, while
+        `sa_sequences` cleared the fields inline at five sites and drained at
+        none. So a spool inserted while the unload prompt was open queued a
+        park that never ran -- and because `_queue_park` refuses to re-queue a
+        path already in the list, every LATER insert on that path was dropped
+        too. The path stayed stuck until some unrelated calibration happened to
+        drain the queue.
+
+        Pairing them in one method is what stops the sixth site getting it
+        wrong as well.
+        """
+        self._cal_state  = None
+        self._cal_data   = {}
+        self._cal_prompt = ''
+        try:
+            self.drain_pending_parks()
+        except Exception:
+            logging.exception("Autoloader: could not release held auto-parks")
+
     def drain_pending_parks(self):
         """Start draining anything held while a calibration was running."""
-        if self._cal_state or self._park_active or not self._park_queue:
+        if self.cal_owns_machine() or self._park_active or not self._park_queue:
             return
         self._park_active = True
         try:

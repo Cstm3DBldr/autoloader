@@ -770,8 +770,7 @@ class SASequences:
             return None
 
         if v == 'exit':
-            owner._cal_state = None
-            owner._cal_data  = {}
+            owner.clear_cal_state()
             owner.motion.servo_disengage()
             owner.gcode.run_script_from_command(
                 "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
@@ -791,8 +790,7 @@ class SASequences:
             action, _, n_str = v.partition(':')
             target = _parse_target(n_str)
             if target is not None:
-                owner._cal_state = None
-                owner._cal_data  = {}
+                owner.clear_cal_state()
                 owner.gcode.run_script_from_command(
                     "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
                     % owner._extruder_names[path])
@@ -803,8 +801,7 @@ class SASequences:
             else:
                 self._prompt_purge(gcmd, path)
         else:
-            owner._cal_state = None
-            owner._cal_data  = {}
+            owner.clear_cal_state()
             gcmd.respond_info("SA: === LOAD COMPLETE — path %d ===" % path)
             self._restore_state(gcmd, path, is_printing)
 
@@ -828,8 +825,7 @@ class SASequences:
         data  = owner._cal_data
         path        = data['path']
         is_printing = data['is_printing']
-        owner._cal_state = None
-        owner._cal_data  = {}
+        owner.clear_cal_state()
 
         v = value.strip().lower()
         n = owner.num_paths
@@ -1524,8 +1520,7 @@ class SASequences:
                         "sensor wiring.\n"
                         "Clear manually then re-run SA_UNLOAD TOOL=%d."
                         % (path, max_sync, path, path))
-                    owner._cal_state = None
-                    owner._cal_data  = {}
+                    owner.clear_cal_state()
                     return
 
                 gcmd.respond_info(
