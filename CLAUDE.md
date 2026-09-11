@@ -442,52 +442,50 @@ KlipperScreen panels are NOT symlinked — copy directly to `~/KlipperScreen/pan
 
 ERCF V2 mechanical concept, adapted for fixed multi-toolhead use:
 
-One thing moves; everything else is per path and fixed. The selector carries
-ONE drive gear to whichever path needs driving. The encoders do NOT ride with
-it -- each path owns its own, permanently on its own filament, and each sits
-**downstream of the gear**: `SA_PARK` drives forward by
-`encoder_to_gear_distance` to reach the encoder, then retracts until it goes
-quiet (`sa_sequences.py:302-311`).
+**Six parallel lanes, one movable gear.** Each path is a fixed lane with its
+own entry sensor, its own encoder and its own tube. Nothing about a lane moves.
+The only thing that travels is the drive gear on the selector carriage, which
+runs up the column and engages whichever lane needs driving — so the lanes do
+not converge and re-diverge, they simply sit there and the gear comes to them.
 
 ```
- [Roll 0]         [Roll 1]         ...      [Roll N]
-     |                |                         |
-Entry Sensor 0   Entry Sensor 1            Entry Sensor N
-     |                |                         |
-     +----------------+-------------------------+
-                      |
-        Drive Gear on the selector carriage       -- the ONLY moving part;
-        (Selector Motor positions it;                serves one path at a time
-         Engage Servo grips or releases)
-                      |
-     +----------------+-------------------------+
-     |                |                         |
- Encoder 0        Encoder 1                 Encoder N    -- fixed, one per path,
-     |                |                         |           always counting
- PTFE Tube 0     PTFE Tube 1               PTFE Tube N
-     |                |                         |
- Extruder Sensor N    (toolhead entry, before the gears)
-     |
- Extruder Motor + gears
-     |
- Toolhead Sensor N    (past the gears, before the nozzle)
-     |
- Hotend + Nozzle
+                          ┌── the ONLY moving part ──┐
+                          │  Drive Gear on carriage  │
+                          │  (Selector positions it; │
+                          │   Servo grips/releases)  │
+                          └─────────┬────────────────┘
+                                    │ engages ONE lane at a time
+     ┌──────────────────────────────┴────────────────────────────────┐
+     ▼                                                               ▼
+Roll 0 ─ Entry 0 ─[gear]─ Encoder 0 ─ Tube 0 ─ ExtSns 0 ─ gears ─ ThSns 0 ─ Nozzle 0
+Roll 1 ─ Entry 1 ─[gear]─ Encoder 1 ─ Tube 1 ─ ExtSns 1 ─ gears ─ ThSns 1 ─ Nozzle 1
+Roll 2 ─ Entry 2 ─[gear]─ Encoder 2 ─ Tube 2 ─ ExtSns 2 ─ gears ─ ThSns 2 ─ Nozzle 2
+Roll 3 ─ Entry 3 ─[gear]─ Encoder 3 ─ Tube 3 ─ ExtSns 3 ─ gears ─ ThSns 3 ─ Nozzle 3
+Roll 4 ─ Entry 4 ─[gear]─ Encoder 4 ─ Tube 4 ─ ExtSns 4 ─ gears ─ ThSns 4 ─ Nozzle 4
+Roll 5 ─ Entry 5 ─[gear]─ Encoder 5 ─ Tube 5 ─ ExtSns 5 ─ gears ─ ThSns 5 ─ Nozzle 5
+       └─ always live ─┘ └ always live ┘        └─ per toolhead, always live ─┘
+
+  lane pitch = the selector path spacing: 24.69mm measured on this machine
+               (T0 0.00, T1 24.69, T2 49.38, T3 74.07, T4 98.76, T5 123.45)
 ```
 
-**Why it is built this way.** A shared encoder can only measure the path the
-carriage is parked at. A locked one measures its path all the time, which is
-what makes fast loads and unloads safe to run and what gives jam and break
-detection *during a print*, when the drive is disengaged and the carriage is
-somewhere else entirely.
+`[gear]` marks where the carriage engages, and the encoder sits **immediately
+after it**: `SA_PARK` drives forward by `encoder_to_gear_distance` to reach the
+encoder, then retracts until it goes quiet (`sa_sequences.py:302-311`).
 
-**What its position buys.** Sitting after the gear, each encoder sees the tail
-of its own roll pass by. That edge -- the encoder going quiet while the
-extruder is still pulling -- is a *measured* mid-tube datum, and what remains
-after it is `bowden_length_N` plus the toolhead's own fixed run. Paired with
-the entry sensor it also separates the two cases that look identical from the
-extruder's side: entry clear means the roll ended, entry still triggered means
-a jam or a break. See `docs/RUNOUT_MIDPRINT.md`.
+**Why it is built this way.** A shared encoder could only ever measure the lane
+the carriage happens to be parked at. A locked one measures its lane all the
+time — which is what makes fast loads and unloads safe to run, and what gives
+jam and break detection *during a print*, when the drive is disengaged and the
+carriage is somewhere else entirely.
+
+**What the position buys.** Sitting after the gear, each encoder sees the tail
+of its own roll pass by. That edge — the encoder going quiet while the extruder
+is still pulling — is a *measured* mid-tube datum, and what remains after it is
+`bowden_length_N` plus the toolhead's own fixed run. Paired with the entry
+sensor it also separates the two cases that look identical from the extruder's
+side: entry clear means the roll ended, entry still triggered means a jam or a
+break. See `docs/RUNOUT_MIDPRINT.md`.
 
 ### Components
 | Component | Klipper Object | Role |
