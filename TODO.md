@@ -59,19 +59,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 - [ ] **Mid-print runout is designed but not built** — `docs/RUNOUT_MIDPRINT.md`.
       Today a roll running out mid-print sets the path `empty` and wipes the
       profile after 10s (`autoloader.py:636-645`) while the print carries on
-      consuming the ~1400mm still in the tube. Designed: a `low` state that
-      keeps the profile, a distance budget, a pause with a reserve, a purge to
-      the extruder sensor to pin the tail, then reload and
+      consuming the ~1400mm still in the tube. Designed: a `low` flag that
+      keeps the profile, a budget clocked off **the encoder going quiet** (the
+      tail passing it is measured, not estimated), a pause with a reserve, a
+      purge to the extruder sensor to pin the tail, then reload and
       `purge = remaining + runout_purge_extra`.
       **This is what stops runouts producing the state `RECOVERY.md` exists
-      for.** Three known traps are written up: the profile wipe fires while
-      paused because `_is_printing()` reads False; the budget reserves an
-      unmodelled entry->gate distance on top of the 50mm; `sensor_to_gear` is
-      the safety margin and is not a parameter.
-      *Blocked on one physical answer:* do the six per-path encoder wheels stay
-      on the filament when the carriage is at another path? The counting
-      callback is always live (`sa_encoder.py:46`), so if they do, the budget
-      is measured rather than estimated and the entry->gate unknown disappears.
+      for.** Two traps written up: the profile wipe fires while paused because
+      `_is_printing()` reads False, so `low` must be excluded unconditionally;
+      and net consumption must come from the extruder, never the encoder —
+      direction is told, not sensed, so every retraction would count as feed.
+      *Blocked on one measurement:* `sensor_to_gear`, the gap that keeps the
+      tail inside the gears. It is the last unmeasured distance in the design
+      and nothing currently holds it.
       *Done when:* a real mid-print runout warns, pauses with the tail still
       short of the gears, swaps and resumes with no colour carry-over.
 

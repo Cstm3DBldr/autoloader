@@ -22,22 +22,28 @@ which is exactly what the reload needs to pick a temperature.
 ## The sequence
 
 ```
-entry clears
-  └─► LOW: flag it, KEEP the profile, start the budget
-        └─► keep printing until the budget is spent
-              └─► PAUSE  ── reserve left: 50mm + sensor-to-gear
-                    └─► go to purge position
-                          └─► purge until the EXTRUDER SENSOR CLEARS   ◄── datum
-                                └─► entry sensor?
-                                      ├─ triggered ──► park, normal load,
-                                      │                purge remaining + 50
-                                      │                    └─► prompt: clean /
-                                      │                        purge / resume /
-                                      │                        cancel
-                                      └─ clear ─────► HOLD. Arm the reload on
-                                                      the sensor edge. Filament
-                                                      goes in, load starts
-                                                      immediately.
+entry sensor clears
+  └─► LOW: flag it on both UIs, KEEP the profile. Warning only.
+        └─► keep printing
+              └─► ENCODER GOES QUIET while the extruder is still pulling
+                    │        the tail has passed this path's encoder -- MEASURED
+                    │        (entry still triggered here = jam or break, not a
+                    │         runout: different event, do not run this routine)
+                    └─► budget = bowden_length_N, spend it minus the reserve
+                          └─► PAUSE  ── reserve left: 50mm + sensor_to_gear
+                                └─► go to purge position
+                                      └─► purge until the EXTRUDER SENSOR
+                                          CLEARS -- MEASURED, tail pinned
+                                            └─► entry sensor?
+                                                  ├─ triggered ─► park, normal
+                                                  │   load, purge remaining + 50
+                                                  │     └─► prompt: clean /
+                                                  │         purge / resume /
+                                                  │         cancel
+                                                  └─ clear ────► HOLD. Arm the
+                                                      reload on the sensor edge.
+                                                      Filament goes in, the load
+                                                      starts immediately.
 ```
 
 ### Why purge to the sensor rather than load behind the old filament
@@ -55,7 +61,7 @@ It also means the new tip meets a **clean forward-pushed end**, not a break —
 which is the one failure in `RECOVERY.md`'s table that no sensor can catch,
 because a tip wedging alongside a jagged break reads as normal motion.
 
-## The three things that decide whether this works
+## The things that decide whether this works
 
 ### 1. The pause must not let the monitor eat the profile
 
@@ -69,19 +75,44 @@ So `low` must be excluded from that branch **unconditionally**, not gated on
 the print state. Gating on `_is_printing()` is the obvious fix and it is the
 wrong one.
 
-### 2. The budget reserves more than 50mm, and nothing says how much
+### 2. ~~The budget reserves more than 50mm~~ — SOLVED by where the encoder sits
 
-"Tube length minus 50" reserves `(entry sensor → gate) + 50`, not 50. The tail
-starts *at the entry sensor* and has to cross that segment before it even
-enters the Bowden.
+**Confirmed 2026-09-11: the encoders are locked to their paths and cannot be
+shared.** That is the reason the machine is built this way — fast loads, fast
+unloads, and jam/break detection — and it removes this problem rather than
+mitigating it.
 
-That segment is **not modelled anywhere** — it is the run from each spool
-position to the carriage, and it differs per path. The error is in the safe
-direction (pause earlier, never later) but it is paid for twice: filament left
-unused, and a proportionally longer purge-to-sensor into the bucket. If it is
-300mm, we pause with 350mm still in the tube and purge all of it.
+Each encoder sits **downstream of the drive gear** (`SA_PARK` drives forward by
+`encoder_to_gear_distance` to reach it, then retracts until it goes quiet,
+`sa_sequences.py:302-311`). So the tail of a finished roll **passes its own
+encoder on the way to the toolhead**, and the encoder going quiet while the
+extruder is still pulling is a measured event.
 
-### 3. `sensor_to_gear` is the safety margin, and nothing holds that number either
+That is a mid-tube datum nobody has to estimate:
+
+```
+entry sensor clears      ── roll ended. Rough warning only; the distance from
+                            here to the gate is not modelled and no longer
+                            needs to be.
+      ↓
+ENCODER GOES QUIET       ── MEASURED. The tail has passed the encoder.
+                            Remaining = bowden_length_N + sensor_to_gear
+                                        + nozzle_distance
+      ↓
+spend bowden_length_N minus the reserve, then PAUSE
+      ↓
+purge until the EXTRUDER SENSOR CLEARS   ── MEASURED again. Tail pinned.
+                            Remaining = sensor_to_gear + nozzle_distance
+```
+
+Two measured datums and no unmodelled term. `bowden_length_N` is already
+calibrated per path (1359–1517mm) and is already stored in that same encoder's
+counts, so the budget and the measurement share one scale.
+
+**Trigger the budget on the encoder going quiet, not on the entry sensor
+clearing.** The entry sensor is the warning; the encoder is the clock.
+
+### 3. `sensor_to_gear` is the safety margin, and nothing holds that number
 
 The purge-to-clear must stop **on the sensor edge**. What is left after it is
 `sensor_to_gear + nozzle_distance`, and only the first of those keeps the tail
@@ -90,30 +121,30 @@ nothing in the machine can move it — that is `RECOVERY.md`, needing an
 operator and a hot nozzle.
 
 `nozzle_distance` is 50 and `fill_nozzle_length` is 50. `sensor_to_gear` is
-not a parameter.
+not a parameter. It is now the only unmeasured distance left in this design.
 
-## The encoder may delete problem 2 entirely
+## What the encoder can and cannot be asked
 
-There are **six independent encoders**, one per path, each with its own pin
-and its own calibrated `mm_per_pulse` (`hardware.cfg:109-131`). And
-`register_buttons` is called once in `__init__` (`sa_encoder.py:46`), so the
-counting callback is **always live** — every pulse accumulates whatever the
-machine is doing, including mid-print with the drive disengaged.
+The counting callback is registered once at init (`sa_encoder.py:46`) and is
+live whatever the machine is doing. But `_pulse_callback` adds
+`mm_per_pulse * self._direction`, and `set_direction()` only *tells* it which
+way to count — a single-channel optical encoder cannot sense direction.
 
-CLAUDE.md's architecture diagram still describes "Drive Encoder (single, on
-drive gear output shaft)". The hardware says six. One of those is stale.
+**So the pulse COUNT is always right and the accumulated SIGN is only right if
+something set it.** That divides the work cleanly:
 
-**If each encoder wheel rides its own path's filament permanently, then the
-budget is not arithmetic at all — it is measured**, entry→gate stops mattering,
-and the countdown shown in the UI is a reading rather than an estimate.
+| Question | Ask | Why |
+|---|---|---|
+| How much filament has the print used? | the **extruder's own position** | Signed and exact. The encoder cannot answer: with direction pinned forward every retraction counts as feed, so a retract/unretract pair adds ~2× the retract distance. At PrusaSlicer's default on thousands of retractions that is thousands of phantom mm — more than the whole tube. |
+| Has the filament stopped moving? | the **encoder** | Direction-agnostic. With direction pinned, `get_distance()` accumulates *total absolute motion*, which is exactly the quantity to compare against the extruder's total absolute motion. |
+| Is this a runout, or a jam or break? | the **entry sensor** | Encoder quiet while the extruder pulls means the filament is not moving. Entry clear → the roll ended, expected, run this routine. Entry still triggered → filament is present and not moving, which is a jam or a break, and is a different event. |
 
-Two things to confirm before relying on it, one physical and one in code:
+That last row is the jam/break detection the locked encoders exist for, and it
+needs no new hardware — only the comparison.
 
-- does the wheel stay in contact when the carriage is parked at another path?
-- `set_direction()` only *tells* the encoder which way to count
-  (`sa_encoder.py:98`) — a single-channel optical encoder cannot sense
-  direction. Anything counting during a print has to own that sign, and a
-  retraction would count as feed.
+Do **not** try to track net consumption by flipping `set_direction()` per move.
+It would have to follow the extruder thousands of times a second and would lag
+the motion it is trying to describe.
 
 ## The waiting reload — use the queue that already exists
 
@@ -141,6 +172,8 @@ path rather than racing it.
   takes to come out clean is a material property. The error is asymmetric —
   under-purge puts old colour in the print, over-purge costs a few mm into the
   bucket. Round up.
+- **`sensor_to_gear` needs measuring.** It is the last unmeasured distance in
+  the design and it is the one that keeps the tail inside the gears.
 - What the hotend does while the machine holds paused waiting for a spool.
   This design deliberately parks a stationary remnant in a hot nozzle, so a
   cooldown-and-reheat policy is now required rather than optional.

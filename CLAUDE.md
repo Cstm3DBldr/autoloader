@@ -442,27 +442,52 @@ KlipperScreen panels are NOT symlinked — copy directly to `~/KlipperScreen/pan
 
 ERCF V2 mechanical concept, adapted for fixed multi-toolhead use:
 
+One thing moves; everything else is per path and fixed. The selector carries
+ONE drive gear to whichever path needs driving. The encoders do NOT ride with
+it -- each path owns its own, permanently on its own filament, and each sits
+**downstream of the gear**: `SA_PARK` drives forward by
+`encoder_to_gear_distance` to reach the encoder, then retracts until it goes
+quiet (`sa_sequences.py:302-311`).
+
 ```
-[Filament Roll 0]  [Roll 1]  ...  [Roll N]
-        |               |                |
-   Entry Sensor 0  Entry Sensor 1  Entry Sensor N
-        |               |                |
-        └───────────────┴────────────────┘
-                        |
-                  Selector Motor
-                  (positions carriage)
-                        |
-                  Drive Gear ←── Engage Servo ──► ENGAGED (driven)
-                        |                          DISENGAGED (neutral)
-                  Drive Encoder
-                  (single, on drive gear output shaft)
-                        |
-               PTFE Tube (selected path)
-                        |
-               Extruder Motor (toolhead)
-                        |
-               Hotend + Nozzle
+ [Roll 0]         [Roll 1]         ...      [Roll N]
+     |                |                         |
+Entry Sensor 0   Entry Sensor 1            Entry Sensor N
+     |                |                         |
+     +----------------+-------------------------+
+                      |
+        Drive Gear on the selector carriage       -- the ONLY moving part;
+        (Selector Motor positions it;                serves one path at a time
+         Engage Servo grips or releases)
+                      |
+     +----------------+-------------------------+
+     |                |                         |
+ Encoder 0        Encoder 1                 Encoder N    -- fixed, one per path,
+     |                |                         |           always counting
+ PTFE Tube 0     PTFE Tube 1               PTFE Tube N
+     |                |                         |
+ Extruder Sensor N    (toolhead entry, before the gears)
+     |
+ Extruder Motor + gears
+     |
+ Toolhead Sensor N    (past the gears, before the nozzle)
+     |
+ Hotend + Nozzle
 ```
+
+**Why it is built this way.** A shared encoder can only measure the path the
+carriage is parked at. A locked one measures its path all the time, which is
+what makes fast loads and unloads safe to run and what gives jam and break
+detection *during a print*, when the drive is disengaged and the carriage is
+somewhere else entirely.
+
+**What its position buys.** Sitting after the gear, each encoder sees the tail
+of its own roll pass by. That edge -- the encoder going quiet while the
+extruder is still pulling -- is a *measured* mid-tube datum, and what remains
+after it is `bowden_length_N` plus the toolhead's own fixed run. Paired with
+the entry sensor it also separates the two cases that look identical from the
+extruder's side: entry clear means the roll ended, entry still triggered means
+a jam or a break. See `docs/RUNOUT_MIDPRINT.md`.
 
 ### Components
 | Component | Klipper Object | Role |
@@ -470,7 +495,7 @@ ERCF V2 mechanical concept, adapted for fixed multi-toolhead use:
 | Selector motor | `manual_stepper sa_selector` (M2) | Positions drive carriage to active path |
 | Drive motor | `manual_stepper sa_drive` (M1) | Moves filament through selected path |
 | Engage servo | `servo sa_engage` | Engages (driven) or releases (neutral) drive gear |
-| Drive encoder | `sa_encoder` | Single encoder on drive gear shaft; measures all movement |
+| Path encoders | `sa_encoder 0..N` | **One per path, locked to that path and never shared.** Six independent channels, each with its own pin and its own calibrated `mm_per_pulse`. They are the reason loads and unloads can run fast, and they give jam and break detection during a print -- the counting callback is registered once at init (`sa_encoder.py:46`) and is live whatever the machine is doing, including with the drive disengaged. **A single-channel optical encoder cannot sense direction:** `_pulse_callback` adds `mm_per_pulse * _direction` and `set_direction()` only *tells* it which way to count, so the pulse COUNT is always right and the accumulated SIGN is only right if something set it. See `docs/RUNOUT_MIDPRINT.md` for what that allows and what it forbids |
 | Entry sensors | `filament_switch_sensor entry_sensor_N` | Per-path; fixed position at roll end |
 
 ### Engage vs Neutral
