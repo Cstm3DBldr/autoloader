@@ -133,6 +133,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       dropping out of the guide, with step 12's grid showing millimetres and
       its three-button prompt readable.
 
+- [ ] **Mid-print runout stage 1 is built but the `low` branch is UNVERIFIED.**
+      What has been exercised is only the recovery half: `SA_SET_STATE TOOL=1
+      STATE=low` was accepted and the monitor returned the path to `loaded`
+      within a second because its entry sensor still read FILAMENT. The branch
+      that CREATES the state has never run, because it needs
+      `print_stats.state == 'printing'` -- a real print job, not
+      `idle_timeout`, which reads "Printing" for any gcode and is the bug this
+      path works around. Commit 91f15b2 said "verified on the machine"; that
+      claim covered the recovery branch only and Mike caught it.
+      *Done when:* a print is running, the filament is pulled clear of a
+      loaded path's entry sensor, and after the debounce the path reads `low`
+      with its profile intact -- then feeding it back returns it to `loaded`.
+
 - [ ] **Mid-print runout is designed but not built** — `docs/RUNOUT_MIDPRINT.md`.
       Today a roll running out mid-print sets the path `empty` and wipes the
       profile after 10s (`autoloader.py:636-645`) while the print carries on
