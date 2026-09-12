@@ -268,17 +268,20 @@ class Panel(ScreenPanel):
         self._set_status_cell("drive", "Engaged" if engaged else "Neutral",
                               _OK if engaged else None)
 
-        # A READING, not a setting. It used to print feed_speed, which is
-        # the same number whatever the machine is doing. Mike: "cut feed out
-        # of the drive speed" and "the drive speed should update based on
-        # what the process is calling for". `drive_speed` is written by
-        # SAMotion on every drive command and zeroed when the motor lets go,
-        # so a blast reads 160, a creep 50, and a stopped machine says so.
-        live = sa.get("drive_speed")
-        if isinstance(live, (int, float)) and live > 0:
-            self._set_status_cell("speed", "%.0f mm/s" % live, _OK)
+        # One line: the step-and-check rate, and the calibrated ceiling a
+        # blast actually runs at. Mike: "make it feed 50 at 160mm/s".
+        blast = sa.get("encoder_max_speed")
+        feed = sa.get("feed_speed")
+        if (isinstance(feed, (int, float))
+                and isinstance(blast, (int, float)) and blast > 0):
+            self._set_status_cell("speed",
+                                  "feed %.0f at %.0fmm/s" % (feed, blast))
+        elif isinstance(feed, (int, float)):
+            # No sweep has run, so there is no ceiling to quote, and saying so
+            # beats showing the feed rate as though it were a measured one.
+            self._set_status_cell("speed", "feed %.0f, uncal" % feed, _WAIT)
         else:
-            self._set_status_cell("speed", "Stopped")
+            self._set_status_cell("speed", "\u2014")
 
         text, colour = self._process_state(sa)
         self._set_status_cell("process", text, colour)

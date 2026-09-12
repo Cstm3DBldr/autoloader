@@ -58,6 +58,10 @@ def _hex_to_rgb01(hex_c):
     return (int(h[0:2], 16)/255.0, int(h[2:4], 16)/255.0, int(h[4:6], 16)/255.0)
 
 
+def _luminance(r, g, b):
+    return 0.2126*r + 0.7152*g + 0.0722*b
+
+
 def _draw_color_swatch(widget, cr, r, g, b):
     w = widget.get_allocated_width()
     h = widget.get_allocated_height()
@@ -599,19 +603,13 @@ class Panel(ScreenPanel):
             r, g, b = _hex_to_rgb01(hex_c)
             da.connect("draw", lambda w, cr, _r=r, _g=g, _b=b: _draw_color_swatch(w, cr, _r, _g, _b))
 
-        # ALWAYS white. The contrast calculation that used to live here --
-        # luminance of the filament colour, then black text above 0.45 -- is
-        # the right answer to a question this label does not ask. The name
-        # sits BELOW the swatch, on the panel's own dark background, not on
-        # the colour. So a pale filament got #212121 text on dark blue and
-        # vanished: Cotton White, Ash Grey, Pastel Peach and half the
-        # Panchroma range were unreadable. Mike: "the color titles still have
-        # a random color". The swatch above is what carries the colour; the
-        # label only has to be legible.
+        r, g, b = _hex_to_rgb01(hex_c)
+        lum = _luminance(r, g, b)
+        fg  = "#FFFFFF" if lum < 0.45 else "#212121"
         name_lbl = Gtk.Label()
         name_lbl.set_ellipsize(3)
         name_lbl.set_max_width_chars(9)
-        name_lbl.set_markup('<span font_size="x-small" foreground="#FFFFFF">%s</span>' % name)
+        name_lbl.set_markup('<span font_size="x-small" foreground="%s">%s</span>' % (fg, name))
         name_lbl.set_halign(Gtk.Align.CENTER)
 
         vbox.pack_start(da,       True,  True,  0)
