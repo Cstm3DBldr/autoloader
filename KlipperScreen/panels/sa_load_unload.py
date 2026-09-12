@@ -241,15 +241,7 @@ class Panel(ScreenPanel):
         self._save_btn.set_sensitive(is_color and has_color)
 
         if is_path:
-            state = self._effective_state(self._sel_path) if has_path else 'unknown'
-            # LOAD: needs profile, and not already fully loaded
-            self._load_btn.set_sensitive(has_path and has_prof and state != 'loaded')
-            # UNLOAD: needs path with filament present (not empty)
-            self._unload_btn.set_sensitive(has_path and state != 'empty')
-            # SET MATERIAL: always available when a path is selected
-            self._setmat_btn.set_sensitive(has_path)
-            # CLEAR PROFILE: only when path is empty (no filament to protect)
-            self._clear_btn.set_sensitive(has_path and has_prof and state == 'empty')
+            self._apply_action_states()
             # conf_btn never shown on path page
             self._conf_btn.set_visible(False)
         elif is_color:
@@ -260,6 +252,42 @@ class Panel(ScreenPanel):
             self._conf_btn.set_visible(True)
             self._conf_btn.set_label("Next \u2192")
             self._conf_btn.set_sensitive(True)
+
+    def _apply_action_states(self):
+        """Decide LOAD / UNLOAD / MATERIAL / CLEAR from the selected path.
+
+        ONE place, because this used to be written twice -- in _show_page and
+        again at the end of _populate_path_page -- and two copies of a rule
+        this fiddly is two chances to disagree about what a path can do.
+
+        It also marks the ARMED action. LOAD and UNLOAD are mutually exclusive
+        by construction (a path is either loaded or it is not), so exactly one
+        of them is the thing to press; saying so with a class is what makes the
+        pair read as a toggle rather than as two live buttons. Mike's words:
+        "they currently all just look like active buttons".
+        """
+        has_path = self._sel_path is not None
+        has_prof = self._has_profile(self._sel_path)
+        state    = self._effective_state(self._sel_path) if has_path else 'unknown'
+
+        can_load   = bool(has_path and has_prof and state != 'loaded')
+        can_unload = bool(has_path and state != 'empty')
+
+        self._load_btn.set_sensitive(can_load)
+        self._unload_btn.set_sensitive(can_unload)
+        # SET MATERIAL: always available when a path is selected
+        self._setmat_btn.set_sensitive(has_path)
+        # CLEAR PROFILE: only when path is empty (no filament to protect)
+        self._clear_btn.set_sensitive(bool(has_path and has_prof
+                                           and state == 'empty'))
+
+        for btn, armed in ((self._load_btn, can_load),
+                           (self._unload_btn, can_unload)):
+            ctx = btn.get_style_context()
+            if armed and not (can_load and can_unload):
+                ctx.add_class('sa-btn-armed')
+            else:
+                ctx.remove_class('sa-btn-armed')
 
     def _go_back(self, widget=None):
         idx = self._page_index(self._cur)
@@ -337,13 +365,7 @@ class Panel(ScreenPanel):
         self._path_grid.show_all()
         # Refresh button states after path grid rebuild
         if self._cur == 'path':
-            has_path = self._sel_path is not None
-            has_prof = self._has_profile(self._sel_path)
-            state    = self._effective_state(self._sel_path) if has_path else 'unknown'
-            self._load_btn.set_sensitive(has_path and has_prof and state != 'loaded')
-            self._unload_btn.set_sensitive(has_path and state != 'empty')
-            self._setmat_btn.set_sensitive(has_path)
-            self._clear_btn.set_sensitive(has_path and has_prof and state == 'empty')
+            self._apply_action_states()
             self._conf_btn.set_sensitive(False)
             self._conf_btn.set_visible(False)
 

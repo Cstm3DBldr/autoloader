@@ -37,7 +37,6 @@ class Panel(ScreenPanel):
         self._cal_state = ''
         self._cal_path  = -1
         self._num_paths = 6
-        self._mode      = 'load'   # which verb the grid performs
         self._sel_path  = None     # nothing acts until a head is picked
         self._path_btns = {}
         self._last_sa   = {}
@@ -89,55 +88,55 @@ class Panel(ScreenPanel):
 
         outer.pack_start(Gtk.Separator(), False, False, 0)
 
-        # -- Immediate actions. PURGE and LOAD SAME are mutually exclusive by
-        # cal_state, as they already were, so this row always shows three.
+        # -- The heads, directly under the title. Mike's layout call: "id
+        # rather move the tool heads up to below the title and put the 6
+        # buttons at the bottom, with the active toolhead as the one selected
+        # by default then the all the buttons are active at face value".
+        #
+        # The old shape was select-a-head, pick a verb with a toggle, then
+        # press a confirm that named the pair. Three taps, and the state lived
+        # in two widgets that had to agree. Now the head is a noun and every
+        # button is a verb that acts on it immediately.
+        # No scroller. Six heads in two rows of three fit a 480px panel once
+        # the tile puts its icon BESIDE the T-number instead of above it --
+        # Mike: "make it (toolhead icon) T3, so they at next to each other
+        # rather then stacked ... should give us the height we need to not
+        # need a scroll window". A scrollbar on a six-item grid is a control
+        # that exists only because the items were the wrong shape.
+        self._path_grid = Gtk.Grid(row_spacing=gap, column_spacing=gap,
+                                   row_homogeneous=True,
+                                   column_homogeneous=True)
+        outer.pack_start(self._path_grid, True, True, 0)
+
+        # -- Six buttons, two rows of three, locked at the bottom.
+        #    PURGE and LOAD SAME are mutually exclusive by cal_state and share
+        #    the first slot, as they always did.
         row1 = Gtk.Box(spacing=gap)
         self._more_btn = self._make_action_btn(
-            "\u21ba  PURGE 60mm", _GREEN, self._do_more)
+            "↺  PURGE 60mm", _GREEN, self._do_more)
         self._load_same_btn = self._make_action_btn(
-            "\u25b6  LOAD SAME", _GREEN, self._do_load_same)
-        self._park_btn = self._make_action_btn("\u24c5  PARK", None, self._do_park)
+            "▶  LOAD SAME", _GREEN, self._do_load_same)
+        self._park_btn = self._make_action_btn("Ⓟ  PARK", None, self._do_park)
         self._clean_btn = self._make_action_btn(
-            "\u2726  CLEAN NOZZLE", None, self._do_clean)
+            "✦  CLEAN NOZZLE", None, self._do_clean)
         self._more_btn.set_no_show_all(True)
         self._load_same_btn.set_no_show_all(True)
         for b in (self._more_btn, self._load_same_btn, self._park_btn,
                   self._clean_btn):
-            b.set_size_request(-1, int(self._touch() * 1.5))
+            b.set_size_request(-1, int(self._touch() * 1.35))
             row1.pack_start(b, True, True, 0)
         outer.pack_start(row1, False, False, 0)
 
-        # -- Which verb the grid performs.
-        tog = Gtk.Box(spacing=0)
-        self._load_tog   = _sbs.make("\u25b6  LOAD",   "sa-btn")
-        self._unload_tog = _sbs.make("\u25c0  UNLOAD", "sa-btn-alt")
-        self._load_tog.connect("clicked",   self._set_mode, 'load')
-        self._unload_tog.connect("clicked", self._set_mode, 'unload')
-        for b in (self._load_tog, self._unload_tog):
-            b.set_size_request(-1, int(self._touch() * 1.2))
-            tog.pack_start(b, True, True, 0)
-        outer.pack_start(tog, False, False, 0)
-
-        # -- One grid of heads, three wide, scrolling past what fits.
-        scroll = self._gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self._path_grid = Gtk.Grid(row_spacing=gap, column_spacing=gap,
-                                   row_homogeneous=True,
-                                   column_homogeneous=True)
-        scroll.add(self._path_grid)
-        outer.pack_start(scroll, True, True, 0)
-
-        # -- Exit and confirm, locked at the bottom.
         row2 = Gtk.Box(spacing=gap)
-        self._exit_btn = self._make_action_btn("\u2715  EXIT", _RED, self._do_exit)
-        self._exit_btn.set_size_request(int(self._gtk.font_size * 10),
-                                        int(self._touch() * 1.35))
-        self._confirm_btn = _sbs.make("SELECT A PATH", "sa-btn")
-        self._confirm_btn.set_size_request(-1, int(self._touch() * 1.35))
-        self._confirm_btn.set_sensitive(False)
-        self._confirm_btn.connect("clicked", self._do_confirm)
-        row2.pack_start(self._exit_btn,    False, False, 0)
-        row2.pack_start(self._confirm_btn, True,  True,  0)
+        self._load_btn   = _sbs.make("▶  LOAD",   "sa-btn")
+        self._unload_btn = _sbs.make("◀  UNLOAD", "sa-btn")
+        self._exit_btn   = self._make_action_btn("✕  EXIT", _RED,
+                                                 self._do_exit)
+        self._load_btn.connect("clicked",   self._do_verb, 'load')
+        self._unload_btn.connect("clicked", self._do_verb, 'unload')
+        for b in (self._load_btn, self._unload_btn, self._exit_btn):
+            b.set_size_request(-1, int(self._touch() * 1.35))
+            row2.pack_start(b, True, True, 0)
         outer.pack_start(row2, False, False, 0)
 
         self.content.pack_start(outer, True, True, 0)
@@ -154,18 +153,6 @@ class Panel(ScreenPanel):
 
     # -- Mode and selection ----------------------------------------------------
 
-    def _set_mode(self, widget, mode):
-        """Switch the grid between loading and unloading."""
-        if mode == self._mode:
-            return
-        self._mode = mode
-        for btn, m in ((self._load_tog, 'load'), (self._unload_tog, 'unload')):
-            ctx = btn.get_style_context()
-            ctx.remove_class('sa-btn')
-            ctx.remove_class('sa-btn-alt')
-            ctx.add_class('sa-btn' if m == mode else 'sa-btn-alt')
-        self._update_confirm()
-
     def _select_path(self, widget, path):
         self._sel_path = path
         for i, btn in self._path_btns.items():
@@ -174,26 +161,43 @@ class Panel(ScreenPanel):
                 ctx.add_class('path-selected')
             else:
                 ctx.remove_class('path-selected')
-        self._update_confirm()
+        self._update_actions()
 
-    def _update_confirm(self):
-        """The confirm names its action and target, and is dead until picked.
+    def _path_state(self, path):
+        states = (self._last_sa or {}).get("path_states", [])
+        if path is None or path >= len(states):
+            return 'unknown'
+        return states[path] or 'unknown'
 
-        Naming the target is the safety: the label says exactly what the tap
-        will do, so a mis-selected path is visible before it is acted on.
+    def _update_actions(self):
+        """LOAD and UNLOAD, decided by what the selected head actually is.
+
+        There is no confirm step any more, so these two ARE the commitment --
+        which makes it matter that the impossible one cannot be pressed. They
+        are mutually exclusive by construction (a head is loaded or it is
+        not), so exactly one is armed, and `sa-btn-armed` plus the :disabled
+        opacity rule is what makes the pair read as one toggle instead of two
+        live buttons.
         """
-        if self._sel_path is None:
-            self._confirm_btn.set_label("SELECT A PATH")
-            self._confirm_btn.set_sensitive(False)
-            return
-        verb = "LOAD" if self._mode == 'load' else "UNLOAD"
-        self._confirm_btn.set_label("\u2713  %s T%d" % (verb, self._sel_path))
-        self._confirm_btn.set_sensitive(True)
+        state      = self._path_state(self._sel_path)
+        has_path   = self._sel_path is not None
+        can_load   = bool(has_path and state != 'loaded')
+        can_unload = bool(has_path and state != 'empty')
 
-    def _do_confirm(self, widget=None):
+        self._load_btn.set_sensitive(can_load)
+        self._unload_btn.set_sensitive(can_unload)
+        for btn, armed in ((self._load_btn, can_load),
+                           (self._unload_btn, can_unload)):
+            ctx = btn.get_style_context()
+            if armed and not (can_load and can_unload):
+                ctx.add_class('sa-btn-armed')
+            else:
+                ctx.remove_class('sa-btn-armed')
+
+    def _do_verb(self, widget, verb):
         if self._sel_path is None:
             return
-        self._do_path_action(None, self._mode, self._sel_path)
+        self._do_path_action(None, verb, self._sel_path)
 
     def _do_clean(self, widget=None):
         # A direct macro, not a calibration response like the others.
@@ -218,19 +222,22 @@ class Panel(ScreenPanel):
         for i in range(num):
             btn = Gtk.Button()
             btn.get_style_context().add_class("sa-btn-alt")
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
             box.set_valign(Gtk.Align.CENTER)
 
+            # Icon and number share one line. Stacked, they cost a tile the
+            # height that made the grid scroll.
+            head = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
             try:
                 ic = int(self._gtk.font_size * 1.6)
-                box.pack_start(self._gtk.Image("toolhead", ic, ic),
-                               False, False, 0)
+                head.pack_start(self._gtk.Image("toolhead", ic, ic),
+                                False, False, 0)
             except Exception:
                 pass
-
             t = Gtk.Label()
             t.set_markup('<b><span font_size="large">T%d</span></b>' % i)
-            box.pack_start(t, False, False, 0)
+            head.pack_start(t, False, False, 0)
+            box.pack_start(head, False, False, 0)
 
             mat  = materials[i] if i < len(materials) and materials[i] else ''
             name = colors[i]    if i < len(colors)    and colors[i]    else ''
@@ -241,14 +248,13 @@ class Panel(ScreenPanel):
             box.pack_start(d, False, False, 0)
 
             btn.add(box)
-            btn.set_size_request(-1, self._touch())
             btn.set_vexpand(True)
             btn.connect("clicked", self._select_path, i)
             self._path_grid.attach(btn, i % 3, i // 3, 1, 1)
             self._path_btns[i] = btn
 
         self._path_grid.show_all()
-        self._update_confirm()
+        self._update_actions()
 
     # ── State update ──────────────────────────────────────────────────────────
 
@@ -257,7 +263,18 @@ class Panel(ScreenPanel):
         self._cal_path  = cal_path
         self._num_paths = num_paths or 6
 
+        # The head this panel is ABOUT is the one to act on, so it arrives
+        # selected rather than asking for a tap that has only one sensible
+        # answer. Mike: "with the active toolhead as the one selected by
+        # default".
+        if cal_path is not None and 0 <= cal_path < self._num_paths:
+            self._sel_path = cal_path
+
         self._build_path_grids(self._num_paths)
+        if self._sel_path is not None and self._sel_path in self._path_btns:
+            self._path_btns[self._sel_path].get_style_context().add_class(
+                'path-selected')
+        self._update_actions()
 
         if cal_state == 'load_purge':
             self._hdr.set_markup(

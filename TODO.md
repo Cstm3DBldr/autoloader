@@ -99,7 +99,21 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
 ## Never verified
 
-- [ ] **Walk the twelve-step chain on KLIPPERSCREEN.** Mainsail is done --
+- [ ] **The status table fits by measurement, not by construction.** `_row_h`
+      predicts the status row, the table header, the button bar and the
+      padding before any of them exists, and each prediction has been wrong
+      once. It is now set from a real allocation log and carries `_FIT_SLACK`,
+      which is a margin rather than a fix. A panel that measured itself after
+      the first allocation and sized the rows from that would not need either.
+      *Done when:* the table fits any head count and font size without a
+      constant that had to be tuned by looking at it.
+
+- [ ] **Walk the twelve-step CALIBRATION GUIDE on KLIPPERSCREEN.** The
+      load/unload side of the touchscreen IS now proved: Mike ran T0-T5
+      through the panels on 2026-09-12, which is what shook out the selection
+      border that never rendered, the toggle that could not change colour, the
+      duplicated swatch and the sizing. The GUIDE is the part still unwalked.
+      Mainsail is done --
       Mike ran every step through it on 2026-09-11, which is what the whole
       day's measurements came out of, so the web side of the chain is proven
       by a full pass rather than by inspection.

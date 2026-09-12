@@ -35,6 +35,16 @@ _TEMP_COLD_COL = '#7E9AB1'
 # logo LEDs then pulse together during a tool change.
 _PULSE_PERIOD_MS = 4000
 
+# Widest encoder reading the column ever has to hold -- '1590.8mm' is
+# eight characters on this machine's longest bowden. FIXED rather than
+# minimum, so the column cannot grow and push its neighbours along.
+_ENC_CHARS = 8
+
+# Headroom kept between the table's natural height and the viewport, so a
+# slightly wider font or a longer label cannot push the last row out of
+# sight. Measured, not guessed: see _row_h.
+_FIT_SLACK = 8
+
 _ROW_CSS = b"""
 .sa-row-active {
     background-color: rgba(28,77,120,1);
@@ -44,6 +54,13 @@ _ROW_CSS = b"""
 .sa-row-stripe { box-shadow: inset 3px 0 0 #4FC3F7; }
 .sa-row-stripe.sa-row-dim { box-shadow: inset 3px 0 0 #2B6D96; }
 .sa-row-error  { box-shadow: inset 3px 0 0 #E8A33D; }
+
+/* The gutter lives INSIDE the cell so a highlighted row paints as one
+   continuous band. It used to be the grid's column-spacing, which is
+   outside every cell's background -- so the highlight came out as a row of
+   separate boxes with gaps between them, sized to each label's own text.
+   Mike: "the selected channel renders terrible". */
+.sa-cell { padding: 0 7px; }
 """
 _row_css_installed = False
 
@@ -71,6 +88,13 @@ def _install_row_css():
 _DOT_ON     = '#388E3C'
 _DOT_OFF    = '#616161'
 _ENC_ACTIVE = '#42A5F5'
+
+# Status-tile semantics: healthy (running OR idle), waiting on a person,
+# and broken. Idle is green on purpose -- it is a state the machine is
+# successfully in, not the absence of one.
+_OK   = '#4CAF50'
+_WAIT = '#E8A33D'
+_ERR  = '#E53935'
 _ENC_IDLE   = '#616161'
 
 
@@ -127,7 +151,17 @@ class Panel(ScreenPanel):
         self.content.pack_start(self._build_status_row(), False, False, 0)
 
         scroll = self._gtk.ScrolledWindow()
+        self._scroll = scroll
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        # Overlay: the scrollbar draws OVER the content and fades out when
+        # idle, instead of reserving a strip of width for a trough that is
+        # usually empty. AUTOMATIC still means it appears when there really
+        # is more table than viewport -- 9 heads on this screen -- so this
+        # removes the furniture without removing the capability.
+        try:
+            scroll.set_overlay_scrolling(True)
+        except Exception:
+            pass                    # GTK < 3.16
 
         # Horizontally centred, vertically START. It used to centre both ways,
         # which reads well while the table is shorter than the viewport and
@@ -140,7 +174,8 @@ class Panel(ScreenPanel):
         # Top-aligned never clips, and the cost is a short table sitting high
         # rather than centred -- which is the trade the other way round.
         center_box = Gtk.Box(halign=Gtk.Align.CENTER, valign=Gtk.Align.START)
-        self._grid = Gtk.Grid(row_spacing=2, column_spacing=14, margin=8,
+        self._grid = Gtk.Grid(row_spacing=0, column_spacing=0, margin_top=2,
+                              margin_bottom=8, margin_start=8, margin_end=8,
                               row_homogeneous=True)
         self._grid.set_halign(Gtk.Align.CENTER)
         self._build_header()
@@ -172,18 +207,30 @@ class Panel(ScreenPanel):
         return ["#", "STATE", "TEMP", "EN", "EX", "TH",
                 "ENCODER", "MATERIAL", "COLOR"]
 
+    # ACTIVE TOOL used to sit third. The row highlight says the same thing
+    # more directly now -- Mike: "active tool feels redundant now with the
+    # selection highlight we have" -- so the slot carries the one number
+    # nothing else on this screen shows: how fast this machine will actually
+    # move filament. encoder_max_speed is the calibrated ceiling a blast runs
+    # at; feed_speed is the step-and-check rate underneath it.
     _STATUS_ITEMS = (("selector", "SELECTOR"),
                      ("drive",    "DRIVE GEAR"),
-                     ("active",   "ACTIVE TOOL"),
-                     ("cal",      "CALIBRATION"))
+                     ("speed",    "DRIVE SPEED"),
+                     ("process",  "ACTIVE PROCESS"))
 
     def _build_status_row(self):
-        """Four labelled readings across the top, as the web panel has."""
+        """Four labelled readings across the top. TWO lines, not three.
+
+        The third line -- a grey sub under each value -- cost a whole data row
+        of height for information that either repeated the value or did not
+        need saying. Mike: "if we remove the third row from the status items
+        it would allow 6 natively". Everything worth showing now fits on the
+        value line.
+        """
         row = Gtk.Grid(column_spacing=self._gap(), row_spacing=0,
-                       margin_start=8, margin_end=8, margin_top=2,
-                       margin_bottom=2, column_homogeneous=True)
+                       margin_start=8, margin_end=8, margin_top=0,
+                       margin_bottom=0, column_homogeneous=True)
         self._status_val = {}
-        self._status_sub = {}
         for col, (key, heading) in enumerate(self._STATUS_ITEMS):
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             cap = Gtk.Label(halign=Gtk.Align.CENTER)
@@ -191,79 +238,118 @@ class Panel(ScreenPanel):
                            % heading)
             val = Gtk.Label(halign=Gtk.Align.CENTER)
             val.set_ellipsize(3)
-            val.set_max_width_chars(14)
-            sub = Gtk.Label(halign=Gtk.Align.CENTER)
-            sub.set_ellipsize(3)
-            sub.set_max_width_chars(14)
-            # An empty label still claims a line of height. On a 480px screen
-            # four of those is most of a table row, so it is hidden until it
-            # has something to say.
-            sub.set_no_show_all(True)
+            val.set_max_width_chars(18)
             box.pack_start(cap, False, False, 0)
             box.pack_start(val, False, False, 0)
-            box.pack_start(sub, False, False, 0)
             self._status_val[key] = val
-            self._status_sub[key] = sub
             row.attach(box, col, 0, 1, 1)
         self._status_row = row
         return row
 
-    def _set_status_cell(self, key, value, sub="", accent=False):
+
+    def _set_status_cell(self, key, value, colour=None):
+        """One value, one colour. The caller decides what the colour means."""
         val = self._status_val.get(key)
         if val is None:
             return
-        colour = "#4CAF50" if accent else "#FFFFFF"
         val.set_markup('<span font="13" weight="bold" foreground="%s">%s</span>'
-                       % (colour, _esc(value)))
-        lbl = self._status_sub[key]
-        if sub:
-            lbl.set_markup('<span font="9" foreground="#9E9E9E">%s</span>'
-                           % _esc(sub))
-            lbl.show()
-        else:
-            lbl.hide()
+                       % (colour or "#FFFFFF", _esc(value)))
+
 
     def _apply_status_row(self, sa):
-        """Fill it from the same fields the web panel reads.
-
-        Every empty case is decided here rather than left to render as a stale
-        number: an unhomed selector has no position, and a machine with no tool
-        mounted has no temperature.
-        """
+        """Fill the four tiles. Every empty case is decided here."""
         path = sa.get("current_path", -1)
         if isinstance(path, int) and path >= 0:
-            pos = sa.get("selector_position")
-            self._set_status_cell(
-                "selector", "T%d" % path,
-                ("%.2f mm" % pos) if isinstance(pos, (int, float)) else "")
+            self._set_status_cell("selector", "T%d" % path)
         else:
-            self._set_status_cell("selector", "Unhomed")
+            self._set_status_cell("selector", "Unhomed", _WAIT)
 
         engaged = bool(sa.get("servo_engaged"))
         self._set_status_cell("drive", "Engaged" if engaged else "Neutral",
-                              accent=engaged)
+                              _OK if engaged else None)
 
-        act = self._active_tool
-        if isinstance(act, int) and act >= 0:
-            t = self._extruder_temp(act)
-            self._set_status_cell(
-                "active", "T%d" % act,
-                ("%.1f °C" % t) if isinstance(t, (int, float)) else "")
+        # One line: the step-and-check rate, and the calibrated ceiling a
+        # blast actually runs at. Mike: "make it feed 50 at 160mm/s".
+        blast = sa.get("encoder_max_speed")
+        feed = sa.get("feed_speed")
+        if (isinstance(feed, (int, float))
+                and isinstance(blast, (int, float)) and blast > 0):
+            self._set_status_cell("speed",
+                                  "feed %.0f at %.0fmm/s" % (feed, blast))
+        elif isinstance(feed, (int, float)):
+            # No sweep has run, so there is no ceiling to quote, and saying so
+            # beats showing the feed rate as though it were a measured one.
+            self._set_status_cell("speed", "feed %.0f, uncal" % feed, _WAIT)
         else:
-            self._set_status_cell("active", "\u2014")
+            self._set_status_cell("speed", "\u2014")
+
+        text, colour = self._process_state(sa)
+        self._set_status_cell("process", text, colour)
+
+    def _process_state(self, sa):
+        """What the machine is doing, and a colour that says how it feels.
+
+        This tile used to say CALIBRATION, which reads as "you are still
+        setting this thing up" -- Mike: "by the time a user is using this
+        display they should be using it and not calibrating". It carries the
+        machine's current activity instead, colour-coded:
+
+            green   running, or idle -- idle is a healthy state the machine is
+                    successfully in, not the absence of one
+            orange  waiting on the operator: a prompt is open and nothing
+                    moves until someone answers it
+            red     Klipper is not ready
+
+        A prompt state is exactly PROMPT_STATES in autoloader.py, load_purge
+        and unload_done. Any other cal_state means a calibration owns the
+        machine and is running rather than waiting -- the same distinction
+        cal_owns_machine() makes on the backend.
+        """
+        try:
+            st = (self._printer.state or "").lower()
+        except Exception:
+            st = ""
+        if st in ("error", "shutdown"):
+            return "Error", _ERR
 
         cal = (sa.get("cal_state") or "").strip()
-        self._set_status_cell("cal", "Running" if cal else "Idle",
-                              sub=cal[:14], accent=bool(cal))
+        if cal:
+            waiting = cal in ("load_purge", "unload_done")
+            return cal, (_WAIT if waiting else _OK)
+
+        try:
+            busy = (self._printer.data.get("idle_timeout") or {}).get("state")
+        except Exception:
+            busy = None
+        if busy == "Printing":
+            return "Running", _OK
+        return "Idle", _OK
+
 
     def _build_header(self):
         for child in self._grid.get_children():
             if self._grid.child_get_property(child, 'top-attach') == 0:
                 self._grid.remove(child)
         for col, h in enumerate(self._cols()):
-            lbl = Gtk.Label(label=h)
-            lbl.get_style_context().add_class("color4")
-            lbl.set_halign(Gtk.Align.CENTER)
+            lbl = Gtk.Label()
+            # Small and tight. At full size this row cost most of a data
+            # row's height for four words -- Mike: "compress the column
+            # titles padding a little its eating space". It also needs
+            # sa-cell now that the grid's column-spacing is 0, or adjacent
+            # headings touch: that is why ENCODER and MATERIAL ran together
+            # after the last change.
+            # Full size. 9pt was too small to read at the machine -- Mike:
+            # "bring the title size back up in size, it got smaller, shrink
+            # the padding only". The height comes back out of the margins and
+            # out of the status row above, not out of the type.
+            lbl.set_text(h)
+            ctx = lbl.get_style_context()
+            ctx.add_class("color4")
+            ctx.add_class("sa-cell")
+            lbl.set_halign(Gtk.Align.FILL)
+            lbl.set_xalign(0.5)
+            lbl.set_margin_top(0)
+            lbl.set_margin_bottom(0)
             self._grid.attach(lbl, col, 0, 1, 1)
 
     # -- Sizing derived from the framework, never hard-coded ------------------
@@ -297,9 +383,39 @@ class Panel(ScreenPanel):
         g   = self._gap()
         bar = int(max(44.0, self._gtk.font_size * 2.4) * 1.4)
         vp  = self._gtk.content_height - (bar + self._pad_bottom() + g * 4)
-        data = max(60.0, vp - self._gtk.font_size * 1.15)
+        # The four-tile status row sits ABOVE the table and outside the
+        # scroller, so its height is not the table's to spend. Leaving it out
+        # overstated the budget, `data / n` came out larger than the space
+        # really allowed, and six heads scrolled when they should have fitted.
+        # Exactly the mistake this docstring already records about the table's
+        # own header row, one level up.
+        vp -= self._status_row_h()
+        # The table header is a 9pt line now rather than a full-size one, but
+        # it still costs its text height plus row-spacing -- and every figure
+        # here is an estimate of what GTK will allocate. The extra 6px is
+        # slack, because being one row too generous is the failure that shows.
+        # MEASURED 2026-09-12: with the estimates below, six rows came to
+        # 322px in a 325px viewport. Fitting by three pixels is luck, not
+        # sizing -- one longer material name and it overflows again. _FIT_SLACK
+        # buys the margin back; at font 17.78 it costs about a pixel a row.
+        data = max(60.0, vp - (self._gtk.font_size * 1.05 + 6) - _FIT_SLACK)
         n = max(self._num_paths, 1)
-        return int(min(max(data / n, 34.0), self._gtk.font_size * 3.4))
+        # 30px floor rather than 34: six heads have to fit a 480px panel
+        # natively, and the difference is about one pixel of leading per row.
+        return int(min(max(data / n, 30.0), self._gtk.font_size * 3.4))
+
+    def _status_row_h(self):
+        """Height the four-tile status row claims above the table.
+
+        TWO stacked labels now -- caption at font 9 and value at font 13 --
+        since the sub line was dropped.
+
+        MEASURED on the 480px panel 2026-09-12: font 17.78 gave a status row
+        of exactly 37px, which is font * 2.08. The old estimate was font *
+        2.1 + 2 = 39, two pixels generous -- and a generous estimate here is
+        what pushes the last row past the viewport.
+        """
+        return int(self._gtk.font_size * 2.08)
 
     def _narrow(self):
         """True on a display too narrow for the full column set.
@@ -359,8 +475,17 @@ class Panel(ScreenPanel):
                     self.labels['row_%d_%s' % (i, key)] = dot
                     cells.append(dot)
 
-                enc_lbl = Gtk.Label(label="\u2014", halign=Gtk.Align.CENTER)
-                enc_lbl.set_size_request(int(self._gtk.font_size * 3.3), -1)
+                # Pinned to the widest reading it can ever hold, so the
+                # column does not breathe as the number grows. A minimum
+                # width alone let "1359.8mm" shove MATERIAL and COLOUR
+                # sideways every time an encoder moved -- Mike: "the
+                # columns keep resizing based in the encoder length".
+                # width_chars WITH max_width_chars is a fixed width; a
+                # size request on its own is only a floor.
+                enc_lbl = Gtk.Label(label="—", halign=Gtk.Align.CENTER)
+                enc_lbl.set_width_chars(_ENC_CHARS)
+                enc_lbl.set_max_width_chars(_ENC_CHARS)
+                enc_lbl.set_ellipsize(3)
                 self._grid.attach(enc_lbl, 6, row, 1, 1)
                 self.labels['row_%d_encoder' % i] = enc_lbl
                 cells.append(enc_lbl)
@@ -371,7 +496,13 @@ class Panel(ScreenPanel):
             mat_col = 4 if narrow else 7
             mat_box = Gtk.Box(spacing=self._gap(), halign=Gtk.Align.CENTER,
                               valign=Gtk.Align.CENTER)
+            # The swatch belongs to MATERIAL only on the narrow layout, where
+            # COLOUR is folded away. Wide, COLOUR carries its own -- showing
+            # both put two dots of the same colour on every row. Mike: "have
+            # 2 color swatches per channel we dont need two".
             mat_swatch = Gtk.Label(label=EMPTY_SWATCH)
+            mat_swatch.set_no_show_all(not narrow)
+            mat_swatch.set_visible(narrow)
             mat_lbl = Gtk.Label(label="---", halign=Gtk.Align.CENTER,
                                 max_width_chars=10, ellipsize=3)
             mat_box.pack_start(mat_swatch, False, False, 0)
@@ -395,7 +526,30 @@ class Panel(ScreenPanel):
                 self.labels['row_%d_swatch' % i] = swatch
                 self.labels['row_%d_color'  % i] = color_name
 
+            self._finish_row(cells)
+
         self._grid.show_all()
+
+    def _finish_row(self, cells):
+        """Make every cell fill its column, so a highlighted row is ONE band.
+
+        A Gtk.Grid has no row widget, so the highlight has to be painted by
+        the cells themselves. Left to their natural size each one paints a
+        box only as wide as its own text, which is what produced the patchy
+        row of separate rectangles. Filling horizontally AND vertically makes
+        them abut and share a height; `sa-cell` supplies the gutter as
+        padding inside the background rather than as spacing outside it.
+        """
+        for w in cells:
+            w.set_hexpand(True)
+            w.set_halign(Gtk.Align.FILL)
+            w.set_valign(Gtk.Align.FILL)
+            w.get_style_context().add_class('sa-cell')
+            # A Label that now FILLS still needs to know where to draw its
+            # text; without this the fill silently left-aligns everything.
+            if isinstance(w, Gtk.Label):
+                w.set_xalign(0.5)
+                w.set_yalign(0.5)
 
     def _send(self, widget, gcode):
         self._screen._ws.klippy.gcode_script(gcode)
@@ -725,7 +879,13 @@ class Panel(ScreenPanel):
             mat_lbl = self.labels.get('row_%d_material' % i)
             if mat_lbl:
                 mat = materials[i] if i < len(materials) and materials[i] else "---"
-                mat_lbl.set_markup('<span font_size="large">%s</span>' % mat)
+                # Explicit foreground. These two were the only labels in
+                # the table without one, so GTK picked per state and per
+                # theme -- Mike: "the material profiles render the colors
+                # randomly white or black ... should be white".
+                mat_lbl.set_markup(
+                    '<span font_size="large" foreground="#FFFFFF">%s</span>'
+                    % mat)
 
             # On the narrow layout this swatch is the only colour shown, so it
             # carries what the folded-away COLOUR column would have said.
@@ -758,6 +918,8 @@ class Panel(ScreenPanel):
                     swatch.set_markup(
                         '<span font_size="large">%s</span>' % EMPTY_SWATCH)
             if color_lbl:
-                color_lbl.set_markup('<span font_size="large">%s</span>' % name_c)
+                color_lbl.set_markup(
+                    '<span font_size="large" foreground="#FFFFFF">%s</span>'
+                    % name_c)
 
         return False

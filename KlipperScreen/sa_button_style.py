@@ -8,6 +8,10 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sa_ui_prefs as _prefs
 
+# Selection / armed accent. One constant so the selected tool and the armed
+# action cannot drift apart -- they are the same signal in two places.
+SELECT_COLOR = '#8BC34A'
+
 _provider = None
 # Last min-height applied, so a later reapply() for an accent change
 # does not silently reset the floor back to the default.
@@ -46,8 +50,29 @@ button.sa-btn-warn.color2 {{ border-bottom-color: #E8A33D; }}
 .sa-btn, .sa-btn-alt, .sa-btn-warn {{ min-height: {min_h}px; }}
 .sa-btn-nav {{ min-height: {nav_h}px; }}
 
-.path-selected {{ border: 3px solid #8BC34A; }}
-""".format(accent=accent, min_h=int(min_h), nav_h=int(min_h * 0.68))).encode()
+/* Selection. `button.path-selected` rather than a bare `.path-selected`
+   for the reason given above: the theme's own `button.colorN` is
+   element+class and a class-only selector loses to it, so the green border
+   never rendered at all. 4px because this is read at arm's length on a
+   480px panel. */
+button.path-selected {{ border: 4px solid {sel}; }}
+
+/* A disabled action has to LOOK disabled whatever the theme does with
+   backgrounds and borders. Opacity is the one property no theme argues
+   over, so it is the only one used here. Without this, LOAD and UNLOAD
+   toggled correctly via set_sensitive() and still both read as live. */
+button.sa-btn:disabled, button.sa-btn-alt:disabled,
+button.sa-btn-warn:disabled, button.sa-btn-nav:disabled {{ opacity: 0.32; }}
+
+/* The ARMED action -- whichever of LOAD / UNLOAD this path can actually do
+   right now. Paired with the rule above it reads as one toggle rather than
+   two buttons that happen to be adjacent. */
+button.sa-btn-armed {{
+    border-bottom-width: 6px;
+    border-bottom-color: {sel};
+}}
+""".format(accent=accent, sel=SELECT_COLOR,
+            min_h=int(min_h), nav_h=int(min_h * 0.68))).encode()
 
 
 def apply(min_height=None):
@@ -116,6 +141,28 @@ def make(label, style="sa-btn"):
         ctx.add_class(base)
     ctx.add_class(style)
     return btn
+
+
+def restyle(btn, style):
+    """Change a button's style AFTER make() built it.
+
+    make() adds TWO classes: the KlipperScreen base (`color1`, `color3`, ...)
+    which carries the theme's actual colour, and our `sa-*` class which only
+    tints the underline. Swapping the `sa-*` half alone therefore changes
+    nothing visible -- and leaves the old base class behind, so the classes
+    accumulate and the result depends on rule order rather than on intent.
+
+    That is exactly what sa_post_load's LOAD/UNLOAD toggle did: Mike saw
+    "the unselected load is orange and then you select load and it is the
+    blue teal color and it is always that color". Both halves swap here.
+    """
+    ctx = btn.get_style_context()
+    for cls in list(_KS_BASE) + list(set(_KS_BASE.values())):
+        ctx.remove_class(cls)
+    base = _KS_BASE.get(style)
+    if base:
+        ctx.add_class(base)
+    ctx.add_class(style)
 
 
 def _lighten(hex_c, amt):

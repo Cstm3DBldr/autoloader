@@ -311,6 +311,72 @@ asks for a different layout.
   carries TEMP, the EN/EX/TH sensor dots and ENCODER. Do not trim it to match;
   the web panel is the one that is missing those.
 
+### KlipperScreen Action panel (`KlipperScreen/panels/sa_post_load.py`)
+
+User-specified layout, 2026-09-12, confirmed by a T0-T5 pass through it.
+Restore it if a future edit changes it unless Mike asks otherwise.
+
+- **Order is title -> heads -> verbs.** The head grid sits directly under
+  the title/subtitle; six buttons sit at the bottom in two rows of three:
+  `PURGE 60mm`/`LOAD SAME`, `PARK`, `CLEAN NOZZLE` on the first, then
+  `LOAD`, `UNLOAD`, `EXIT`. Mike's words: "id rather move the tool heads up
+  to below the title and put the 6 buttons at the bottom".
+- **No confirm button.** It used to be select-a-head, pick a verb on a
+  toggle, then press a confirm naming the pair -- three taps with the state
+  split across two widgets, and the confirm only ever changed its label,
+  never its colour. The head is a noun and every button is a verb acting on
+  it immediately. Do not reintroduce the toggle or the confirm.
+- **The head the panel is about arrives selected** (`cal_path`), because that
+  tap had only one sensible answer.
+- **No `ScrolledWindow`.** Six heads fit once the tile puts its icon BESIDE
+  the T-number rather than above it. A scrollbar on a six-item grid is a
+  control that exists only because the items were the wrong shape.
+- **LOAD and UNLOAD stay gated on the head's state.** With the confirm gone
+  they ARE the commitment, so the impossible one must not be pressable.
+  Exactly one carries `sa-btn-armed`.
+
+### KlipperScreen button states (`KlipperScreen/sa_button_style.py`)
+
+- **`make()` adds TWO classes** -- a KlipperScreen base (`color1`, `color3`,
+  ...) carrying the theme's actual colour, and an `sa-*` class contributing
+  only the accent underline. **Swap a style with `restyle()`, never by
+  adding/removing the `sa-*` class alone**: that changes nothing visible and
+  leaves the old base behind, so classes accumulate and appearance depends on
+  rule order. That bug made the load/unload toggle permanently one colour.
+- **Selector specificity.** A bare `.path-selected` loses to the theme's own
+  `button.colorN` (element+class), so the selection border never rendered at
+  all. Every state rule here is written as `button.<class>`.
+- **`:disabled` is an opacity rule.** Opacity is the one property no
+  KlipperScreen theme argues over -- the same reason this module sets only
+  `border-bottom-color`. Without it a `set_sensitive(False)` button still
+  reads as live.
+
+### KlipperScreen status panel sizing (`KlipperScreen/panels/sa_main.py`)
+
+- **The table must show every head without scrolling**, up to six. `_row_h()`
+  budgets against `content_height` minus the button bar, the padding, the
+  status row AND the table's own header. Both of those last two have been
+  forgotten once each, and each time the symptom was the last row hiding
+  behind the button bar.
+- **Those figures are MEASURED, not estimated.** 2026-09-12 on the 480px
+  panel: `content_height` 444.4 at font 17.78, status row exactly 37px
+  (= font * 2.08), table 322px in a 325px viewport. `_FIT_SLACK` exists
+  because fitting by three pixels is luck. If the sizing is wrong again,
+  instrument it and read the log rather than adjusting a constant by feel.
+- **`column_spacing` is 0 and the gutter is `.sa-cell` padding INSIDE each
+  cell**, so a highlighted row paints as one continuous band rather than a
+  row of separate boxes. Every cell -- header row included -- needs that
+  class, or adjacent headings touch.
+- **The ENCODER column is a FIXED width** (`width_chars` AND
+  `max_width_chars`), not a size request. A request is a floor, so
+  "1359.8mm" grew the column and shoved MATERIAL and COLOUR sideways every
+  time an encoder moved.
+- **The status tiles are two lines, never three.** The third cost a whole
+  data row of height. ACTIVE PROCESS (not "CALIBRATION" -- by the time
+  someone is using this screen they are not calibrating) is colour-coded:
+  green running or idle, orange waiting on a person, red Klipper not ready.
+  "Waiting" is exactly `PROMPT_STATES` in `autoloader.py`.
+
 ### KlipperScreen Macros menu (`KlipperScreen/panels/sa_macros.py`)
 
 User-confirmed canonical look. If a future edit changes any of this,
