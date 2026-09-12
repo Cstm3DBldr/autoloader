@@ -4506,9 +4506,19 @@ class SACalibration:
             # Blast speed: use calibrated encoder_max_speed if available, else 100mm/s safe default
             sv = owner.printer.lookup_object('save_variables', None)
             saved_max = float(sv.allVariables.get('encoder_max_speed', 0)) if sv else 0
-            # encoder_max_speed tested at 100mm near tube entrance (low friction).
-            # Bowden blast pushes full tube depth — apply 0.75x for tube friction load.
-            blast_speed = (saved_max * 0.75) if saved_max > 0 else 75.0
+            # No derate. The comment here used to justify 0.75x by saying the
+            # sweep tested "100mm near the tube entrance, low friction" while a
+            # blast pushes full tube depth — but that stopped being true when
+            # the sweep grew: _encspeed_cap drives up to min(900, bowden*0.70),
+            # so it already measures most of the tube under real friction. And
+            # the saved figure is itself 80% of what passed. A calibration the
+            # machine then declines to use is not a calibration.
+            #
+            # UNTESTED at 160. This is the routine that MEASURES the bowden
+            # lengths, so its speed is part of the conditions the stored
+            # numbers were taken under. It needs its own run before it moves
+            # to dev.
+            blast_speed = saved_max if saved_max > 0 else 75.0
             quick_speed    = 50.0              # 65–82.5% — no sensor check
             approach_speed = owner.feed_speed  # 82.5%+ — sensor polling
 

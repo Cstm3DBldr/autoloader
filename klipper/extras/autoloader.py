@@ -74,7 +74,7 @@ class Autoloader:
         'heatbreak_speed', 'retract_speed', 'slow_speed', 'dwell',
         'sever_dist', 'cooling_pos', 'cooling_len', 'cooling_moves',
         'cool_speed_in', 'cool_speed_out', 'shear_temp', 'shear_speed',
-        'shear_timeout',
+        'shear_timeout', 'purge_len', 'purge_temp',
     ), key=len, reverse=True))
 
 
@@ -242,6 +242,26 @@ class Autoloader:
 
         # ── Load / extrusion params ───────────────────────────────────────────
         self.fill_nozzle_length    = config.getfloat('fill_nozzle_length',     50.0)
+        # DEFAULT 0 -- disabled, because it was tested and it did not work.
+        #
+        # The idea was that a soaked melt stretches the tip, so shearing colder
+        # would stop it. Measured on path 0, 2026-09-11, cold pull at 150C
+        # against hot pull at 125C, same path within ten minutes:
+        #
+        #   cold shear draw (encoder)           34.8   34.8
+        #   clear move (commanded)              66.4   66.4
+        #   extra retract to clear ext sensor   59.9   59.9
+        #
+        # Identical to 0.1mm. Temperature changes NOTHING about where the tip
+        # ends up. And the 125C tip was visibly worse -- bulged past 1.75mm,
+        # smushed, heavily strung -- which is PLA too stiff to part cleanly:
+        # the ram upsets it and it tears rather than shears.
+        #
+        # Kept as a parameter rather than deleted so the experiment can be
+        # re-run on a material with a different glass transition, where the
+        # answer may differ. Set it non-zero to try again.
+        self.tip_form_hot_shear_drop = config.getfloat(
+            'tip_form_hot_shear_drop', 0.0, minval=0.0, maxval=60.0)
         self.max_volumetric_flow   = config.getfloat('max_volumetric_flow',     5.0)
         self.wiggle_distance       = config.getfloat('wiggle_distance',         5.0)
         self.nozzle_to_sensor_dist = config.getfloat('nozzle_to_sensor_dist',  50.0)
@@ -250,6 +270,12 @@ class Autoloader:
         self.tip_form_temp           = config.getfloat('tip_form_temp',           185.0)
         self.tip_form_push_length    = config.getfloat('tip_form_push_length',      8.0)
         self.tip_form_push_speed     = config.getfloat('tip_form_push_speed',      25.0)
+        # Purge instead of ram. A ram at push_speed pressurises the melt with
+        # material that cannot leave through the nozzle; a purge at the melt
+        # rate pushes the same fresh filament in and lets it OUT. Off by
+        # default until it is measured -- see the SA_FORM_TIP row in CLAUDE.md.
+        self.tip_form_purge_len      = config.getfloat('tip_form_purge_len',        0.0)
+        self.tip_form_purge_temp     = config.getfloat('tip_form_purge_temp',     200.0)
         self.tip_form_heatbreak_dist = config.getfloat('tip_form_heatbreak_dist',  40.0)
         self.tip_form_heatbreak_speed= config.getfloat('tip_form_heatbreak_speed', 70.0)
         self.tip_form_retract_speed  = config.getfloat('tip_form_retract_speed',   70.0)
@@ -368,6 +394,10 @@ class Autoloader:
         # Paths with a load/unload in flight. The state monitor leaves
         # these alone -- see SASequences.do_load.
         self._op_paths         = set()
+        # Set while a load is a STEP of something larger (SA_FORM_TIP),
+        # so its "what next?" dialog does not appear mid-sequence and
+        # read as though the sequence had finished.
+        self._suppress_load_prompt = False
         # Paths waiting for an auto-park, and whether the drainer is
         # already running. See _queue_park.
         self._park_queue       = []
@@ -1471,6 +1501,10 @@ class Autoloader:
             ('SA_CALIBRATE_TOOLHEAD',
              self._cmd_calibrate_toolhead,
              "Measure toolhead geometry with the encoder. TOOL=N"),
+            ('SA_RECOVER',
+             self._cmd_recover,
+             "Force-feed a remnant out of the head with the roll behind it. "
+             "TOOL=N [TEMP=]"),
             ('SA_CALIBRATE_ENCODER_SPEED',
              self._cmd_calibrate_encoder_speed,
              "Find max reliable encoder speed and save as encoder_max_speed"),
@@ -1543,7 +1577,7 @@ class Autoloader:
             ('SA_FORM_TIP',
              self._cmd_form_tip,
              "Run only the tip-forming sequence, for tuning. TOOL=N "
-             "[MATERIAL=] [PUSH=] [SEVER=] [COOL_POS=] [COOL_LEN=] "
+             "[MATERIAL=] [PUSH=] [PURGE=] [PURGE_TEMP=] [SEVER=] [COOL_POS=] [COOL_LEN=] "
              "[COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=]"),
         ]
         for name, fn, desc in cmds:
@@ -1937,6 +1971,10 @@ class Autoloader:
     def _cmd_calibrate_toolhead(self, gcmd):
         self.calibration.calibrate_toolhead(gcmd)
 
+    def _cmd_recover(self, gcmd):
+        path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        self.sequences.recover(gcmd, path)
+
     def _cmd_calibrate_encoder_speed(self, gcmd):
         self.calibration.calibrate_encoder_speed(gcmd)
 
@@ -2084,6 +2122,8 @@ class Autoloader:
             'TEMP'       : 'temp',
             'PUSH'       : 'push_length',
             'PUSH_SPEED' : 'push_speed',
+            'PURGE'      : 'purge_len',
+            'PURGE_TEMP' : 'purge_temp',
             'SEVER'      : 'sever_dist',
             'SEVER_SPEED': 'retract_speed',
             'EASE'       : 'slow_speed',
@@ -2094,6 +2134,7 @@ class Autoloader:
             'COOL_OUT'   : 'cool_speed_out',
             'SHEAR'      : 'shear_temp',
             'SHEAR_SPEED': 'shear_speed',
+            'DWELL'      : 'dwell',
         }
         ov = {}
         for arg, name in argmap.items():
@@ -2107,10 +2148,44 @@ class Autoloader:
         material = gcmd.get('MATERIAL', None)
 
         if not self._toolhead_sensor_active(path):
+            # Load it ourselves rather than refusing.
+            #
+            # Tuning a tip is a LADDER -- form, look, change one value, form
+            # again -- and every rung starts from an empty toolhead, because
+            # forming leaves the tip past the gears. Refusing here made each
+            # rung two commands with a wait between them, which is how a
+            # tuning session stops halfway.
+            #
+            # Only when the entry sensor says there is filament to load. With
+            # nothing on the path there is genuinely nothing to do, and the
+            # old message is right.
+            if not self._entry_sensor_active(path):
+                gcmd.respond_info(
+                    "SA_FORM_TIP: T%d has no filament at the toolhead and none "
+                    "at the entry sensor either — there is nothing to load or "
+                    "form. Put a spool on this path first." % path)
+                return
             gcmd.respond_info(
-                "SA_FORM_TIP: T%d has no filament at the toolhead sensor. "
-                "Load it first — there is nothing to form." % path)
-            return
+                "SA_FORM_TIP: T%d is empty at the toolhead — loading it first, "
+                "then forming." % path)
+            self._suppress_load_prompt = True
+            try:
+                self.gcode.run_script_from_command("SA_LOAD TOOL=%d" % path)
+            except Exception:
+                logging.exception("SA_FORM_TIP: load before forming failed")
+                gcmd.respond_info(
+                    "SA_FORM_TIP: that load did not complete — see above. "
+                    "Nothing formed.")
+                return
+            finally:
+                self._suppress_load_prompt = False
+            if not self._toolhead_sensor_active(path):
+                gcmd.respond_info(
+                    "SA_FORM_TIP: the load finished but T%d's toolhead sensor "
+                    "is still clear, so there is nothing at the nozzle to "
+                    "form. Check the load before tuning a tip against it."
+                    % path)
+                return
 
         if ov:
             gcmd.respond_info(
@@ -2130,10 +2205,44 @@ class Autoloader:
         self.gcode.run_script_from_command(
             "SET_STEPPER_ENABLE STEPPER=%s ENABLE=0" % extruder_name)
 
+        # Bring it back to the gate, where the tip can actually be looked at.
+        #
+        # The old ending disabled the extruder and told the operator to "wind
+        # the filament out from the entry side" -- with a full Bowden still
+        # loaded, which on this machine is 1390mm by hand. Fine once; unusable
+        # as a ladder, and a ladder is the whole point of this command.
+        #
+        # Reuses SA_UNLOAD rather than duplicating its retract. After forming,
+        # the path reads entry+extruder with the toolhead sensor clear, which
+        # is Branch B -- and Branch B does NOT form a tip, it only retracts.
+        # So the tip just made is the one that arrives at the gate.
+        #
+        # UNLOAD=0 keeps the old behaviour for anyone who wants the tip left
+        # where it was formed.
+        if gcmd.get_int('UNLOAD', 1) and self._entry_sensor_active(path):
+            gcmd.respond_info(
+                "SA_FORM_TIP: retracting to the gate so the tip can be "
+                "reached — the tip itself is already made and Branch B does "
+                "not re-form it.")
+            try:
+                self.gcode.run_script_from_command("SA_UNLOAD TOOL=%d" % path)
+            except Exception:
+                logging.exception("SA_FORM_TIP: retract after forming failed")
+                gcmd.respond_info(
+                    "SA_FORM_TIP: the tip is formed but the retract did not "
+                    "finish — see above. Pull from the roll end to reach it.")
+                return
+            gcmd.respond_info(
+                "SA_FORM_TIP: done. The tip is parked at the drive gear — pull "
+                "it out from the entry side and measure. Target is under "
+                "1.75mm across with no ball and no string.")
+            return
+
         gcmd.respond_info(
-            "SA_FORM_TIP: done. %s is disabled — wind the filament out from the "
-            "entry side and measure the tip. Target is under 1.75mm across with "
-            "no ball and no string." % extruder_name)
+            "SA_FORM_TIP: done. %s is disabled and the filament is left where "
+            "it was formed — wind it out from the entry side to measure. "
+            "Target is under 1.75mm across with no ball and no string."
+            % extruder_name)
 
     def _cmd_respond(self, gcmd):
         """SA_RESPOND VALUE=x — deliver a console response to a waiting calibration routine."""

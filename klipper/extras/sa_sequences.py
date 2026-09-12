@@ -80,8 +80,19 @@ class SASequences:
         No-print: raise to load_park_z then park on cooling pad.
                   Purge position (load_park_x/y) is applied AFTER heating.
         Mid-print: raise to z_safe, move to safe side position.
+
+        Homes first if it has to. The guard used to be restated in each
+        caller's pre-flight -- load, unload and recover each had their own copy
+        -- and `form_tip` did not, so `SA_FORM_TIP` after a FIRMWARE_RESTART
+        went straight to `G0 Z50` and died on "Must home axis first". Every
+        routine that moves the toolhead comes through here, so here is the
+        place the check cannot be forgotten by the next one added.
         """
         owner = self.owner
+        if not self._is_homed():
+            gcmd.respond_info("SA: Printer not homed — running G28...")
+            owner.gcode.run_script_from_command("G28")
+            owner.gcode.run_script_from_command("M400")
         if is_printing:
             z = self._z_safe()
             gcmd.respond_info(
@@ -1054,9 +1065,53 @@ class SASequences:
             limit     = 200.0
             retracted = 0.0
             no_motion = 0
-            while owner._extruder_sensor_active(path) and retracted < limit:
+
+            # Sync the extruder while its sensor still reads filament.
+            #
+            # The tip is IN the extruder gears here, and they grip it, so a
+            # drive-only retract pulls against a closed vice. Measured on path
+            # 4 on 2026-09-11: 50mm driven against 20.3mm at the encoder,
+            # then a jam error on filament that was fine.
+            #
+            # This is the same fault the UNLOAD's Branch B had, fixed there
+            # and never applied here. It was left alone earlier tonight on the
+            # grounds that the reasoning had not been checked against this
+            # loop; the machine has now checked it.
+            #
+            # No heating: the tip is at the gears, not in the melt, which is
+            # one of the two cases _allow_cold_extrude exists for.
+            dn   = owner._drv_name()
+            cold = None
+            if owner._extruder_sensor_active(path):
+                cold = self._allow_cold_extrude(path)
+                owner.gcode.run_script_from_command("M83")
+                motion._cancel_timeout(dn)
+                owner.gcode.run_script_from_command(
+                    "MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
+
+            try:
+              while owner._extruder_sensor_active(path) and retracted < limit:
                 prev = abs(enc.get_distance())
-                motion.drive_move(-owner.feed_step_size, speed=owner.feed_speed)
+                if cold is not None:
+                    # SYNC=0 starts the drive without waiting on the extruder
+                    # queue; the G1 E queues behind so both run together over
+                    # the same distance. _drv_sign() because the direction
+                    # flip is applied per move rather than baked into the
+                    # stepper config -- drive_move does the same, and a raw
+                    # MANUAL_STEPPER here would ignore it.
+                    owner.gcode.run_script_from_command(
+                        "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.3f "
+                        "SPEED=%.1f SYNC=0"
+                        % (dn, motion._drv_sign() * -owner.feed_step_size,
+                           owner.feed_speed))
+                    owner.gcode.run_script_from_command(
+                        "G1 E-%.2f F%d"
+                        % (owner.feed_step_size,
+                           int(owner.feed_speed * 60.0)))
+                    owner.gcode.run_script_from_command("M400")
+                else:
+                    motion.drive_move(-owner.feed_step_size,
+                                      speed=owner.feed_speed)
                 owner.reactor.pause(owner.reactor.monotonic() + owner.sensor_delay)
                 moved = abs(enc.get_distance()) - prev
                 retracted += owner.feed_step_size
@@ -1072,6 +1127,12 @@ class SASequences:
                         return
                 else:
                     no_motion = 0
+
+            finally:
+                # Restore on every exit, the error returns inside the loop
+                # included: the floor is global to that heater and leaving it
+                # lowered would let a later cold extrude through silently.
+                self._restore_extrude_floor(cold)
 
             if owner._extruder_sensor_active(path):
                 gcmd.respond_info(
@@ -1152,6 +1213,15 @@ class SASequences:
             "_SA_LED_FROM_STATE TOOL=%d" % path)
 
         # Set up purge confirmation — _restore_state is deferred until user responds
+        #
+        # Unless something is driving this load as a step of its own. A
+        # "Load complete — what next?" dialog in the middle of a tip-forming
+        # run reads as though the run has finished, and the operator answers a
+        # prompt belonging to a sequence that is still going.
+        if getattr(owner, '_suppress_load_prompt', False):
+            gcmd.respond_info(
+                "SA: Load complete — path %d. Continuing." % path)
+            return
         owner._cal_state = 'load_purge'
         owner._cal_data  = {'path': path, 'is_printing': is_printing}
         self._prompt_purge(gcmd, path)
@@ -1206,6 +1276,8 @@ class SASequences:
         temp          = cfg('temp')
         push_length   = cfg('push_length')
         push_speed    = cfg('push_speed')
+        purge_len     = cfg('purge_len')
+        purge_temp    = cfg('purge_temp')
         sever_dist    = cfg('sever_dist')
         sever_speed   = cfg('retract_speed')
         ease_speed    = cfg('slow_speed')
@@ -1219,6 +1291,23 @@ class SASequences:
         extruder_name = owner._extruder_names[path]
         current_temp  = self._extruder_temp(path)
 
+        # Coming in hot is a different pull. The melt zone has had time to
+        # reach up the filament, so the draw stretches the tip rather than
+        # parting it -- measured on path 4, where the tip former retracted to
+        # 94mm and the extruder sensor had still not cleared. Shear colder in
+        # that case; the filament is stiffer and lets go closer to where the
+        # geometry says it should.
+        hot_pull = False
+        if shear_temp > 0 and owner.tip_form_hot_shear_drop > 0:
+            if current_temp >= max(shear_temp, owner.TIP_FORM_TEMP_FLOOR):
+                hot_pull = True
+                was = shear_temp
+                shear_temp = max(self.TIP_FORM_HOT_SHEAR_MIN,
+                                 shear_temp - owner.tip_form_hot_shear_drop)
+                gcmd.respond_info(
+                    "SA: Nozzle already at %.0f°C — a soaked melt stretches the "
+                    "tip, so shearing at %.0f°C instead of %.0f."
+                    % (current_temp, shear_temp, was))
 
         # A good tip forms below klipper's min_extrude_temp, which it enforces
         # on every E move -- and it fails part way in, once the toolhead has
@@ -1246,6 +1335,8 @@ class SASequences:
             # the moment the nozzle passes below it -- the same wall that
             # stopped step 12 on its first run.
             form_floor = owner.TIP_FORM_TEMP_FLOOR
+            if shear_temp > 0:
+                form_floor = min(form_floor, shear_temp - 5.0)
             saved_min = heater.min_extrude_temp
             heater.min_extrude_temp = form_floor
             # can_extrude only updates on a temperature callback; let one land
@@ -1262,7 +1353,8 @@ class SASequences:
                                  sever_dist, sever_speed, ease_speed,
                                  cooling_pos, cooling_len, cooling_moves,
                                  cool_speed_in, cool_speed_out,
-                                 shear_temp, shear_speed)
+                                 shear_temp, shear_speed,
+                                 purge_len, purge_temp)
         finally:
             if saved_min is not None:
                 heater.min_extrude_temp = saved_min
@@ -1274,9 +1366,13 @@ class SASequences:
                         current_temp, push_length, push_speed, sever_dist,
                         sever_speed, ease_speed, cooling_pos, cooling_len,
                         cooling_moves, cool_speed_in, cool_speed_out,
-                        shear_temp=0.0, shear_speed=3.0):
+                        shear_temp=0.0, shear_speed=3.0,
+                        purge_len=0.0, purge_temp=200.0):
         """The moves themselves. Split out so form_tip can wrap them in the
         min_extrude_temp override without a long try block."""
+        # Both the ram and the purge advance the tip, and every retract below
+        # is measured from the pre-push datum -- so it is the SUM that matters.
+        pushed = push_length + purge_len
         owner = self.owner
 
         # ---- temperature ------------------------------------------------
@@ -1308,6 +1404,34 @@ class SASequences:
 
         self._move_to_purge_position(gcmd, is_printing)
         owner.gcode.run_script_from_command("M83")
+
+        # ---- purge (optional, replaces the ram) --------------------------
+        # A ram pressurises the melt with material that cannot leave: at the
+        # configured 25mm/s it asks for 60mm3/s from a head whose own config
+        # caps flow at 10, and far less than that at forming temperature. The
+        # surplus goes sideways, into the walls, as a swell -- measured at +11%
+        # cross-section on T4 and +18% on T0 with identical settings, which is
+        # what ruled the toolhead out and the setting in.
+        #
+        # A purge is the same push at a rate the nozzle can actually pass, so
+        # the material leaves instead of accumulating, and what ends up at the
+        # tip is fresh rather than heat-soaked. Hotter than the forming
+        # temperature on purpose: the flow has to be real for this to work.
+        if purge_len > 0:
+            flow_mms, flow_why = self._melt_flow_speed(path)
+            gcmd.respond_info(
+                "SA: Purge before shear — heating %s to %.0f°C, then %.1fmm at "
+                "%.1fmm/s (%s)."
+                % (extruder_name, purge_temp, purge_len, flow_mms, flow_why))
+            owner.gcode.run_script_from_command(
+                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f"
+                % (extruder_name, purge_temp))
+            owner.gcode.run_script_from_command(
+                "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.0f"
+                % (extruder_name, purge_temp - 2))
+            self._extrude_mm(purge_len, int(flow_mms * 60))
+            gcmd.respond_info(
+                "SA: Purge done — the melt zone now holds fresh filament.")
 
         # ---- ram ---------------------------------------------------------
         if push_length > 0:
@@ -1351,14 +1475,14 @@ class SASequences:
 
             token = self._allow_cold_extrude(path, 0.0)
             try:
-                self._extrude_mm(-(cooling_pos + push_length),
+                self._extrude_mm(-(cooling_pos + pushed),
                                  max(1, int(shear_speed * 60)))
             finally:
                 self._restore_extrude_floor(token)
 
             if enc is not None:
                 moved = abs(enc.get_distance())
-                want  = cooling_pos + push_length
+                want  = cooling_pos + pushed
                 if moved < want * 0.5:
                     gcmd.respond_info(
                         "SA: WARNING — encoder saw %.1fmm of %.1fmm. The tip is "
@@ -1373,7 +1497,7 @@ class SASequences:
         # ---- sever -------------------------------------------------------
         # Everything from here is measured as distance of the tip back from the
         # nozzle, so the ram has to be paid back before any of it counts.
-        to_cooling = push_length + cooling_pos
+        to_cooling = pushed + cooling_pos
         sever      = min(sever_dist, to_cooling)
         gcmd.respond_info(
             "SA: Sever %.1fmm at %.0fmm/s (break the melt)..." % (sever, sever_speed))
@@ -1438,36 +1562,464 @@ class SASequences:
             gcmd.respond_info("SA: %s already at %.0f°C, holding for tip forming."
                               % (extruder_name, current_temp))
 
-    def _clear_past_gears(self, gcmd, path, cooling_pos, speed):
-        """Take the finished tip from the cooling zone out past the extruder
-        gears and the sensor, so the drive motor can take over.
+    # How far inside the gear nip the tip is left. The extruder can only move
+    # filament its gears grip, so stopping short of the nip is what keeps the
+    # handover to the synced phase possible at all.
+    NIP_MARGIN = 5.0
 
-        Always runs with the extrude guard lifted: after a shear the hotend is
-        already well below it, and this move pulls filament outwards rather
-        than pushing it into a cold nozzle.
+    def _clear_past_gears(self, gcmd, path, cooling_pos, speed):
+        """Take the finished tip out of the melt zone -- and STOP while the
+        extruder still grips it.
+
+        The name is now a lie and is kept only because the callers use it: this
+        move must NOT go past the gears. It used to aim at
+        `nozzle_to_sensor * 1.05`, which on every measured path is 28-31mm PAST
+        the gear nip:
+
+              th sensor   GEAR NIP   ext sensor   aimed at   past nip
+          T0       48.3       73.4         96.6      101.4       28.0
+          T4       41.2       63.4         89.6       94.1       30.6
+
+        The extruder cannot move filament it no longer grips, so those last
+        ~28mm were never travelled -- the gear just chewed the tip while the
+        motor turned. Audible as clicking for several seconds before the synced
+        phase took over, which is how Mike found it. A freshly formed tip is
+        the worst possible thing to hold stationary in a spinning gear.
+
+        Two speeds, because the tip is still soft when it leaves the melt:
+        fast to get it out of the heat, then slow the rest of the way so it
+        firms up before anything grips it hard. Stopping cold at the fast
+        speed is what leaves it bulged past 1.75mm.
+
+        Runs with the extrude guard lifted: after a shear the hotend is already
+        well below it, and this pulls filament outwards rather than pushing it
+        into a cold nozzle.
         """
-        owner  = self.owner
-        # Measured per path by step 12 where it has been run, the config
-        # default otherwise. This is the number that was wrong: at 50.0 the
-        # move ended with the extruder sensor still triggered on every unload
-        # and the fallback sync retract quietly covered for it.
-        target = owner.th_nozzle_to_sensor(path) * 1.05
-        clear  = target - cooling_pos
+        owner = self.owner
+
+        # Where the gears are, measured by step 12. Falls back to the config
+        # nozzle_distance when that path has never been measured -- and then
+        # the margin is all that protects the tip, so it stays conservative.
+        nip = owner.th_gear_to_nozzle(path)
+        target = max(0.0, nip - self.NIP_MARGIN)
+        clear = target - cooling_pos
         if clear <= 0:
             gcmd.respond_info(
-                "SA: Tip already past the sensor at %.0fmm — no clearing move."
-                % cooling_pos)
+                "SA: Tip already at %.0fmm, inside the gears at %.0fmm — no "
+                "clearing move." % (cooling_pos, nip))
             return
 
+        # Out of the heat first, then ease off. The melt zone ends around the
+        # toolhead sensor, so that is the natural place to change gear.
+        hot_end = owner.th_toolhead_to_nozzle(path)
+        fast = max(0.0, min(clear, hot_end - cooling_pos))
+        slow = clear - fast
+        slow_speed = max(1.0, min(speed, owner.tip_form_cool_speed_out))
+
         gcmd.respond_info(
-            "SA: Clear %.1fmm at %.0fmm/s (past gears, tip at %.0fmm)..."
-            % (clear, speed, target))
+            "SA: Clearing to %.0fmm — %.1fmm at %.0fmm/s out of the melt, then "
+            "%.1fmm at %.0fmm/s to cool. Stops %.0fmm short of the gears at "
+            "%.0fmm so the extruder keeps its grip."
+            % (target, fast, speed, slow, slow_speed, self.NIP_MARGIN, nip))
+
+        enc = owner._encoder(path)
+        enc.set_direction(forward=False)
+        enc.reset_distance()
         token = self._allow_cold_extrude(path, 0.0)
         try:
-            self._extrude_mm(-clear, max(1, int(speed * 60)))
+            if fast > 0:
+                self._extrude_mm(-fast, max(1, int(speed * 60)))
+            if slow > 0:
+                self._extrude_mm(-slow, max(1, int(slow_speed * 60)))
         finally:
             self._restore_extrude_floor(token)
 
+        # Let it firm up before anything drags it through the nip.
+        #
+        # Mike's read, from measuring two tips: the flattened LENGTH fell from
+        # ~20mm to 2-3mm once tension was set, but the flattened SECTION is
+        # still 2.02 x 1.5mm on a 1.75mm filament -- so the very tip is still
+        # soft when it reaches the gears. The clear move ends SHORT of the nip,
+        # so nothing is squeezing it here; it is the retract that follows which
+        # pulls it through, and that starts within a few seconds.
+        #
+        # tip_form_dwell already existed as a setting and NOTHING read it.
+        # Wired up here, and exposed as DWELL= so it can be tuned inline like
+        # every other tip value. The 0.5s default is almost certainly too short
+        # for this job -- it is left alone so behaviour does not change
+        # silently, and raising it is the experiment.
+        dwell = float(owner.tip_form_dwell)
+        if dwell > 0:
+            gcmd.respond_info(
+                "SA: Holding %.1fs short of the gears to let the tip firm up "
+                "before the retract pulls it through." % dwell)
+            owner.reactor.pause(owner.reactor.monotonic() + dwell)
+
+        # Measured, not assumed. This move was the one step in the unload taken
+        # entirely on trust, and it was the one that was wrong.
+        moved = abs(enc.get_distance())
+        pct = (100.0 * moved / clear) if clear > 0 else 0.0
+        gcmd.respond_info(
+            "SA: Clear move — asked %.1fmm, encoder saw %.1fmm (%.0f%%)."
+            % (clear, moved, pct))
+        if pct < 80.0:
+            gcmd.respond_info(
+                "SA: That is short. The tip should still be inside the gears "
+                "here, so a shortfall means it is not gripping — check the "
+                "toolhead geometry for this path (guide step 12).")
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    # SA_RECOVER — force-feed a remnant out with the roll behind it
+    # ══════════════════════════════════════════════════════════════════════
+
+    _RECOVER_PURGE_MAX = 250.0   # hard ceiling on pushing into an obstruction
+
+    # Jam watch. The encoder is locked to its lane and counts whatever moves,
+    # so it can answer "is this still going" on every step rather than only in
+    # the summary afterwards. Consecutive strikes rather than a single short
+    # step, because mm_per_pulse is ~1.9mm against a 10mm step -- five pulses,
+    # and where a step lands between two of them moves the reading 20% on its
+    # own. Three in a row is 30mm commanded against essentially nothing, which
+    # phase cannot explain.
+    _JAM_FRACTION = 0.25
+    _JAM_STRIKES  = 3
+
+    # Recovery pushes material of uncertain identity through a hot nozzle, and
+    # the only thing that can absorb it is the melt. So the ceiling here is a
+    # FLOW rate, not a feed rate -- and it is derated rather than run at the
+    # filament's rating, because a remnant has been cooked, may be a different
+    # polymer entirely, and a recovery that jams is worse than one that takes
+    # another twenty seconds.
+    _RECOVERY_FLOW_DERATE = 0.75
+
+    def _jam_watch(self, enc, commanded, last, strikes):
+        """One step of encoder-gated jam detection.
+
+        Returns (reading, strikes, stalled). `commanded` is what this step
+        asked for; `last` is the encoder reading before it.
+        """
+        now = abs(enc.get_distance())
+        if (now - last) < commanded * self._JAM_FRACTION:
+            strikes += 1
+        else:
+            strikes = 0
+        return now, strikes, (strikes >= self._JAM_STRIKES)
+
+    def _melt_flow_speed(self, path):
+        """Linear mm/s for pushing filament through a hot nozzle. (mm/s, why).
+
+        Used by recovery AND by tip forming's purge. Both push material that
+        has to leave through the orifice, and both used to run at a FEED rate
+        instead -- 50mm/s in recovery, 25mm/s for the tip ram, against a head
+        whose own config caps flow at 10mm3/s.
+
+        `purge_speed` on a filament profile is that product line's rated purge
+        rate -- the brand files carry real per-line figures (2 to 6). Without a
+        profile there is no filament rating to use, so it falls back to
+        `max_volumetric_flow`, the HOTEND's limit rather than the filament's.
+        The log says which one is in force.
+
+        **`purge_speed` has no declared unit anywhere in this project** -- not
+        in the brand files, not in SA_SET_MATERIAL's help, not in any UI label.
+        2-6 is plausible as mm3/s and equally plausible as mm/s, which differ
+        by the 2.405mm2 cross-section. So it is read as mm3/s AND floored
+        against `max_volumetric_flow`, which IS labelled: whichever way the
+        ambiguity resolves, it can only ever make this slower, never faster.
+        Fix the ambiguity by declaring the unit, not by removing the floor.
+        """
+        owner = self.owner
+        hotend = float(owner.max_volumetric_flow)
+        flow, src = 0.0, ""
+        if owner._has_material_profile(path):
+            rated = float(owner.path_purge_speeds[path])
+            if rated > 0:
+                flow = min(rated, hotend)
+                src  = ("%s rated %.1f (as mm3/s), hotend %.1f — using %.1f"
+                        % ((owner.path_materials[path] or "profile"),
+                           rated, hotend, flow))
+        if flow <= 0:
+            flow = hotend
+            src  = "no filament rating — hotend's %.1fmm3/s" % flow
+        mms = (flow / _FILAMENT_AREA) * self._RECOVERY_FLOW_DERATE
+        return mms, ("%s, derated %.0f%% -> %.1fmm/s"
+                     % (src, (1.0 - self._RECOVERY_FLOW_DERATE) * 100.0, mms))
+
+    def recover(self, gcmd, path):
+        """Push a remnant out of the head using the filament behind it.
+
+        See docs/RECOVERY.md. The short version: the extruder can only move
+        filament its gears grip, so once a tail is past them nothing in the
+        machine can drive it -- except the next filament, arriving behind it.
+        The new roll is the mechanism, not a fallback.
+
+        Built 2026-09-12 against a live occurrence on path 4, in a sensor
+        state no load branch handles: entry FILAMENT, extruder CLEAR, toolhead
+        FILAMENT. That combination cannot happen with continuous filament --
+        the toolhead sensor is downstream of the extruder one -- so it means a
+        fragment or a long string sitting at the toolhead with the main
+        filament withdrawn behind it.
+
+        Deliberately explicit, never automatic. It heats a nozzle and pushes
+        material of uncertain identity through it.
+        """
+        owner = self.owner
+
+        has_entry    = owner._entry_sensor_active(path)
+        has_extruder = owner._extruder_sensor_active(path)
+        has_toolhead = owner._toolhead_sensor_active(path)
+
+        gcmd.respond_info(
+            "SA RECOVER — path %d\n"
+            "Sensors — entry:%s extruder:%s toolhead:%s"
+            % (path, "Y" if has_entry else "N",
+               "Y" if has_extruder else "N",
+               "Y" if has_toolhead else "N"))
+
+        if not has_entry:
+            raise gcmd.error(
+                "SA RECOVER: path %d has nothing at the entry sensor. The "
+                "filament behind the remnant IS the mechanism here -- without "
+                "a roll to push with there is nothing to recover with. Insert "
+                "one first." % path)
+        if not (has_extruder or has_toolhead):
+            gcmd.respond_info(
+                "SA RECOVER: path %d shows nothing at the extruder or toolhead "
+                "sensor, so there is no remnant to push out. Nothing to do."
+                % path)
+            return
+
+        # Temperature is the one thing this must not guess. RECOVERY.md: too
+        # cold jams the head and grinds a flat onto the new filament; too hot
+        # only dirties a nozzle that is about to be purged. So the higher of
+        # what we know, and an explicit TEMP= when the path has no profile.
+        # `path_load_temps` is seeded with the global `load_temperature` for
+        # every path at startup, so a non-zero value there is NOT evidence of a
+        # profile -- it is the default wearing a profile's clothes. Ask whether
+        # a profile exists, or this refusal is dead code that silently guesses
+        # 200 while the docstring promises it will not.
+        temp = gcmd.get_float('TEMP', None)
+        prof_temp = 0.0
+        if owner._has_material_profile(path):
+            try:
+                prof_temp = float(owner.path_load_temps[path])
+            except Exception:
+                prof_temp = 0.0
+        if temp is None:
+            if prof_temp <= 0:
+                raise gcmd.error(
+                    "SA RECOVER: path %d has no filament profile, so nothing "
+                    "here knows what the remnant is. Pass TEMP= with the "
+                    "HIGHER of the old and new materials' temperatures -- this "
+                    "routine will not pick one for you." % path)
+            temp = prof_temp
+        temp = max(temp, prof_temp)
+        gcmd.respond_info(
+            "SA RECOVER: heating to %.0f°C. Push the remnant out with the roll "
+            "behind it, then purge until the colour runs clean." % temp)
+
+        if not self._is_homed():
+            gcmd.respond_info("SA RECOVER: printer not homed — running G28...")
+            owner.gcode.run_script_from_command("G28")
+        self._switch_tool(gcmd, path)
+        self._ensure_selector(gcmd, path)
+
+        extruder_name = owner._extruder_names[path]
+        owner.gcode.run_script_from_command(
+            "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f"
+            % (extruder_name, temp))
+
+        # ── get the new filament down to the extruder sensor ──────────────
+        motion = owner.motion
+        enc    = owner._encoder(path)
+        if not owner._extruder_sensor_active(path):
+            motion.servo_engage()
+            if not self._engage_check(gcmd, path):
+                gcmd.respond_info(
+                    "SA RECOVER: could not confirm grip on path %d — aborted "
+                    "before heating anything through." % path)
+                return
+            # NOT _blast_and_approach. That one computes its blast as
+            # `bowden * 0.98 - encoder`, which is only a distance-to-go if the
+            # filament started parked at the gear. Here it did not: the path
+            # failed mid-unload and the tail is somewhere unknown between the
+            # entry sensor and the extruder sensor. Blasting 98% of a tube from
+            # a point already most of the way down it drives the tip into the
+            # extruder gears at the encoder's top speed. So creep instead, at
+            # feed_speed, with the sensor as the terminator and the tube length
+            # as the ceiling. This runs once, by hand -- speed buys nothing and
+            # ramming the gears costs a strip-down.
+            if not owner._extruder_sensor_names[path]:
+                raise gcmd.error(
+                    "SA RECOVER: path %d has no extruder sensor configured. "
+                    "This routine feeds to that sensor and will not run "
+                    "blind." % path)
+            budget = owner._bowden_lengths[path] * 1.10
+            step   = owner.feed_step_size
+            crept  = 0.0
+            gcmd.respond_info(
+                "SA RECOVER: creeping to the extruder sensor at %.0fmm/s "
+                "(up to %.0fmm). No blast — the tail's position is unknown."
+                % (owner.feed_speed, budget))
+            last, strikes, stalled = abs(enc.get_distance()), 0, False
+            while crept < budget and not owner._extruder_sensor_active(path):
+                motion.drive_move(step, speed=owner.feed_speed)
+                crept += step
+                owner.reactor.pause(
+                    owner.reactor.monotonic() + owner.sensor_delay)
+                last, strikes, stalled = self._jam_watch(
+                    enc, step, last, strikes)
+                if stalled:
+                    motion.servo_disengage()
+                    gcmd.respond_info(
+                        "SA RECOVER: STOPPED — the encoder went quiet %.0fmm "
+                        "into the creep while the drive kept pushing. That is "
+                        "a jam, not a slow feed. Nothing is melted yet, so "
+                        "this stops here rather than spending the remaining "
+                        "%.0fmm against a blockage." % (crept, budget - crept))
+                    return
+            if not owner._extruder_sensor_active(path):
+                motion.servo_disengage()
+                gcmd.respond_info(
+                    "SA RECOVER: the new filament never reached the extruder "
+                    "sensor on path %d after %.0fmm (encoder saw %.1fmm). It "
+                    "may be obstructed by the remnant — that is the case "
+                    "docs/RECOVERY.md says needs a cold pull by hand, not more "
+                    "pushing." % (path, crept, abs(enc.get_distance())))
+                return
+            gcmd.respond_info(
+                "SA RECOVER: at the extruder sensor after %.0fmm driven "
+                "(encoder saw %.1fmm)." % (crept, abs(enc.get_distance())))
+        else:
+            gcmd.respond_info(
+                "SA RECOVER: filament already at the extruder sensor.")
+
+        owner.gcode.run_script_from_command(
+            "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.0f" % (extruder_name, temp - 2))
+        self._move_to_purge_position(gcmd, False)
+
+        # ── past the gears, and through the nozzle ────────────────────────
+        # Everything from here displaces the remnant OUT OF THE NOZZLE, so the
+        # limit is the melt rate, not the tube's feed rate. The first version
+        # ran this at feed_speed -- 50mm/s, which is 120mm3/s of 1.75mm
+        # filament into a head configured for 10. Twelve times over. Fast
+        # enough to strip the new filament against a plug it cannot melt
+        # through, which turns a recovery into a second failure.
+        flow_mms, flow_why = self._melt_flow_speed(path)
+        gcmd.respond_info("SA RECOVER: melt-rate limit — %s." % flow_why)
+
+        # The toolhead sensor may ALREADY read filament -- that is the remnant,
+        # not the new tip -- so a sensor-terminated sync cannot mean here what
+        # it normally means. One loop covers both: the sensor terminates it
+        # when it starts clear, the measured span does when it does not.
+        th_was_on = owner._toolhead_sensor_active(path)
+        span = owner.th_sensor_to_toolhead(path)
+        if span <= 0:
+            span = owner.th_toolhead_to_nozzle(path)
+        span += 20.0
+        if th_was_on:
+            gcmd.respond_info(
+                "SA RECOVER: the toolhead sensor already reads filament, which "
+                "is the remnant rather than the new tip — so this feeds %.0fmm "
+                "by distance instead of waiting for a sensor that is already "
+                "on." % span)
+        else:
+            gcmd.respond_info(
+                "SA RECOVER: feeding to the toolhead sensor (up to %.0fmm)."
+                % span)
+
+        # SYNC=0 starts the drive move immediately rather than queueing it
+        # behind the extruder, so both run the same distance at the same speed
+        # at the same time. Driving one without the other buckles filament in
+        # the tube.
+        dn      = owner._drv_name()
+        sync_f  = int(flow_mms * 60)
+        step    = owner.feed_step_size
+        enc.set_direction(forward=True)
+        enc.reset_distance()
+        owner.gcode.run_script_from_command("M83")
+        motion._cancel_timeout(dn)
+        owner.gcode.run_script_from_command(
+            "MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
+        fed, last, strikes, stalled, arrived = 0.0, 0.0, 0, False, False
+        try:
+            while fed < span:
+                owner.gcode.run_script_from_command(
+                    "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.2f "
+                    "SPEED=%.1f SYNC=0" % (dn, step, flow_mms))
+                owner.gcode.run_script_from_command(
+                    "G1 E%.2f F%d" % (step, sync_f))
+                owner.gcode.run_script_from_command("M400")
+                fed += step
+                last, strikes, stalled = self._jam_watch(
+                    enc, step, last, strikes)
+                if stalled:
+                    break
+                if not th_was_on and owner._toolhead_sensor_active(path):
+                    arrived = True
+                    break
+        finally:
+            motion._arm_timeout(dn)
+            motion.servo_disengage()
+
+        moved = abs(enc.get_distance())
+        pct   = (100.0 * moved / fed) if fed > 0 else 0.0
+        gcmd.respond_info(
+            "SA RECOVER: fed %.0fmm at %.1fmm/s, encoder saw %.1fmm (%.0f%%)."
+            % (fed, flow_mms, moved, pct))
+
+        if stalled:
+            gcmd.respond_info(
+                "SA RECOVER: STOPPED — the encoder went quiet while the drive "
+                "and extruder kept pushing. The new filament is not moving, so "
+                "the remnant is not passing. docs/RECOVERY.md: a remnant that "
+                "will not pass is a cold pull by hand, not more pushing. "
+                "Path %d left 'unknown'." % path)
+            owner.path_states[path] = 'unknown'
+            return
+        if not th_was_on and not arrived:
+            gcmd.respond_info(
+                "SA RECOVER: the new filament did not reach the toolhead "
+                "sensor on path %d after %.0fmm — aborted." % (path, fed))
+            owner.path_states[path] = 'unknown'
+            return
+
+        # ── purge the column out ──────────────────────────────────────────
+        # gear nip to tip is what has to be displaced for the old material to
+        # be gone, plus the normal prime margin. Bounded, because pushing into
+        # a blockage is the one thing here that can make matters worse.
+        column = owner.th_gear_to_nozzle(path) + owner.purge_length
+        column = min(column, self._RECOVER_PURGE_MAX)
+        f = int(flow_mms * 60)
+        gcmd.respond_info(
+            "SA RECOVER: purging %.0fmm at %.1fmm/s — the gear-to-tip column "
+            "plus prime. Watch the nozzle: the old colour should give way to "
+            "the new." % (column, flow_mms))
+        owner.gcode.run_script_from_command("M83")
+        self._extrude_mm(column, f)
+
+        # ── did it work? sensors, not hope ────────────────────────────────
+        ok = (owner._entry_sensor_active(path)
+              and owner._extruder_sensor_active(path)
+              and owner._toolhead_sensor_active(path))
+        if ok:
+            owner.path_states[path] = 'loaded'
+            gcmd.respond_info(
+                "SA RECOVER: path %d reads loaded on all three sensors. If the "
+                "purge ran clean, the remnant is gone — purge more with "
+                "SA_FORM_TIP-style overrides or a manual G1 E if colour is "
+                "still changing." % path)
+        else:
+            owner.path_states[path] = 'unknown'
+            gcmd.respond_info(
+                "SA RECOVER: path %d does NOT read loaded on all three sensors "
+                "afterwards (entry:%s extruder:%s toolhead:%s). The remnant "
+                "may still be in there. Do not keep pushing — docs/RECOVERY.md "
+                "says a remnant that will not pass is a cold pull by hand."
+                % (path,
+                   "Y" if owner._entry_sensor_active(path) else "N",
+                   "Y" if owner._extruder_sensor_active(path) else "N",
+                   "Y" if owner._toolhead_sensor_active(path) else "N"))
 
     def _do_unload_inner(self, gcmd, path):
         """Full filament unload sequence for *path*.
@@ -1747,6 +2299,7 @@ class SASequences:
         # reading 0.0mm the whole way. Stay at feed_step_size until the
         # encoder has actually shown motion once, then escalate.
         proved = False
+        quiet_past = 0   # sub-pulse steps seen after the tip cleared the encoder
 
         try:
             while owner._entry_sensor_active(path) and retracted < limit:
@@ -1796,14 +2349,59 @@ class SASequences:
                     proved = True
                 if retracted > owner._bowden_lengths[path]:
                     no_motion = 0
+                    # The tip is past the encoder now, which is the whole point
+                    # of this retract -- keep going and the only thing that
+                    # changes is how far it ends up from the drive gear. Path 4
+                    # ran to bowden+100 = 1500mm and left the tip ~110mm
+                    # upstream of the encoder, further than the park's 50mm
+                    # search could reach, so the park failed on filament that
+                    # was perfectly fine.
+                    if moved < step * 0.2:
+                        quiet_past += 1
+                        if quiet_past >= 2:
+                            gcmd.respond_info(
+                                "SA: Tip is past the encoder after %.0fmm — "
+                                "stopping here so it stays within the drive "
+                                "gear's reach (path %d)." % (retracted, path))
+                            break
+                    else:
+                        quiet_past = 0
                 elif moved < step * 0.2:
                     no_motion += 1
                     if no_motion >= 3:
+                        total = abs(enc.get_distance())
+                        # EXACTLY zero is a different fault from "stopped".
+                        #
+                        # A park leaves the tip UPSTREAM of the encoder --
+                        # "Filament parked 5.0mm before encoder" -- so a
+                        # retract from there moves it further away and the
+                        # encoder was never going to read anything at all.
+                        # That is not a jam; it is a path already as unloaded
+                        # as this routine can make it. Reported as "Drive gear
+                        # lost grip or filament jammed" on path 4: 30mm driven,
+                        # 0.0mm encoder, on a perfectly healthy parked path.
+                        #
+                        # A genuine jam has filament ON the encoder and then
+                        # stopping, so it always leaves a non-zero reading
+                        # behind it. That is what tells the two apart.
+                        if total <= 0.0:
+                            gcmd.respond_info(
+                                "SA: Path %d — the encoder never saw filament "
+                                "at all in %.0fmm. The tip is already upstream "
+                                "of the encoder, which is exactly where a park "
+                                "leaves it, so there is nothing here to pull. "
+                                "If this path was parked it is already "
+                                "unloaded; if it was not, the drive has no "
+                                "grip. Either way, pull from the roll end to "
+                                "remove it." % (path, retracted))
+                            motion.servo_disengage()
+                            owner.path_states[path] = 'partial'
+                            motion.save_position()
+                            return
                         gcmd.respond_info(
-                            "SA: ERROR — encoder not moving for 3 steps on path %d "
-                            "(%.0fmm driven, %.1fmm encoder). "
-                            "Drive gear lost grip or filament jammed."
-                            % (path, retracted, abs(enc.get_distance())))
+                            "SA: ERROR — encoder stopped after %.1fmm on path %d "
+                            "(%.0fmm driven). Drive gear lost grip or filament "
+                            "jammed." % (total, path, retracted))
                         motion.servo_disengage()
                         owner.path_states[path] = 'unknown'
                         return

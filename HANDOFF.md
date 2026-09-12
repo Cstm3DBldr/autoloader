@@ -4,38 +4,211 @@ Shared memory between local and cloud sessions. Local `~/.claude` memory is
 invisible to cloud sessions, so anything a future session needs lives here.
 Keep it current; delete items as they land.
 
-**Last updated:** 2026-09-02
+**Last updated:** 2026-09-11
 
 ---
 
-## Where things stand
+## Access and controls
 
-Working and verified on the printer (192.168.1.214):
+> **Sharing the printer with another project?** `docs/PRINTER.md` is the
+> project-neutral version of this section — access, how to read the console,
+> which restart reloads what, and the four edges of two projects on one
+> machine. It is written to be **copied into another repo verbatim**. Keep the
+> two in step, or keep only that one.
 
-- **Tip forming** — the cold-shear approach lands a clean 1.75 mm tip with
-  minimal stringing on both T0 and T1. Tuned values are in
-  `autoloader/parameters.cfg` (`tip_form_temp: 165`, `tip_form_shear_temp: 150`,
-  `tip_form_shear_speed: 40`). Full load + unload verified on both channels.
-- **Filament profile retention** — the three rules hold: removal wipes the
-  profile, a profile selected on an empty channel is wiped after
-  `material_select_timeout` (60 s), and a channel whose entry sensor sees
-  filament keeps its profile until removal or a manual change.
-- **Entry-parked state** — filament at the entry sensor promotes the path to
-  `partial` and holds there.
-- **Auto-park queue** — owned by the `[autoloader]` state monitor, not the
-  sensors' `insert_gcode`. Bursts of insertions all park, in order.
-- **LEDs** — hot nozzles warn amber whether or not the head is mounted; every
-  waiting slot in the rack pulses, tinted by its stored filament colour; only
-  a fully loaded path goes solid.
-- **Mainsail panel** — ships as a runtime plugin on the Mainsail fork.
-- **KlipperScreen panels** — the design pass is done. All five panels are
-  rebuilt against KlipperScreen's own sizing (`content_width`/`content_height`,
-  `font_size`), fit one screen with no scrolling except settings and configured
-  values, scale with toolhead count, and follow the active theme. Buttons take
-  KlipperScreen's own `colorN` classes so a theme change carries; the autoloader
-  accent overrides only `border-bottom-color`. Titles read "Autoloader X".
-  Calibration prompts are native `action:prompt_*`, so one call serves both
-  Mainsail and KlipperScreen.
+**There are no secrets in this file, and none were needed.** Every route below
+is key-based or unauthenticated on the LAN. No password, token or private key
+was read, stored or typed during any of this work — if a future session finds
+itself needing one, that is new, and it should stop and ask rather than hunt
+for it.
+
+| What | Address | Auth | Notes |
+|---|---|---|---|
+| Printer (the Voron, `sc350`) | `ssh pi@192.168.1.214` | SSH key, `BatchMode=yes` | The only machine this project deploys to |
+| Moonraker REST | `http://192.168.1.214:7125` | none, LAN only | Console, status, gcode injection, database |
+| Mainsail | `http://192.168.1.214/` | none | The panel ships as a runtime plugin |
+| GitHub | `git@github.com:Cstm3DBldr/autoloader.git` | existing credential helper | `main` / `dev` / `printer-dev` / `old-dev` |
+| Second printer (UI testbench) | `ssh biqu@192.168.1.75` | SSH key | An Ender — used ONLY for KlipperScreen UI work, has no autoloader hardware |
+
+**ssh prints a post-quantum warning on every call** to this host. It is noise,
+not a failure. Filter it or output gets unreadable:
+
+```
+2>&1 | grep -v "post-quantum\|store now\|may need\|^\*\*"
+```
+
+**scp needs `-O` against this printer.** OpenSSH 9+ defaults to the SFTP
+protocol, which this sshd closes on — the error is `scp: Connection closed`,
+which names neither the transport nor the cause and reads like an unreachable
+host directly after a successful `ssh` to the same box.
+
+### The commands that actually get used
+
+Reading the printer's console without screenshots — by far the most useful
+thing a session can do, and not obvious:
+
+```
+curl -s "http://192.168.1.214:7125/server/gcode_store?count=60"
+```
+
+It returns the whole console as JSON (`result.gcode_store[].message`). Filter
+the `B:`/`T0:` temperature spam or it drowns everything.
+
+Sending a command, same way:
+
+```
+curl -s -X POST "http://192.168.1.214:7125/printer/gcode/script?script=SA_STATUS"
+```
+
+Reading live state — sensors, path states, the resolved guide:
+
+```
+curl -s "http://192.168.1.214:7125/printer/objects/query?autoloader"
+```
+
+Live filament sensors are NOT in the `autoloader` object. They are their own
+Klipper objects: `filament_switch_sensor entry_sensor_N`, `extruder_sensor_N`,
+`toolhead_sensor_N`, each with `filament_detected`.
+
+| Job | Command |
+|---|---|
+| Reload Python extras | `bash ~/autoloader/scripts/klipper_service_restart.sh` |
+| Reload KlipperScreen panels | `bash ~/autoloader/scripts/service_restart.sh KlipperScreen` |
+| Sync non-symlinked files | `cd ~/autoloader && ./post_update.sh` |
+| Recover an MCU shutdown | POST `FIRMWARE_RESTART` |
+| Check for drift, no printer | `python3 scripts/check_drift.py` |
+| Check printer against repo | `./scripts/verify.sh` |
+| Rebuild + ship the Mainsail plugin | `SA_HOST=192.168.1.214 bash scripts/deploy_mainsail_plugin.sh` |
+
+**`FIRMWARE_RESTART` does not reload Python extras** — it only re-parses the
+config and resets the MCUs. Every change to `klipper/extras/*.py` needs the
+service restart. This has cost days before.
+
+**Deploying = pushing.** The printer follows `printer-dev` through Moonraker's
+Update Manager (`primary_branch: printer-dev` in its own `[update_manager
+autoloader]` block — other blocks in that file say `main` and are unrelated).
+The working loop is: push to `printer-dev`, then on the printer
+`git fetch && git reset --hard origin/printer-dev`, then the service restart.
+
+---
+
+## Machine setup that measurements depend on
+
+**Extruder tension, set 2026-09-12: unloaded, backed off to zero lash, then one
+turn in — identical on all six toolheads.** Every tip-forming and toolhead
+geometry number is referenced to this. Change it and they stop describing the
+machine.
+
+It earned its place the hard way: the original tip tuning produced a clean
+1.75mm tip on T0 and T1, and the identical settings produced 2.02mm on T4. That
+0.27mm is the gears flattening the filament — mechanical, so it survived every
+shear temperature and speed tried against it. See `docs/TIPFORM_CAL.md`.
+
+## Topology
+
+### Hardware
+
+**Six parallel lanes, one movable gear.** Each path is a fixed lane with its
+own entry sensor, its own encoder and its own tube. Nothing about a lane moves.
+The only travelling part is the drive gear on the selector carriage.
+
+```
+                    ┌── the ONLY moving part ──┐
+                    │  Drive Gear on carriage  │
+                    │  Selector positions it,  │
+                    │  Servo grips or releases │
+                    └────────────┬─────────────┘
+                                 │ engages ONE lane at a time
+   ┌─────────────────────────────┴─────────────────────────────┐
+   ▼                                                           ▼
+Roll N ─ Entry N ─[gear]─ Encoder N ─ Tube N ─ ExtSns N ─ gears ─ ThSns N ─ Nozzle N
+       └ always live ─┘ └ always live ┘        └─ per toolhead, always live ─┘
+
+  lane pitch 24.69mm   (T0 0.00 … T5 123.45, measured)
+```
+
+The encoder sits **downstream of the gear**, which is what makes the tail of a
+finished roll pass it — a measured mid-tube datum. Each encoder is locked to
+its lane and counts whatever moves, including while the extruder is pulling and
+the drive is disengaged. That is the whole reason the machine is built this
+way: fast loads, fast unloads, and jam/break detection during a print.
+
+A single-channel optical encoder **cannot sense direction**. The pulse count is
+always right; the accumulated sign is only right if something set it. So net
+consumption comes from the extruder, and the encoder answers "is it moving".
+
+### MCUs
+
+| Name | Board | Carries |
+|---|---|---|
+| `mcu` | BTT Manta M8P | the printer itself (in printer.cfg — do not touch) |
+| `autoloader` | BTT MMB CAN V2.0, uuid `329ce333239a` | both steppers, servo, 6 encoders, 6 entry sensors |
+| `et0`–`et5` | BTT EBB36 per toolhead | extruder + `extruder_sensor_N` + `toolhead_sensor_N` |
+
+**The `autoloader` board has no timing slack.** It bit-bangs software SPI for
+two TMC5160s (hardware SPI fails on it) and polls twelve button pins every 2ms,
+and reports ~41x the per-task time of the main MCU. It has shut down with
+`Timer too close` when the host stalled on file I/O. Anything that blocks the
+Klipper host — notably repeated `SAVE_VARIABLE`, each of which rewrites the
+whole file synchronously — starves it first.
+
+### Software, and where each piece lives
+
+```
+  repo ~/autoloader/  ──symlink──►  ~/klipper/klippy/extras/*.py   (6 extras)
+                      ──symlink──►  ~/moonraker/.../sa_moonraker.py
+                      ──copy─────►  ~/printer_data/config/autoloader/*.cfg
+                      ──copy─────►  ~/KlipperScreen/panels/sa_*.py
+                      ──generate─►  parameters.cfg, hardware.cfg, pin_aliases.cfg
+                      ──build────►  ~/mainsail/plugins/autoloader-panel-plugin.js
+```
+
+Extras are symlinked, so a `git reset` on the printer changes the running code
+the moment the service restarts. Panels and cfgs are **copied** by
+`post_update.sh`, so they can silently run old code if it is skipped.
+
+Three cfgs are **generated** from `installer/templates/` whenever an answer file
+exists. Editing `autoloader/parameters.cfg` alone does nothing — `post_update`
+regenerates it from the template and the change vanishes. Change both.
+
+### The one definition that matters
+
+`_GUIDE` in `klipper/extras/sa_calibration.py` is the single definition of the
+twelve-step calibration guide. `guide_pages()` resolves it into the status
+object and **every UI renders what it is given** — Mainsail and KlipperScreen
+describe nothing themselves. Adding a step is one edit there, and
+`scripts/check_drift.py` proves the numbering agrees with itself.
+
+---
+
+## Where things stand — 2026-09-11
+
+`main` and `dev` are both at `5741faf`; `printer-dev` is ahead with work that
+has not been proved on the machine yet.
+
+**Shipped to `main` today:** guide step 12 (toolhead geometry measured by each
+path's own encoder), the selector keeping its home while it holds position, the
+park-queue fix, the `Timer too close` fix, and the burst-write sweep.
+
+**Measured, and the reason step 12 exists:** nozzle-to-extruder-sensor is
+93.8–106.1mm across six toolheads, against a config default of `50.0` that had
+never been measured. The tip former had been aiming past the extruder sensor at
+52.5mm and missing every time, with a fallback retract quietly covering for it.
+
+**Held on `printer-dev`, unproven:**
+
+- the hot-pull shear drop (shear 25 °C colder when the nozzle came in hot,
+  because a soaked melt stretches the tip) — needs a hot unload where the
+  fallback sync does NOT fire
+- the retract stopping at the encoder instead of at `bowden_length + 100` —
+  needs a Branch B or C unload
+- `SA_CALIBRATE_BOWDEN`'s own blast at 160 — that routine measures the lengths
+  everything else is referenced against, so it wants its own run
+
+**Do not trust the six stored geometry sets against each other.** They were
+taken three different ways — five with coarse overshoot, T4 after the midpoint
+correction, none with the hot-shear change. That is why the guide flags T2 as
+an outlier: T2 did not move, T4 moved under it.
 
 ---
 
@@ -386,7 +559,14 @@ without the reasoning that ruled it out.
   same one-closure-at-a-time limit.
 - Does rewind ever need to run during a print, or only during unload?
 
-### 5. Full end-to-end test sweep — Mainsail panel
+### 5. ~~Full end-to-end test sweep — Mainsail panel~~ — DONE 2026-09-11
+
+Mike walked every one of the twelve steps through Mainsail on 2026-09-11,
+and that pass is where the day's six toolhead measurements came from. The
+web side of the chain is proven by use, not by inspection.
+
+<details><summary>original plan</summary>
+
 
 Run every command from the Mainsail panel rather than the console, and log
 both UI bugs and any hardware faults that surface:
@@ -401,7 +581,17 @@ both UI bugs and any hardware faults that surface:
 Capture: anything that misreports state, any dialog that strands the user,
 any control that fires the wrong tool number.
 
-### 6. Full end-to-end test sweep — KlipperScreen
+</details>
+
+### 6. Full end-to-end test sweep — KlipperScreen — STILL OPEN
+
+The half with the history: KlipperScreen keeps only the LAST `prompt_text`,
+its guide panel once sat on step 1 all session reading a field Moonraker had
+never sent, and its panels are copied rather than symlinked so they can run
+old code without saying so. Checked in code so it need not be rediscovered:
+`_emit_ui_prompt` collapses the body into one `prompt_text` unless `ks_line`
+is passed, and step 12 does not pass it, so its prompts should arrive whole.
+
 
 The **design pass is complete** (see "Where things stand"). What is left here
 is the same functional sweep as item 5, driven from the touchscreen: every

@@ -30,57 +30,23 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
 ## Confirmed bugs, not yet fixed
 
-- [ ] **Guide step 12: toolhead geometry, measured by the encoder.** The four
-      toolhead distances are guesses today and one of them is provably wrong.
-      The encoders are locked to their paths and count whatever the filament
-      does -- including while the EXTRUDER is moving it and the drive gear is
-      disengaged. That is what makes these measurable without a ruler, and what
-      makes first power-up self-configuring.
+- [ ] **Re-measure all six toolheads on one method.** Step 12 works and the
+      code now uses its per-path figures, so the stale 50.0 defaults no longer
+      decide anything. But the six stored sets were taken three different ways:
+      T0-T3 and T5 with 5-10mm coarse overshoot, T4 after the midpoint
+      correction, and none with the hot-shear change. That is why the guide
+      flags T2 as the outlier — T2 did not move, T4 moved under it.
+      *Done when:* all six are measured on the current build finishing on
+      +1mm, and the gear-to-tip spread is a property of the hardware rather
+      than of how each was taken.
 
-      Measure three, derive two:
-
-      | Distance | How |
-      |---|---|
-      | extruder sensor -> toolhead sensor | **already happens.** `_sync_feed_to_toolhead_sensor` runs drive+extruder until the toolhead sensor fires and throws the number away. Record it, with a step finer than `feed_step_size` -- the 40.0mm reading on 2026-09-11 was quantised to 10mm |
-      | toolhead sensor -> nozzle tip (`fill_nozzle_length`) | hot nozzle, extrude slowly from the toolhead-sensor edge, operator presses a button when filament appears at the tip. Operator-confirmed because nothing senses the tip |
-      | extruder sensor -> gear nip (`sensor_to_gear`) | **retract, never push.** Drive DISENGAGED, retract with the extruder: the path encoder still counts because it is fixed on the lane. It stops the instant the tip leaves the nip -- extruder turning, nothing moving. Then drive back until the extruder sensor clears; that gap is the answer |
-      | `nozzle_to_sensor_dist` | **derived** = toolhead-to-nozzle + sensor-to-toolhead |
-      | `nozzle_distance` (gears -> tip) | **derived** = (sensor-to-toolhead - sensor-to-gear) + toolhead-to-nozzle |
-
-      **Pull, do not push, for the gear nip.** Feeding a tip into stationary
-      gears would locate them too, and would buckle filament in the tube on
-      overshoot. Losing grip on a retract is harmless.
-
-      Per-path, like `bowden_length_N` -- toolheads can differ, the guide
-      already renders per-path grids, and the three scalars it replaces are
-      global only because nobody measured them.
-
-      Step 12, after Bowden length: it needs filament reaching the extruder
-      sensor and the toolhead sensors already proved. Touches `_GUIDE`,
-      `_STEP_TOTAL`, `_STEP_NAMES` and both lookup tables -- `check_drift.py`
-      covers all five.
-      *Done when:* a fresh machine runs the guide end to end with the four
-      distances measured rather than defaulted, and an unload clears the
-      extruder sensor without the fallback firing.
-
-
-- [ ] **`nozzle_to_sensor_dist` is wrong and the machine compensates.** The tip
-      former's Phase 3 targets `nozzle_to_sensor_dist x 1.05` = 52.5mm to put
-      the tip past the extruder sensor. On the 2026-09-11 T1 unload it reported
-      `past gears, tip at 52mm` and the very next line was `Extruder sensor
-      still active — sync drive+extruder to pull filament clear`. The fallback
-      works, so nothing fails — it just does an extra retract every unload.
-      Rebuilt from the unload's own moves the span is nearer **110mm**
-      (33.5 shear + 17.5 clear + 59.4 retract-to-clear, two of the three
-      encoder-measured). An earlier ~90 estimate here added the measured 40mm
-      sensor-to-sensor span to the `fill_nozzle_length` default; this is better
-      evidence and supersedes it. All three of
-      `nozzle_to_sensor_dist`, `fill_nozzle_length` and `nozzle_distance` sit
-      at their 50.0 default and describe different spans, so none of them has
-      been measured.
-      *Done when:* the three are measured on one toolhead and an unload clears
-      the extruder sensor without the fallback firing.
-
+- [ ] **Three unproven changes are parked on `printer-dev`.**
+      The hot-pull shear drop (needs a hot unload where the fallback sync does
+      NOT fire), the retract stopping at the encoder (needs a Branch B or C
+      unload), and `SA_CALIBRATE_BOWDEN`'s own blast at 160 (that routine
+      measures the lengths everything else is referenced against, so it wants
+      its own run).
+      *Done when:* each has run on the machine and moved to `dev`.
 
 - [ ] **Three installer questions are asked and the answers discarded.**
       `REGISTER_UPDATE_MANAGER` — `install.sh` writes `autoloader.ini`
@@ -97,12 +63,25 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
 ## Never verified
 
-- [ ] **Walk the eleven-step chain start to finish on both UIs.** Individual
-      steps have all run; the chain as a whole has not since the guide was
-      consolidated from three definitions into one. This is the thing that
-      would waste a rebuild evening.
-      *Done when:* one pass from step 1 to step 11 without dropping out of the
-      guide, on Mainsail and on the touchscreen.
+- [ ] **Walk the twelve-step chain on KLIPPERSCREEN.** Mainsail is done --
+      Mike ran every step through it on 2026-09-11, which is what the whole
+      day's measurements came out of, so the web side of the chain is proven
+      by a full pass rather than by inspection.
+
+      The touchscreen has not been walked since the guide grew to twelve, and
+      it is the side with the history: KlipperScreen keeps only the LAST
+      prompt_text, its guide panel once sat on step 1 all session because it
+      read a status field Moonraker had never sent, and its panels are copied
+      rather than symlinked so they can silently run old code.
+
+      Checked in the code, so it does not need discovering at the machine:
+      `_emit_ui_prompt` collapses the body into one prompt_text unless
+      `ks_line` is passed, and step 12 does not pass it -- so its prompts,
+      including the three-button nozzle hunt, should arrive whole.
+
+      *Done when:* one pass from step 1 to step 12 on the touchscreen without
+      dropping out of the guide, with step 12's grid showing millimetres and
+      its three-button prompt readable.
 
 - [ ] **Mid-print runout is designed but not built** — `docs/RUNOUT_MIDPRINT.md`.
       Today a roll running out mid-print sets the path `empty` and wipes the
@@ -124,6 +103,23 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* a real mid-print runout warns, pauses with the tail still
       short of the gears, swaps and resumes with no colour carry-over.
 
+- [ ] **Tip-forming calibration is designed but not built** —
+      `docs/TIPFORM_CAL.md`. The last autoloader calibration still done by
+      hand-editing a config. Form a tip, let the operator score it, save it
+      **per product line** in `variables.cfg` — the tracked brand files are
+      overwritten by `post_update.sh`, so a measured value written there is
+      lost on the next update. Adds one link to the chain `cfg()` already
+      resolves. One panel carrying the knobs, FORM TIP, and LOAD/UNLOAD, so a
+      tuning session does not need a second screen.
+      *Worth it because:* the shipped table has ONE measured row. PETG, ABS
+      and ASA all carry PLA's -15C shear delta applied to a different print
+      temperature, which assumes the delta transfers across glass
+      transitions. Measuring PLA, PETG and one styrenic settles whether the
+      table can honestly keep deriving.
+      *Done when:* three materials are measured through it, saved to their
+      product lines, and survive a reload — and the table either keeps
+      deriving with evidence or stops claiming to.
+
 - [ ] **Runout recovery is designed but not built** — `docs/RECOVERY.md`.
       A path with entry clear and filament still in the head is currently
       refused by both load and unload. Settled: the new roll pushes the
@@ -132,13 +128,6 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       `SA_RECOVER TOOL=N` rather than automatic.
       *Done when:* the routine exists AND a real broken-filament path recovers
       to a normal loaded state, verified by all three sensors.
-
-- [ ] **The blast is derated twice.** `_blast_and_approach` uses
-      `blast_speed = saved_max * 0.75`, but `encoder_max_speed` is ALREADY the
-      80% safe figure the sweep saved. So a path measured at 200mm/s blasts at
-      120 — 60% of what was proved. The sweep applies its own margin; this
-      applies a second one. Mike's call whether to drop the 0.75.
-      *Done when:* decided, and the reasoning is written next to the constant.
 
 - [ ] **Unloading a path parked BEFORE the encoder always errors.** The park
       leaves the tip ~5mm short of the encoder, so the encoder reads 0.0mm and
