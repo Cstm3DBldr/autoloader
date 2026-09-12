@@ -4,7 +4,7 @@ Shared memory between local and cloud sessions. Local `~/.claude` memory is
 invisible to cloud sessions, so anything a future session needs lives here.
 Keep it current; delete items as they land.
 
-**Last updated:** 2026-09-11
+**Last updated:** 2026-09-12
 
 ---
 
@@ -181,36 +181,46 @@ describe nothing themselves. Adding a step is one edit there, and
 
 ---
 
-## Where things stand — 2026-09-11
+## Where things stand — 2026-09-12
 
-`main` and `dev` are both at `5741faf`; `printer-dev` is ahead with work that
-has not been proved on the machine yet.
+`main`, `dev` and `printer-dev` are all at one commit for the first time in a
+while, and the printer is on it. `printer-dev` then took KlipperScreen UI work
+that Mike has not finished looking at.
 
-**Shipped to `main` today:** guide step 12 (toolhead geometry measured by each
-path's own encoder), the selector keeping its home while it holds position, the
-park-queue fix, the `Timer too close` fix, and the burst-write sweep.
+**All six heads unloaded cleanly through the real `SA_UNLOAD`, no overrides.**
+Verified from the log rather than claimed: every one of T0-T5 shows both the
+`Cooling extruder N -> 165C for tip forming` step-down and `4 cooling moves of
+10.0mm, 10 to 50 mm/s`, and all six paths finished `partial` with the tip
+parked at the drive gear. That is the tip recipe measured on two heads and then
+proved on six.
 
-**Measured, and the reason step 12 exists:** nozzle-to-extruder-sensor is
-93.8–106.1mm across six toolheads, against a config default of `50.0` that had
-never been measured. The tip former had been aiming past the extruder sensor at
-52.5mm and missing every time, with a fallback retract quietly covering for it.
+**The recipe, and why it was wrong before.** Shear mode had been the default
+since 2026-09-02 and its branch RETURNS before the cooling moves, so this
+machine had never run one. Two evenings of tips were judged without the step
+that shapes a tip. Cross-sections against round 1.75mm filament (2.405mm2),
+which is what separates a squash from a swell:
 
-**Held on `printer-dev`, unproven:**
+    shear mode            2.02 x 1.50   -1%   squashed, heavy stringing
+    shear + DWELL=15  T4  2.00 x 1.70  +11%
+    shear + DWELL=15  T0  2.12 x 1.70  +18%
+    SHEAR=0, cooling      1.91 x 1.75   +9%   no squash, little/no string
 
-- the hot-pull shear drop (shear 25 °C colder when the nozzle came in hot,
-  because a soaked melt stretches the tip) — needs a hot unload where the
-  fallback sync does NOT fire
-- the retract stopping at the encoder instead of at `bowden_length + 100` —
-  needs a Branch B or C unload
-- `SA_CALIBRATE_BOWDEN`'s own blast at 160 — that routine measures the lengths
-  everything else is referenced against, so it wants its own run
+T0 and T4 differing by 7 points on identical settings is what ruled the
+toolhead out and the setting in. `tip_form_shear_temp` and
+`tip_form_push_length` are both 0 now, and all eleven per-material
+`shear_temp_*` rows are commented out -- that value is BOTH a tuning knob and
+the mode switch (`if shear_temp > 0`), so any per-material row re-enabled a
+mode the global said was off.
+
+**`SA_RECOVER` exists and has recovered a real broken path** -- T4 in the state
+no load branch handles (entry FILAMENT, extruder CLEAR, toolhead FILAMENT).
+Its melt-rate ceiling and per-step jam gate were added AFTER that run and have
+never been exercised.
 
 **Do not trust the six stored geometry sets against each other.** They were
-taken three different ways — five with coarse overshoot, T4 after the midpoint
-correction, none with the hot-shear change. That is why the guide flags T2 as
-an outlier: T2 did not move, T4 moved under it.
-
----
+taken three different ways. All six heads are now in one identical state --
+`partial`, tip at the gate, extruder tension uniform since 2026-09-12 -- which
+makes this the moment to re-measure them on one method.
 
 ## Installer — built and proven on hardware (2026-09-04)
 
