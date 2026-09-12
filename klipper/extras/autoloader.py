@@ -83,6 +83,12 @@ class Autoloader:
     STATE_EMPTY   = 'empty'
     STATE_PARTIAL = 'partial'
     STATE_LOADED  = 'loaded'
+    # The roll ended while the path was loaded. NOT empty: the tube still
+    # holds a full bowden length of good filament -- 1359-1517mm on this
+    # machine -- and the print is still consuming it. The profile is KEPT,
+    # because it is the only record of what is in the head and the reload
+    # needs it to pick a temperature. See docs/RUNOUT_MIDPRINT.md.
+    STATE_LOW     = 'low' 
 
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -616,8 +622,20 @@ class Autoloader:
                     was = self._entry_prev[i]
                     self._entry_prev[i] = True
 
-                    if self.path_states[i] in (self.STATE_EMPTY,
-                                               self.STATE_UNKNOWN):
+                    if self.path_states[i] == self.STATE_LOW:
+                        # A spool went back on a path that was running out.
+                        # The tube never emptied, so this is straight back to
+                        # loaded -- and the profile was never cleared, so
+                        # there is nothing to restore.
+                        self._set_state_persist(
+                            i, self.STATE_LOADED,
+                            "filament returned to a low path")
+                        self.gcode.respond_info(
+                            "SA: Path %d is no longer low — filament is back "
+                            "at the entry sensor." % i)
+                        self._queue_led_refresh(i)
+                    elif self.path_states[i] in (self.STATE_EMPTY,
+                                                 self.STATE_UNKNOWN):
                         self._set_state_persist(
                             i, self.STATE_PARTIAL,
                             "entry sensor detected filament")
@@ -656,6 +674,13 @@ class Autoloader:
                     #    longer material_select_timeout before the slot
                     #    is wiped, so selecting a profile and then
                     #    walking over to fetch the spool doesn't lose it.
+                    # STATE_LOW is deliberately NOT here. A low path has
+                    # already been through this branch once; re-entering it
+                    # would wipe the profile the low state exists to protect.
+                    # And it must be excluded UNCONDITIONALLY rather than by
+                    # checking _is_printing(), because that reads False while
+                    # the print is PAUSED -- which is exactly when the reload
+                    # is about to need the profile.
                     if self.path_states[i] in (self.STATE_LOADED,
                                                self.STATE_PARTIAL):
                         # Sensor inactive on a path that still believes it
@@ -670,6 +695,23 @@ class Autoloader:
                             i, eventtime - self.runout_timeout_seconds)
                         if (eventtime - last_active
                                 >= self.runout_timeout_seconds):
+                            # A roll ending UNDER A PRINT is not an empty
+                            # path. The tube still holds a bowden length the
+                            # print is busy consuming, and the profile is the
+                            # only thing that knows what it is. Flag it low,
+                            # keep everything, and say so once.
+                            if (self._is_printing()
+                                    and self.path_states[i] == self.STATE_LOADED):
+                                self._set_state_persist(
+                                    i, self.STATE_LOW,
+                                    "roll ended mid-print; tube still loaded")
+                                self.gcode.respond_info(
+                                    "SA: LOW FILAMENT — path %d. The roll has "
+                                    "ended but the tube still holds filament, "
+                                    "so the print continues. Have a spool "
+                                    "ready." % i)
+                                self._queue_led_refresh(i)
+                                continue
                             self._set_state_persist(
                                 i, self.STATE_EMPTY,
                                 "entry sensor clear for %.1fs (runout)"
@@ -1989,7 +2031,7 @@ class Autoloader:
         path  = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
         state = gcmd.get('STATE').lower().strip()
         valid = [self.STATE_UNKNOWN, self.STATE_EMPTY,
-                 self.STATE_PARTIAL, self.STATE_LOADED]
+                 self.STATE_PARTIAL, self.STATE_LOADED, self.STATE_LOW]
         if state not in valid:
             gcmd.respond_info(
                 "SA: Invalid STATE '%s'. Valid values: %s" % (state, ', '.join(valid)))

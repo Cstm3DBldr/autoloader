@@ -22,6 +22,10 @@ _STATE_MARKUP = {
     'empty':   ('EMPTY',         '#616161'),
     'partial': ('PARTIAL',       '#E65100'),
     'unknown': ('UNKNOWN',       '#F9A825'),
+    # The roll ended but the tube is still full and the print is still
+    # running. Amber, because it wants a spool fetched -- not red, because
+    # nothing has gone wrong yet. See docs/RUNOUT_MIDPRINT.md.
+    'low':     ('<b>LOW</b>',    '#E8A33D'),
 }
 
 # Above this the hotend reads as hot. Klipper's heater_fan already manages

@@ -750,6 +750,8 @@ class Panel(ScreenPanel):
         """Auto-clear profile if path still hasn't been loaded."""
         self._profile_timers.pop(path, None)
         state = self._effective_state(path)
+        # 'low' is deliberately absent: a low path still holds a full tube
+        # and behaves like a loaded one until the tail actually runs out.
         if state in ('empty', 'unknown', 'partial'):
             logger.info("sa_load_unload: profile timer — clearing T%d (state=%s)", path, state)
             self._clear_profile_gcode(path)
