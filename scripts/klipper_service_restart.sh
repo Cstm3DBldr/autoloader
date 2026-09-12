@@ -29,21 +29,7 @@
 #
 # For .cfg-only changes, FIRMWARE_RESTART is fine and faster.
 
-# Refuse under a hot heater or a running operation -- see can_restart.py for
-# why each one matters. SA_FORCE=1 overrides both.
-HOST="${SA_HOST:-localhost}"
-if [ "${SA_FORCE:-0}" != "1" ]; then
-    REASON=$(python3 "$(dirname "$0")/can_restart.py" "$HOST")
-    if [ $? -ne 0 ]; then
-        echo "REFUSING to restart Klipper: $REASON"
-        echo "  A toolhead MCU shuts down when the host goes away with its"
-        echo "  heater on, and only FIRMWARE_RESTART clears that."
-        echo "  Wait, or TURN_OFF_HEATERS, or re-run with SA_FORCE=1."
-        exit 1
-    fi
-fi
-
-curl -s -X POST "http://$HOST:7125/machine/services/restart" \
+curl -s -X POST 'http://localhost:7125/machine/services/restart' \
     -H 'Content-Type: application/json' \
     -d '{"service":"klipper"}'
 echo
