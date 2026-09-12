@@ -769,6 +769,7 @@ class SASequences:
         while driven < max_dist:
             # SYNC=0 starts drive move immediately without waiting for the extruder queue.
             # G1 E queues right after — both execute in parallel, same distance and speed.
+            motion.note_drive_speed(sync_speed)
             owner.gcode.run_script_from_command(
                 "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.2f SPEED=%.1f SYNC=0"
                 % (dn, step, sync_speed))
@@ -1099,6 +1100,7 @@ class SASequences:
                     # flip is applied per move rather than baked into the
                     # stepper config -- drive_move does the same, and a raw
                     # MANUAL_STEPPER here would ignore it.
+                    motion.note_drive_speed(owner.feed_speed)
                     owner.gcode.run_script_from_command(
                         "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.3f "
                         "SPEED=%.1f SYNC=0"
@@ -1944,6 +1946,7 @@ class SASequences:
         fed, last, strikes, stalled, arrived = 0.0, 0.0, 0, False, False
         try:
             while fed < span:
+                motion.note_drive_speed(flow_mms)
                 owner.gcode.run_script_from_command(
                     "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.2f "
                     "SPEED=%.1f SYNC=0" % (dn, step, flow_mms))
@@ -2107,6 +2110,7 @@ class SASequences:
 
                 # Single continuous move — drive starts async, extruder follows,
                 # M400 inside _extrude_mm waits for both to complete.
+                motion.note_drive_speed(sync_spd)
                 owner.gcode.run_script_from_command(
                     "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 "
                     "MOVE=%.2f SPEED=%.1f SYNC=0"
@@ -2323,6 +2327,7 @@ class SASequences:
                     # direction flip is applied per move rather than baked
                     # into the stepper config -- drive_move does the same, and
                     # a raw MANUAL_STEPPER here would ignore it.
+                    motion.note_drive_speed(owner.feed_speed)
                     owner.gcode.run_script_from_command(
                         "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.3f "
                         "SPEED=%.1f SYNC=0"

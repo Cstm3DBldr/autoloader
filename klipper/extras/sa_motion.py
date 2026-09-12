@@ -133,6 +133,8 @@ class SAMotion:
                     "MANUAL_STEPPER STEPPER=%s ENABLE=0" % _name)
                 logging.info("SAMotion: auto-disabled stepper '%s' after %.0fs idle",
                              _name, delay)
+                if _name == self._owner_drv_name():
+                    self.note_drive_speed(0.0)
                 # The carriage position was only ever trustworthy because the
                 # motor was holding it. Cutting the current ends that, so the
                 # home goes with it -- otherwise the next move would be
@@ -362,6 +364,7 @@ class SAMotion:
         dn = self._owner_drv_name()
 
         self._cancel_timeout(dn)
+        self.note_drive_speed(speed)
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % dn)
         owner.gcode.run_script_from_command(
@@ -370,10 +373,31 @@ class SAMotion:
         owner.gcode.run_script_from_command("M400")
         self._arm_timeout(dn)
 
+    def note_drive_speed(self, speed):
+        """Record the speed the drive is being commanded at, for the UIs.
+
+        The status screen used to show `feed_speed` -- a config value that is
+        the same number whatever the machine is doing, which tells an operator
+        nothing about the operation in front of them. Mike: "the drive speed
+        should update based on what the process is calling for, not just a
+        static title".
+
+        Set here rather than inferred, because the speed is decided by the
+        caller: a blast runs at encoder_max_speed, a creep at feed_speed, a
+        sync feed at whatever the melt can take. The one thing they share is
+        that they all pass a number to the stepper, so that is what is
+        recorded. Cleared when the motor stops holding.
+        """
+        try:
+            self.owner.drive_speed = float(speed or 0.0)
+        except (TypeError, ValueError):
+            self.owner.drive_speed = 0.0
+
     def drive_disable(self):
         """Immediately disable drive stepper (no timeout delay)."""
         owner = self.owner
         dn = self._owner_drv_name()
+        self.note_drive_speed(0.0)
         self._cancel_timeout(dn)
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=0" % dn)
         logging.info("SAMotion: drive stepper disabled")

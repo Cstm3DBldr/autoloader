@@ -167,6 +167,10 @@ class Autoloader:
         self.engage_max_distance     = config.getfloat('engage_max_distance',      60.0)
         self.slip_tolerance          = config.getfloat('slip_tolerance',           15.0)
         self.feed_speed              = config.getfloat('feed_speed',               50.0)
+        # Live drive speed in mm/s, written by SAMotion on every drive
+        # command and zeroed when the motor stops holding. Not a config
+        # value -- it is a reading.
+        self.drive_speed             = 0.0
         self.feed_step_size          = config.getfloat('feed_step_size',           10.0)
         self.selector_speed          = config.getfloat('selector_speed',          200.0)
         self.sensor_delay            = config.getfloat('sensor_polling_delay',      0.2)
@@ -2296,6 +2300,10 @@ class Autoloader:
             'path_load_temps'    : list(self.path_load_temps),
             'path_unload_temps'  : list(self.path_unload_temps),
             'feed_speed'              : self.feed_speed,
+            # Live: what the drive is being commanded at right now,
+            # 0 when the motor is not holding. See
+            # SAMotion.note_drive_speed.
+            'drive_speed'             : getattr(self, 'drive_speed', 0.0),
             'selector_speed'          : self.selector_speed,
             'purge_length'            : self.purge_length,
             'nozzle_distance'         : self.nozzle_distance,
