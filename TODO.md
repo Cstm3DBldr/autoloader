@@ -40,13 +40,14 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       +1mm, and the gear-to-tip spread is a property of the hardware rather
       than of how each was taken.
 
-- [ ] **Three unproven changes are parked on `printer-dev`.**
-      The hot-pull shear drop (needs a hot unload where the fallback sync does
-      NOT fire), the retract stopping at the encoder (needs a Branch B or C
-      unload), and `SA_CALIBRATE_BOWDEN`'s own blast at 160 (that routine
-      measures the lengths everything else is referenced against, so it wants
-      its own run).
-      *Done when:* each has run on the machine and moved to `dev`.
+- [ ] **`SA_CALIBRATE_BOWDEN`'s own blast at 160 is still untested.** That
+      routine measures the lengths everything else is referenced against, so
+      it wants its own run rather than inheriting confidence from the load's.
+      The other two changes that sat beside it here are resolved: the hot-pull
+      shear drop was tested on 2026-09-11 and disabled because it made the tip
+      worse, and the retract stopping at the encoder ran on 2026-09-12
+      ("Encoder quiet 2x after 93mm retract — filament cleared").
+      *Done when:* it has run on the machine.
 
 - [ ] **Three installer questions are asked and the answers discarded.**
       `REGISTER_UPDATE_MANAGER` — `install.sh` writes `autoloader.ini`
@@ -60,6 +61,41 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       today for exactly this. Confirming a change here means running
       `install.sh` on a machine that has never seen the project — the reason
       it was reported rather than guessed at.
+
+- [ ] **`generate.py`'s refresh mode can write a config that lies.** It puts
+      existing VALUES back, which is right — it protects calibration from an
+      update. But it adopts the template's new COMMENTS, so changing a comment
+      and a value together produces a live file where the two disagree. On
+      2026-09-12 the printer read `tip_form_shear_temp : 150.0` directly above
+      a comment saying `OFF`. Third time this class has fired; the
+      `tip_form_hot_shear_drop` instance cost an evening of tips formed at
+      125C while the config said 0.
+      *Done when:* refresh either carries the old comment with the old value,
+      or reports the disagreement the way it already reports dropped settings.
+
+- [ ] **`shear_temp` is a tuning value AND a mode switch.** The code branches
+      on `if shear_temp > 0`, so a per-material row does not tune the mode, it
+      RE-ENABLES it — and the global cannot turn it off. A real unload on
+      2026-09-12 ran the shear because `tip_form_shear_temp_pla` said 150
+      while the global said 0. The eleven per-material rows are commented out
+      as a patch; there is still no way to express "tune PLA's shear
+      temperature, leave the mode off".
+      *Done when:* the mode has its own switch, separate from the value.
+
+- [ ] **The shear branch returns before the cooling moves**
+      (`sa_sequences.py`, the `return` after `_clear_past_gears`). That is why
+      shear mode produced squashed, stringy tips for two evenings while the
+      cooling-move path produces good ones. Shear mode is disabled rather than
+      fixed, because disabling it was measured and fixing it was not.
+      *Done when:* the shear path runs the cooling moves and a measured tip
+      says whether the mode is worth having at all.
+
+- [ ] **The tip-form warning blames the wrong thing.** "encoder saw 0.0mm of
+      40.0mm. The tip is probably gripping and the extruder is stripping it.
+      Raise SHEAR." fired twice on T4 when the real cause was no filament at
+      the extruder sensor — the gears had nothing to grip. Following it would
+      have meant walking a shear ladder that could never work.
+      *Done when:* it checks the extruder sensor before blaming the shear.
 
 ## Never verified
 
@@ -119,15 +155,6 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* three materials are measured through it, saved to their
       product lines, and survive a reload — and the table either keeps
       deriving with evidence or stops claiming to.
-
-- [ ] **Runout recovery is designed but not built** — `docs/RECOVERY.md`.
-      A path with entry clear and filament still in the head is currently
-      refused by both load and unload. Settled: the new roll pushes the
-      remnant out (the extruder cannot move what it no longer grips), heat to
-      `max(old, new)`, confirm the stashed profile first, explicit
-      `SA_RECOVER TOOL=N` rather than automatic.
-      *Done when:* the routine exists AND a real broken-filament path recovers
-      to a normal loaded state, verified by all three sensors.
 
 - [ ] **Unloading a path parked BEFORE the encoder always errors.** The park
       leaves the tip ~5mm short of the encoder, so the encoder reads 0.0mm and
