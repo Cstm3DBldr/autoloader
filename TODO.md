@@ -183,13 +183,17 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       product lines, and survive a reload — and the table either keeps
       deriving with evidence or stops claiming to.
 
-- [ ] **Unloading a path parked BEFORE the encoder always errors.** The park
-      leaves the tip ~5mm short of the encoder, so the encoder reads 0.0mm and
-      the grip check trips — measured on path 1: "900mm driven, 0.0mm
-      encoder". The filament IS there and the retract IS valid; the encoder
-      simply cannot see it yet. Same blind-spot as the end of a retract, at
-      the other end.
-      *Done when:* a parked path unloads without a false jam.
+- [ ] **`SA_SET_STATE STATE=low` on a path that is not physically low leaves
+      it claiming `loaded`.** Forcing the state by hand on T1 (entry sensor
+      reading FILAMENT, tube empty, tip parked at the gate) had the monitor's
+      recovery branch conclude "filament returned to a low path" and set
+      LOADED — correct for a genuinely low path, whose tube IS still full, and
+      wrong for a faked one. Harmless in practice, since the sequences read
+      sensors rather than the stored state, but it means the hand-set state
+      cannot be used to rehearse anything downstream of `low`.
+      *Done when:* either the recovery branch checks that the tube actually
+      holds filament, or SA_SET_STATE refuses `low` on a path whose entry
+      sensor still reads FILAMENT and says why.
 
 - [ ] **Try a lower drive current for the wiggle check.** Mike's read from
       watching it: the drive is strong enough to rip filament out of the
