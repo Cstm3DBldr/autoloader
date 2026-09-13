@@ -1484,10 +1484,30 @@ class SASequences:
                 moved = abs(enc.get_distance())
                 want  = cooling_pos + pushed
                 if moved < want * 0.5:
-                    gcmd.respond_info(
-                        "SA: WARNING — encoder saw %.1fmm of %.1fmm. The tip is "
-                        "probably gripping and the extruder is stripping it. "
-                        "Raise SHEAR." % (moved, want))
+                    # Ask WHY before advising. "Raise SHEAR" is the right
+                    # answer to a tip that is gripping, and the wrong answer
+                    # to gears with nothing between them -- and the two look
+                    # identical from the encoder, which reads 0.0mm either
+                    # way. On 2026-09-12 this fired twice on T4 while the
+                    # extruder sensor was CLEAR, and following it would have
+                    # meant walking a shear ladder that could never work: the
+                    # path was broken, not mis-tuned. The sensor is the one
+                    # thing that tells them apart.
+                    if not owner._extruder_sensor_active(path):
+                        gcmd.respond_info(
+                            "SA: WARNING — encoder saw %.1fmm of %.1fmm, and "
+                            "the extruder sensor on path %d reads CLEAR. The "
+                            "gears have nothing to grip, so nothing was going "
+                            "to move whatever the shear is set to. This is a "
+                            "broken path, not a tuning problem — check what "
+                            "is actually in the toolhead before changing "
+                            "anything." % (moved, want, path))
+                    else:
+                        gcmd.respond_info(
+                            "SA: WARNING — encoder saw %.1fmm of %.1fmm. "
+                            "Filament IS at the extruder sensor, so the tip is "
+                            "probably gripping and the extruder is stripping "
+                            "it. Raise SHEAR." % (moved, want))
                 else:
                     gcmd.respond_info("SA: Cold shear — encoder %.1fmm." % moved)
 

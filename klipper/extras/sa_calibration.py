@@ -3317,7 +3317,28 @@ class SACalibration:
             lost = min(max(lost, 0.0), 0.99)
             window = (1.0 - lost) * SAMPLE * d['speed']
             ceiling = (1.0 - lost) * d['speed']
-            verdict = ("The filament moved the full distance — the encoder is "
+            # Below this, a state lasts many sample periods and counts
+            # CANNOT be missed to sampling -- so a shortfall here is scale
+            # (mm_per_pulse wrong) or ruler scatter, and calling it a ceiling
+            # sends the operator to tune a speed that was never the problem.
+            # Measured on T0: a constant 3.8% survived two wrong diagnoses
+            # before doubling the pass length showed the error tracked
+            # DISTANCE, not speed. It was mm_per_pulse 3.7% low.
+            states_per_sample = (SAMPLE * d['speed']) / 1.9 if d['speed'] else 0
+            if states_per_sample < 0.25:          # >4 samples per state
+                verdict = ("The filament moved the full distance and the "
+                           "encoder read %.1f%% short — but at %.0fmm/s a "
+                           "state lasts several sample periods, so counts "
+                           "CANNOT be going missing to sampling here."
+                           % (lost * 100.0, d['speed']) + NL + NL
+                           + "That makes this a SCALE error, not a ceiling: "
+                             "mm_per_pulse is probably off by about that much. "
+                             "Re-run SA_CALIBRATE_ENCODER on this path." + NL + NL
+                           + "To tell scale from a fixed offset, run this "
+                             "again at double the distance. Scale holds its "
+                             "percentage; an offset does not.")
+            else:
+                verdict = ("The filament moved the full distance — the encoder is "
                        "what fell short. This is an ENCODER ceiling, not a "
                        "drive one." + NL + NL
                        + "It missed %.1f%% of its counts. Klipper samples that "

@@ -214,11 +214,6 @@ None of this changes behaviour. It is what makes the repo followable.
       - `backup/2026-05-04-stable`, four months old
       *Done when:* `git ls-remote --heads origin` lists `main`, `dev`,
       `printer-dev`, `old-dev` and whichever backups you consciously keep.
-- [ ] **Two dead HTML mockups**, 2290 lines between them, referenced by
-      nothing: `autoloader/autoloader_panel.html` (1478) and
-      `autoloader/autoloader_ui.html` (812). `post_update.sh` copies
-      `autoloader/*.html` to the printer, so both ship to every install.
-      *Done when:* deleted, or moved somewhere that says they are mockups.
 - [ ] **`web/mainsail/AutoloaderPanel.vue`** (357 lines) is marked superseded
       by `web/mainsail-plugin/` and referenced only by the line saying so.
       Decide: delete, or keep and say why in one sentence.
