@@ -115,6 +115,32 @@ elif [ -d "${KS}/panels" ]; then
         mkdir -p "${KS}/addons"
         cp -f "${REPO}"/KlipperScreen/addons/*.py "${KS}/addons/" 2>/dev/null || true
         bash "${REPO}/scripts/patch_klipperscreen.sh" || true
+
+        # KlipperScreen may now carry the hook itself (upstream #1770), in
+        # which case our patch stands aside -- correctly -- and the add-on
+        # loads only if `enable_addons` is on. That flag is OFF by default,
+        # so the failure mode is silent: nothing errors, the touchscreen just
+        # stops following a guide opened in Mainsail. Say so rather than
+        # switching on code execution the operator never agreed to.
+        bash "${REPO}/scripts/ks_addons_state.sh" "${KS}" "${CONFIG}/KlipperScreen.conf"
+        case "$?" in
+            1)
+                echo "[POST-UPDATE]   NOTE: KlipperScreen now has its own add-on"
+                echo "[POST-UPDATE]         loader, and it is OFF by default."
+                echo "[POST-UPDATE]         sa_autoloader will NOT run until you"
+                echo "[POST-UPDATE]         add this under [main] in"
+                echo "[POST-UPDATE]         ${CONFIG}/KlipperScreen.conf :"
+                echo "[POST-UPDATE]"
+                echo "[POST-UPDATE]             enable_addons: True"
+                echo "[POST-UPDATE]"
+                echo "[POST-UPDATE]         or turn on Settings > Enable Add-ons."
+                echo "[POST-UPDATE]         Everything else keeps working without it;"
+                echo "[POST-UPDATE]         the touchscreen just will not follow a"
+                echo "[POST-UPDATE]         guide opened in Mainsail until a panel"
+                echo "[POST-UPDATE]         has been opened once."
+                ;;
+            0) echo "[POST-UPDATE]   (KlipperScreen's own add-on loader, enabled)" ;;
+        esac
     else
         # Turned off after having been on: take the hook and the add-on back
         # out rather than leaving a modified screen.py behind.

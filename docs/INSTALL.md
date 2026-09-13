@@ -39,6 +39,7 @@ Being blunt about this, because you should know before you start:
 | Adds an entry so Mainsail/Fluidd can update it | Moonraker's update manager |
 | Copies touchscreen panels, if you have KlipperScreen | `~/KlipperScreen/panels/` |
 | Restarts Klipper, Moonraker and KlipperScreen | only if you say yes |
+| Asks whether to enable KlipperScreen add-ons | only if it is off, and only on a KlipperScreen new enough to have the setting |
 
 **What it does not touch:** your existing printer config, your macros, your
 LEDs (unless you ask), your bed mesh, or anything you have tuned. The only
@@ -53,6 +54,38 @@ it does not move a motor until you run one.
 ## Before you start
 
 You need:
+
+### One question about KlipperScreen
+
+If you use the touchscreen, the installer may ask:
+
+> Enable KlipperScreen add-ons? [y/N]
+
+**What it means.** KlipperScreen can run small add-ons at startup. This project
+ships one, `sa_autoloader`, whose only job is to start watching immediately —
+so if you open the calibration guide in Mainsail, the touchscreen follows along
+without you opening an autoloader panel first.
+
+KlipperScreen ships that ability switched **off**, because an add-on is code
+its developers did not write or review. That is a reasonable default, and it is
+why this asks instead of turning it on for you.
+
+**Saying no is fine.** Everything else works exactly the same. The only
+difference is that the touchscreen will not follow a guide opened in Mainsail
+until you have opened an autoloader panel once.
+
+**Changing your mind later** — either turn on *Settings → Enable Add-ons* on the
+touchscreen, or add this under `[main]` in `~/printer_data/config/KlipperScreen.conf`:
+
+```
+enable_addons: True
+```
+
+Then restart KlipperScreen.
+
+**On older KlipperScreen** you will not be asked, because that version has no
+such setting. The installer adds the startup hook itself instead, the same way
+it always did.
 
 - **A working printer.** Klipper running, prints working. This is an add-on,
   not a way to fix a broken setup.

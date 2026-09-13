@@ -49,10 +49,9 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       ("Encoder quiet 2x after 93mm retract — filament cleared").
       *Done when:* it has run on the machine.
 
-- [ ] **Three installer questions are asked and the answers discarded.**
+- [ ] **Two installer questions are asked and the answers discarded.**
       `REGISTER_UPDATE_MANAGER` — `install.sh` writes `autoloader.ini`
-      unconditionally. `KLIPPERSCREEN_ADDON_HOOK` — `post_update.sh` applies
-      the patch regardless. `ADD_TOOLCHANGE_LED_HOOK` — nothing reads it and
+      unconditionally. `ADD_TOOLCHANGE_LED_HOOK` — nothing reads it and
       the `toolchanger.cfg` hook is still a manual edit.
       Worse than documentation drift: the operator makes a choice and the
       machine ignores it silently. Either wire each up in `install.sh` /
@@ -234,15 +233,7 @@ None of this changes behaviour. It is what makes the repo followable.
 
 ## Deferred by decision
 
-- [ ] **KlipperScreen PR #1770 lands** → four files here need updating,
-      because the add-on hook will ship **off by default** and
-      `addons/sa_autoloader.py` will stop loading on a fresh install:
-      `scripts/patch_klipperscreen.sh` (detect that upstream already has the
-      hook and skip), `install.sh` (turn `enable_addons` on, or prompt),
-      `docs/INSTALL.md`, and CLAUDE.md's project surface row.
-      Deliberately not started — review could still change the shape.
-      *Done when:* the PR is merged AND all four are updated together. A
-      partial job leaves a silent failure.
+*(nothing deferred right now)*
 
 ---
 

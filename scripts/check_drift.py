@@ -194,7 +194,12 @@ def check_kconfig():
             opts |= set(re.findall(r"^config ([A-Z_0-9]+)", body, re.M))
 
     consumers = ""
-    for rel in ("installer/generate.py", "installer/detect.py", "install.sh"):
+    # post_update.sh reads answers too, via sa_answer() -- leaving it out
+    # reported KLIPPERSCREEN_ADDON_HOOK as "asked but never acted on" for
+    # weeks while post_update.sh:100 was reading it the whole time. A check
+    # that cries wolf about a working feature teaches people to ignore it.
+    for rel in ("installer/generate.py", "installer/detect.py", "install.sh",
+                "post_update.sh"):
         consumers += read(rel)
     for path in glob.glob(os.path.join(ROOT, "installer", "templates", "*")):
         if os.path.isfile(path):

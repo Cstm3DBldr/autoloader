@@ -65,7 +65,17 @@ fi
 
 # ── already done? ─────────────────────────────────────────────────────────
 if grep -q "$MARKER" "$SCREEN"; then
-    say "addon hook already present"
+    # Two different reasons to find the marker, and they are not the same
+    # news. Ours has no gate; upstream's (KlipperScreen#1770, merged
+    # 2026-09-13) reads `enable_addons` and defaults it off -- so "already
+    # present" on an upstream build means the add-on may well NOT be running.
+    if grep -q "enable_addons" "$SCREEN"; then
+        say "KlipperScreen has its own addon loader now (#1770) — nothing to patch."
+        say "  It is gated on 'enable_addons' in [main], which defaults to False."
+        say "  Run scripts/ks_addons_state.sh to see whether it is switched on."
+    else
+        say "addon hook already present (applied by this script)"
+    fi
     exit 0
 fi
 

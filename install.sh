@@ -148,6 +148,79 @@ fi
 echo "[INSTALL] Running post_update.sh (syncs files and builds your config)..."
 SA_REPO="${INSTALL_PATH}" SA_CONFIG="${CONFIG_DIR}" "${INSTALL_PATH}/post_update.sh"
 
+# ── KlipperScreen's own add-on loader ──────────────────────────────────────
+# Upstream took the startup hook in #1770 (merged 2026-09-13) and, at review's
+# request, gated it behind `enable_addons` in [main] -- default False, because
+# it runs code KlipperScreen did not write.
+#
+# ASKED, never assumed. Turning it on means "run this project's Python inside
+# KlipperScreen at boot", which is exactly the decision upstream wanted the
+# operator to make consciously. A no costs only that the touchscreen will not
+# follow a guide opened in Mainsail until an autoloader panel has been opened
+# once; everything else works either way.
+#
+# SA_KS_ADDONS=yes|no answers it unattended. No terminal means NO -- a piped
+# install must never quietly enable third-party code execution.
+KS_CONF="${CONFIG_DIR}/KlipperScreen.conf"
+bash "${INSTALL_PATH}/scripts/ks_addons_state.sh" "${KS_PATH}" "${KS_CONF}"
+KS_ADDON_STATE=$?
+
+if [ "${KS_ADDON_STATE}" = "1" ]; then
+    echo ""
+    echo "[INSTALL] KlipperScreen has its own add-on loader, and it is OFF."
+    echo ""
+    echo "          Turning it on lets sa_autoloader run at KlipperScreen"
+    echo "          startup, so the touchscreen follows a calibration guide"
+    echo "          opened in Mainsail without you opening a panel first."
+    echo ""
+    echo "          It also means KlipperScreen runs this project's Python at"
+    echo "          boot. That is why KlipperScreen ships it off by default,"
+    echo "          and why this asks rather than setting it for you."
+    echo ""
+    echo "          Everything else works without it."
+    echo ""
+    case "${SA_KS_ADDONS:-}" in
+        yes|y) KS_ANS="y"; echo "          SA_KS_ADDONS=yes" ;;
+        no|n)  KS_ANS="n"; echo "          SA_KS_ADDONS=no" ;;
+        "")
+            if [ -t 0 ]; then
+                printf "          Enable KlipperScreen add-ons? [y/N]: "
+                read -r KS_ANS
+            else
+                KS_ANS="n"
+                echo "          (not a terminal — leaving it off; set SA_KS_ADDONS to choose)"
+            fi
+            ;;
+        *)
+            echo "[ERROR] SA_KS_ADDONS must be yes or no (got '${SA_KS_ADDONS}')." >&2
+            exit 1
+            ;;
+    esac
+
+    case "${KS_ANS}" in
+        y|Y)
+            if grep -qE "^[[:space:]]*enable_addons[[:space:]]*[:=]" "${KS_CONF}" 2>/dev/null; then
+                # Present but not true -- rewrite that line rather than adding
+                # a second one, which configparser would read as a duplicate.
+                sed -i -E "s|^[[:space:]]*enable_addons[[:space:]]*[:=].*|enable_addons: True|" \
+                    "${KS_CONF}"
+            elif grep -qE "^\[main\]" "${KS_CONF}" 2>/dev/null; then
+                sed -i "0,/^\[main\]/s|^\[main\]|[main]\nenable_addons: True|" "${KS_CONF}"
+            else
+                printf '\n[main]\nenable_addons: True\n' >> "${KS_CONF}"
+            fi
+            echo "          enabled — restart KlipperScreen for it to take effect"
+            ;;
+        *)
+            echo "          left off. sa_autoloader will not run at startup."
+            echo "          Turn it on later in Settings > Enable Add-ons, or add"
+            echo "          'enable_addons: True' under [main] in KlipperScreen.conf."
+            ;;
+    esac
+elif [ "${KS_ADDON_STATE}" = "0" ]; then
+    echo "[INSTALL] KlipperScreen add-ons already enabled."
+fi
+
 # ── Register with Moonraker Update Manager ───────────────────────────────────
 # The file the user edits. Not in the repo, so no update can reach it, and
 # autoloader.cfg includes it last so anything here overrides parameters.cfg.
