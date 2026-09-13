@@ -15,6 +15,20 @@ The rebuild is done and measured — see `docs/SYSTEMS_TEST_2026-09-10.md`.
 Ceilings went from 50–175 (3.5x spread) to 200–215 (1.075x), and the shared
 speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
+- [ ] **Two advice fixes are in `main` but have never printed on the machine.**
+      Both landed in 4e48d38, whose message describes only the HTML deletion
+      they rode along with — recorded here because a commit message nobody
+      re-reads is not a record.
+      `SA_VERIFY_FEED` now names SCALE rather than a sampling ceiling below
+      ~4 samples per encoder state, and the tip-form shear warning now checks
+      the extruder sensor before blaming SHEAR. The arithmetic is verified
+      (the threshold lands on 235mm/s, exactly the boundary CLAUDE.md
+      documents) and both branches parse, but neither has EXECUTED: each fires
+      only inside a failure the machine has to actually be in.
+      *Done when:* a short `SA_VERIFY_FEED` pass prints the scale verdict, and
+      a tip-form run on a path with the extruder sensor clear prints the
+      broken-path wording instead of "Raise SHEAR".
+
 - [ ] **`SA_VERIFY_FEED`'s verdict logic overstates.** It called a 1.4%
       residual an "ENCODER ceiling … counts going missing around 25mm/s". At
       25mm/s a state lasts ~37ms against 2ms sampling — about 19 samples —
