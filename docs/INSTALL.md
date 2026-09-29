@@ -87,6 +87,13 @@ Then restart KlipperScreen.
 such setting. The installer adds the startup hook itself instead, the same way
 it always did.
 
+**Which KlipperScreen has it?** The setting landed on **2026-09-13**, and
+KlipperScreen's newest tagged release at the time of writing, `v0.4.7`, is from
+2026-05-13 — four months earlier. So **no tagged release carries it yet**; you
+have it only if you track KlipperScreen's master branch. You do not need to
+check by hand: the installer detects the feature itself rather than reading a
+version number, and only asks when the setting exists and is off.
+
 - **A working printer.** Klipper running, prints working. This is an add-on,
   not a way to fix a broken setup.
 - **The autoloader hardware built and wired.** Software cannot find a board

@@ -215,6 +215,35 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* a Branch B unload eases the tip out rather than snatching
       it, judged by watching the idler.
 
+- [ ] **Make the Vue panel the end-user path, and polish it.** Mike's call
+      2026-09-28, after checking what upstream is actually doing: the plugin
+      needs Mainsail with custom-panel support, that support lives only in
+      Lyx52's abandoned #2602 (bot-closed 2026-07-24, author never returned),
+      and meteyou's system-panel refactor -- the likeliest route to a merged
+      mechanism -- has **no branch, no issue and no timeline**. The repo has
+      exactly three branches and none of them is it.
+      So `main` currently ships a Mainsail panel that loads on this printer
+      and nowhere else. `web/mainsail/AutoloaderPanel.vue` works on stock
+      Mainsail at the cost of a rebuild per release, which is a real cost
+      paid by us rather than a silent failure paid by the user.
+      Keep `web/mainsail-plugin/` -- it is strictly better the day a
+      mechanism lands, and it is the artifact that makes the case upstream.
+      *Done when:* a fresh install on stock Mainsail shows a working panel,
+      the rebuild step is documented or scripted, and the plugin is labelled
+      as needing custom-panel support rather than presented as the default.
+
+- [ ] **The KlipperScreen add-on requirement needs stating as a DATE, not a
+      version.** `enable_addons` merged 2026-09-13 (`8abe645c`), and the
+      newest tag `v0.4.7` is from **2026-05-13** -- four months earlier. So no
+      tagged release carries it; only master does. Anyone on a tagged
+      KlipperScreen has neither our old patch target nor upstream's flag.
+      `scripts/ks_addons_state.sh` already detects by FEATURE rather than
+      version, which is the right shape and needs no change -- this is a docs
+      gap, not a code one.
+      *Done when:* docs/INSTALL.md and the README say "KlipperScreen master
+      from 2026-09-13 or later (Settings > Enable Add-ons)" rather than
+      implying a release carries it.
+
 ## Repo hygiene
 
 None of this changes behaviour. It is what makes the repo followable.
