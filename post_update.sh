@@ -122,8 +122,15 @@ elif [ -d "${KS}/panels" ]; then
         # so the failure mode is silent: nothing errors, the touchscreen just
         # stops following a guide opened in Mainsail. Say so rather than
         # switching on code execution the operator never agreed to.
-        bash "${REPO}/scripts/ks_addons_state.sh" "${KS}" "${CONFIG}/KlipperScreen.conf"
-        case "$?" in
+        #
+        # The answer is the exit code, and this script runs under `set -e`:
+        # called bare, a 1 or a 2 -- both normal answers -- aborted the whole
+        # update here, so it exited non-zero on every older KlipperScreen and
+        # anything chained after it with && never ran.
+        KS_ADDON_STATE=0
+        bash "${REPO}/scripts/ks_addons_state.sh" "${KS}" "${CONFIG}/KlipperScreen.conf" \
+            || KS_ADDON_STATE=$?
+        case "${KS_ADDON_STATE}" in
             1)
                 echo "[POST-UPDATE]   NOTE: KlipperScreen now has its own add-on"
                 echo "[POST-UPDATE]         loader, and it is OFF by default."

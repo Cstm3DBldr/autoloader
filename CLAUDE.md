@@ -99,7 +99,18 @@ moonraker.conf, a manual edit). End users follow **main**.
    Manager pulls it, so pushing IS the deploy. Nobody reads this log.
 2. Verify on the machine. Measured, not assumed.
 3. Transpose the confirmed change onto `dev` as ONE commit, with a message
-   saying what was measured.
+   saying what was measured. **Then prove dev's tree is the tree you tested:**
+   `git fetch origin && git diff --stat origin/printer-dev dev` must print
+   nothing. Transpose with `git merge --squash` or a cherry-pick of the tested
+   commits, never by restoring a tree from a branch name. On 2026-09-12
+   `git restore --source=printer-dev -- .` read the LOCAL `printer-dev`,
+   which had never moved because the work was pushed with
+   `git push origin HEAD:printer-dev`. So dev was rebuilt from an old
+   snapshot, and two commits deleted exactly what their messages said they
+   added: the live DRIVE SPEED, the white colour-chip labels and the whole
+   `low` state. That went unnoticed for seventeen days, and `SA_SET_STATE
+   STATE=low` quietly stopped existing while the TODO still described it.
+   The empty diff above is the check that would have caught it in one line.
 4. Reset `printer-dev` back onto `dev` so the two cannot drift:
    `git push -f origin origin/dev:refs/heads/printer-dev`, then on the
    printer `git fetch && git reset --hard origin/printer-dev`.
@@ -481,7 +492,7 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `klipper/extras/sa_led_animator.py` | Background LED animator for the toolhead LEDs, ~500 lines. One reactor timer drives two things: a slow white breathing pulse on the logo LED of each unloaded toolhead while idle, and a temp-aware nozzle colour on the active tool when not printing — red-orange while the hotend is still warm, otherwise the same load-state colours as the docked tools. Pauses cleanly during a print or any autoloader operation. Symlinked like the other extras. **Only does anything with the opt-in LED configs**, so a printer without them loads it and it stays quiet |
 | `moonraker/sa_moonraker.py` | Moonraker component — REST endpoints + status broadcast |
 | `web/mainsail-plugin/` | Autoloader panel as a runtime-loaded Mainsail plugin — one self-contained `.mjs`, no Mainsail fork required. Needs Mainsail with custom-panel support. See its README |
-| `web/mainsail/AutoloaderPanel.vue` | Mainsail UI panel (in-tree fork variant, superseded by `web/mainsail-plugin/`) |
+| `web/mainsail/AutoloaderPanel.vue` | Mainsail UI panel, compiled into a Mainsail build. **The end-user path for now** (Mike's call, 2026-09-28): it runs on stock Mainsail at the cost of a rebuild per Mainsail release, whereas the plugin needs custom-panel support that exists in no released Mainsail. Polishing it is a TODO item |
 | `web/fluidd/AutoloaderPanel.vue` | Fluidd UI panel |
 | `KlipperScreen/panels/sa_*.py` | KlipperScreen touchscreen panels |
 | `KlipperScreen/addons/sa_autoloader.py` | Runs at KlipperScreen startup and starts watching, so a touchscreen that has opened no autoloader panel still follows a guide opened in Mainsail |
@@ -700,7 +711,7 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_ENCODER_WATCH [TOOL=N] [DURATION=30] [INTERVAL=0.5]` | Live encoder delta stream |
 | `SA_GUIDE [OPEN=0\|1] [STEP=n]` | Open, close or page the calibration guide on every UI at once. The printer holds `guide_open` / `guide_step` and both UIs mirror them, the same way prompts already worked — so opening the guide in Mainsail opens it on the touchscreen and either one can page it |
 | `SA_RESPOND VALUE=x` | Advance active calibration to next phase |
-| `SA_SET_STATE TOOL=N STATE=<state>` | Override path state (loaded/empty/partial/unknown) |
+| `SA_SET_STATE TOOL=N STATE=<state>` | Override path state (loaded/empty/partial/unknown/**low**). `low` means the roll ended while the path was loaded: the tube still holds a full bowden length the print is consuming, so the profile is KEPT rather than wiped. It is the first stage of `docs/RUNOUT_MIDPRINT.md`, and it is settable here so the state can be exercised without waiting for a real runout under a real print |
 | `SA_FORM_TIP TOOL=N [MATERIAL=] [PUSH=] [PURGE=] [PURGE_TEMP=] [SEVER=] [SHEAR=] [SHEAR_SPEED=] [DWELL=] [COOL_POS=] [COOL_LEN=] [COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=] [UNLOAD=0]` | Run only the tip-forming sequence, for tuning. Overrides are inline so no SAVE_CONFIG or restart is needed between attempts. `MATERIAL=` applies a material's row from the per-material tip table without that spool being loaded, so a material can be tuned with whatever filament is to hand. **Runs the whole loop: loads the path if the toolhead is empty, forms the tip, then retracts to the gate so the tip can actually be reached.** It used to stop after forming and say "wind the filament out from the entry side" — with a full Bowden loaded, 1390mm by hand on this machine. The retract reuses `SA_UNLOAD`, which after forming takes Branch B and does NOT re-form the tip, so the one just made is the one that arrives. `UNLOAD=0` keeps the old ending. Loads itself when the toolhead is empty and the entry sensor has filament, because forming leaves the tip past the gears and so every rung of a tuning ladder starts empty; refusing made each rung two commands with a wait between them. Only refuses when there is nothing on the path at all. **`PURGE=` is the ram done at a rate the nozzle can actually pass.** The ram runs at `tip_form_push_speed` 25mm/s, which asks 60mm3/s of a head this config caps at 10 and far less at forming temperature, so the surplus cannot leave and swells the tip: measured 2026-09-12 at +11% cross-section on T4 and +18% on T0 with identical settings, which is what ruled the toolhead out and the setting in. A purge pushes the same fresh filament in at the melt rate and lets it OUT, at `PURGE_TEMP` (200 default, hotter than the forming temperature on purpose — the flow has to be real or it is just a slow ram). Off by default; `PURGE=15 PUSH=0` is the test |
 | `SA_RECOVER TOOL=N [TEMP=]` | Force-feed a remnant out of the head with the roll behind it. For the state no load branch handles: the entry sensor reads filament but something is still in the toolhead, so the extruder has nothing to grip and cannot move it. The new filament IS the mechanism — it arrives behind the remnant and pushes it through. Refuses without filament at the entry sensor, and refuses to guess a temperature: `TEMP=` is required when the path has no profile, and is taken as the HIGHER of it and any stored one. Feeds past the gears by distance rather than to the toolhead sensor when that sensor is already reading the remnant. See `docs/RECOVERY.md` |
 | `SA_RESTORE_PROFILE TOOL=N` | Put back the filament profile a wipe removed. Deliberately manual — a profile is a claim about what is physically in the path, and only the operator can confirm the same spool went back in. Refuses if the path already carries a profile |

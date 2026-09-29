@@ -27,6 +27,13 @@ This single include pulls in the rest (pin_aliases, hardware, parameters, macros
 
 Then save and restart Klipper.
 
+**Touchscreen users:** the optional startup add-on (which lets KlipperScreen
+follow a calibration guide opened in Mainsail) needs **KlipperScreen master from
+2026-09-13 or later**, with *Settings → Enable Add-ons* switched on. No tagged
+KlipperScreen release carries that setting yet — the newest, `v0.4.7`, is from
+2026-05-13. On older KlipperScreen the installer adds the hook itself. See
+[docs/INSTALL.md](docs/INSTALL.md).
+
 ### Uninstall
 
 ```bash

@@ -181,34 +181,39 @@ describe nothing themselves. Adding a step is one edit there, and
 
 ---
 
-## Where things stand — 2026-09-11
+## Where things stand — 2026-09-29
 
-`main` and `dev` are both at `5741faf`; `printer-dev` is ahead with work that
-has not been proved on the machine yet.
+`main`, `dev` and `printer-dev` are one tree. **`TODO.md` is the list of what is
+open and what proves each item done**, so this section only records the shape.
 
-**Shipped to `main` today:** guide step 12 (toolhead geometry measured by each
-path's own encoder), the selector keeping its home while it holds position, the
-park-queue fix, the `Timer too close` fix, and the burst-write sweep.
+**Proved on the machine since 2026-09-11:** a full Mainsail pass through all
+twelve guide steps; `SA_RECOVER` (force-feeding a remnant out with the new roll
+behind it) on a real broken T4; tip forming with the cooling moves, which made
+the tips usable: the squash is gone, a swell of about 9% in cross-section
+remains, with little stringing (shear mode is off because its branch returns
+before those moves); load and unload through the rebuilt KlipperScreen
+panels on all six heads; a restart guard that refuses to trip a toolhead MCU
+with a hot nozzle; and an install flow that ASKS before enabling KlipperScreen
+add-ons.
 
-**Measured, and the reason step 12 exists:** nozzle-to-extruder-sensor is
-93.8–106.1mm across six toolheads, against a config default of `50.0` that had
-never been measured. The tip former had been aiming past the extruder sensor at
-52.5mm and missing every time, with a fallback retract quietly covering for it.
+**Found and repaired 2026-09-29:** three confirmed fixes from 2026-09-12 (the
+live DRIVE SPEED reading, the white colour-chip labels, and the whole `low`
+state) had been deleted by two commits whose messages said they added them,
+because dev was rebuilt from a stale local branch. CLAUDE.md, the cycle,
+step 3, now carries the one-line check that catches it. In the same pass,
+`install.sh` and `post_update.sh` turned out to abort on any KlipperScreen that
+was not already set up for add-ons, since 2026-09-13; both are fixed.
 
-**Held on `printer-dev`, unproven:**
+**Waiting on Mike at the machine:** the twelve-step guide on KlipperScreen,
+re-measuring all six toolheads by one method (that is guide step 12), and
+`SA_CALIBRATE_BOWDEN` at 160 (step 11).
 
-- the hot-pull shear drop (shear 25 °C colder when the nozzle came in hot,
-  because a soaked melt stretches the tip) — needs a hot unload where the
-  fallback sync does NOT fire
-- the retract stopping at the encoder instead of at `bowden_length + 100` —
-  needs a Branch B or C unload
-- `SA_CALIBRATE_BOWDEN`'s own blast at 160 — that routine measures the lengths
-  everything else is referenced against, so it wants its own run
+**Waiting on a real print, deliberately later:** the branch that creates the
+`low` state, and mid-print runout stages 2 and 3. Mike: finish setting up the
+autoloader first, then prints, then new features.
 
-**Do not trust the six stored geometry sets against each other.** They were
-taken three different ways — five with coarse overshoot, T4 after the midpoint
-correction, none with the hot-shear change. That is why the guide flags T2 as
-an outlier: T2 did not move, T4 moved under it.
+**Mainsail upstream:** on hold by decision. Nothing gets proposed or posted
+until upstream work touches the autoloader directly.
 
 ---
 

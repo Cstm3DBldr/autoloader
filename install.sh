@@ -162,8 +162,13 @@ SA_REPO="${INSTALL_PATH}" SA_CONFIG="${CONFIG_DIR}" "${INSTALL_PATH}/post_update
 # SA_KS_ADDONS=yes|no answers it unattended. No terminal means NO -- a piped
 # install must never quietly enable third-party code execution.
 KS_CONF="${CONFIG_DIR}/KlipperScreen.conf"
-bash "${INSTALL_PATH}/scripts/ks_addons_state.sh" "${KS_PATH}" "${KS_CONF}"
-KS_ADDON_STATE=$?
+# The answer IS the exit code, and 1 and 2 are answers, not failures. Called
+# bare under `set -e`, either one ended the install on the spot -- before the
+# question below was ever asked, on every KlipperScreen but one already
+# enabled. `|| KS_ADDON_STATE=$?` keeps set -e from seeing it.
+KS_ADDON_STATE=0
+bash "${INSTALL_PATH}/scripts/ks_addons_state.sh" "${KS_PATH}" "${KS_CONF}" \
+    || KS_ADDON_STATE=$?
 
 if [ "${KS_ADDON_STATE}" = "1" ]; then
     echo ""

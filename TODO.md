@@ -29,14 +29,6 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       a tip-form run on a path with the extruder sensor clear prints the
       broken-path wording instead of "Raise SHEAR".
 
-- [ ] **`SA_VERIFY_FEED`'s verdict logic overstates.** It called a 1.4%
-      residual an "ENCODER ceiling … counts going missing around 25mm/s". At
-      25mm/s a state lasts ~37ms against 2ms sampling — about 19 samples —
-      so aliasing cannot happen there, and the speed sweep's whole reference
-      design depends on that. It should attribute a low-speed residual to
-      scale or to ruler scatter, not to sampling.
-      *Done when:* the verdict names scale first at speeds where aliasing is
-      impossible.
 - [ ] **`drive_rotation_distance` unchanged at 5.6911** through the rebuild,
       and the verify's ruler read 198.0 against a commanded 200.0.
       *Done when:* the same check on two more paths says whether that 1% is
@@ -103,12 +95,17 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* the shear path runs the cooling moves and a measured tip
       says whether the mode is worth having at all.
 
-- [ ] **The tip-form warning blames the wrong thing.** "encoder saw 0.0mm of
-      40.0mm. The tip is probably gripping and the extruder is stripping it.
-      Raise SHEAR." fired twice on T4 when the real cause was no filament at
-      the extruder sensor — the gears had nothing to grip. Following it would
-      have meant walking a shear ladder that could never work.
-      *Done when:* it checks the extruder sensor before blaming the shear.
+- [ ] **DRIVE SPEED keeps showing the last speed for up to two minutes after
+      the drive stops.** It reads what the drive was last commanded at and
+      only zeroes when the motor lets go: on `drive_disable()` or the idle
+      timeout (`stepper_timeout`, 120s). Measured 2026-09-29: an `SA_PARK` on
+      T2 read 20, then 10, then 5mm/s through its approach, then held 5.0 for
+      ~128s with nothing moving. Mike asked for the tile to show "what the
+      process is calling for", and a stopped drive holding its position is
+      calling for nothing.
+      *Done when:* the reading drops to 0 when a move completes, not when
+      the motor lets go, with "Holding" in place of a speed if that
+      distinction is worth showing.
 
 ## Never verified
 
@@ -147,6 +144,12 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       its three-button prompt readable.
 
 - [ ] **Mid-print runout stage 1 is built but the `low` branch is UNVERIFIED.**
+      *Note, 2026-09-29:* from 2026-09-12 to 2026-09-29 this code was not on
+      any branch at all — 91f15b2 deleted it while its message described
+      adding it (see CLAUDE.md, the cycle, step 3). Restored and re-checked:
+      `SA_SET_STATE TOOL=1 STATE=low` is accepted and the monitor returns it
+      to `loaded`. That is the same half as before; the creating branch is
+      still the unverified one.
       What has been exercised is only the recovery half: `SA_SET_STATE TOOL=1
       STATE=low` was accepted and the monitor returned the path to `loaded`
       within a second because its entry sensor still read FILAMENT. The branch
@@ -232,18 +235,6 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       the rebuild step is documented or scripted, and the plugin is labelled
       as needing custom-panel support rather than presented as the default.
 
-- [ ] **The KlipperScreen add-on requirement needs stating as a DATE, not a
-      version.** `enable_addons` merged 2026-09-13 (`8abe645c`), and the
-      newest tag `v0.4.7` is from **2026-05-13** -- four months earlier. So no
-      tagged release carries it; only master does. Anyone on a tagged
-      KlipperScreen has neither our old patch target nor upstream's flag.
-      `scripts/ks_addons_state.sh` already detects by FEATURE rather than
-      version, which is the right shape and needs no change -- this is a docs
-      gap, not a code one.
-      *Done when:* docs/INSTALL.md and the README say "KlipperScreen master
-      from 2026-09-13 or later (Settings > Enable Add-ons)" rather than
-      implying a release carries it.
-
 ## Repo hygiene
 
 None of this changes behaviour. It is what makes the repo followable.
@@ -257,9 +248,6 @@ None of this changes behaviour. It is what makes the repo followable.
       - `backup/2026-05-04-stable`, four months old
       *Done when:* `git ls-remote --heads origin` lists `main`, `dev`,
       `printer-dev`, `old-dev` and whichever backups you consciously keep.
-- [ ] **`web/mainsail/AutoloaderPanel.vue`** (357 lines) is marked superseded
-      by `web/mainsail-plugin/` and referenced only by the line saying so.
-      Decide: delete, or keep and say why in one sentence.
 - [ ] **Two untracked files in the printer's checkout** —
       `KlipperScreen/sa_ui_prefs.json` and `klipperscreen`. They show as dirt
       in every `git status` on the machine. Find out what writes them, then
