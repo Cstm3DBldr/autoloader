@@ -1275,6 +1275,7 @@ class SASequences:
         push_speed    = cfg('push_speed')
         purge_len     = cfg('purge_len')
         purge_temp    = cfg('purge_temp')
+        purge_speed   = cfg('purge_speed')
         sever_dist    = cfg('sever_dist')
         sever_speed   = cfg('retract_speed')
         ease_speed    = cfg('slow_speed')
@@ -1323,7 +1324,7 @@ class SASequences:
                                  sever_dist, sever_speed, ease_speed,
                                  cooling_pos, cooling_len, cooling_moves,
                                  cool_speed_in, cool_speed_out,
-                                 purge_len, purge_temp)
+                                 purge_len, purge_temp, purge_speed)
         finally:
             if saved_min is not None:
                 heater.min_extrude_temp = saved_min
@@ -1335,16 +1336,27 @@ class SASequences:
                         current_temp, push_length, push_speed, sever_dist,
                         sever_speed, ease_speed, cooling_pos, cooling_len,
                         cooling_moves, cool_speed_in, cool_speed_out,
-                        purge_len=0.0, purge_temp=200.0):
+                        purge_len=0.0, purge_temp=200.0, purge_speed=1.5):
         """The moves themselves. Split out so form_tip can wrap them in the
         min_extrude_temp override without a long try block."""
-        # Both the ram and the purge advance the tip, and every retract below
-        # is measured from the pre-push datum -- so it is the SUM that matters.
-        pushed = push_length + purge_len
+        # The ram is paid back before any retract below counts, because what
+        # it pushes in is meant to stay in. The purge is NOT: its material
+        # leaves through the nozzle, so the filament still ends at the nozzle
+        # afterwards and there is nothing to pay back. Counting it put the
+        # cooling moves 15mm further back than cooling_pos and ran the clear
+        # move past the gear nip -- measured 2026-10-09 on the first PURGE=15
+        # run: ease 35mm instead of 20, and the clear saw 16.4 of 33.4mm (49%,
+        # against 93-98% without a purge), the shortfall the gears spinning
+        # on a tip they no longer held.
+        pushed = push_length
         owner = self.owner
 
         # ---- temperature ------------------------------------------------
-        self._hold_temp_for_forming(gcmd, extruder_name, temp, current_temp)
+        # With a purge the forming temperature is set AFTER it instead: the
+        # purge runs hot, and cooling to forming temperature first only to
+        # reheat for the purge would waste both waits.
+        if purge_len <= 0:
+            self._hold_temp_for_forming(gcmd, extruder_name, temp, current_temp)
 
         self._move_to_purge_position(gcmd, is_printing)
         owner.gcode.run_script_from_command("M83")
@@ -1362,20 +1374,54 @@ class SASequences:
         # tip is fresh rather than heat-soaked. Hotter than the forming
         # temperature on purpose: the flow has to be real for this to work.
         if purge_len > 0:
-            flow_mms, flow_why = self._melt_flow_speed(path)
+            ceiling, flow_why = self._melt_flow_speed(path)
+            rate = min(purge_speed, ceiling)
             gcmd.respond_info(
-                "SA: Purge before forming — heating %s to %.0f°C, then %.1fmm at "
-                "%.1fmm/s (%s)."
-                % (extruder_name, purge_temp, purge_len, flow_mms, flow_why))
+                "SA: Purge before forming — heating %s to %.0f°C, then %.1fmm "
+                "at %.1fmm/s (%.1fmm3/s; ceiling %.1fmm/s: %s)."
+                % (extruder_name, purge_temp, purge_len, rate,
+                   rate * _FILAMENT_AREA, ceiling, flow_why))
             owner.gcode.run_script_from_command(
                 "SET_HEATER_TEMPERATURE HEATER=%s TARGET=%.0f"
                 % (extruder_name, purge_temp))
             owner.gcode.run_script_from_command(
                 "TEMPERATURE_WAIT SENSOR=%s MINIMUM=%.0f"
                 % (extruder_name, purge_temp - 2))
-            self._extrude_mm(purge_len, int(flow_mms * 60))
+            # Measured, not assumed. The path's encoder counts whatever the
+            # extruder actually pulls through the Bowden, so a skip shows as
+            # a shortfall. The first PURGE=15 run skipped audibly (Mike) and
+            # nothing recorded it, which left "the purge skipped" and "the
+            # clear move overran the gears" sounding identical.
+            enc = owner._encoder(path)
+            try:
+                enc.set_direction(forward=True)
+                enc.reset_distance()
+            except Exception:
+                enc = None
+            self._extrude_mm(purge_len, max(1, int(rate * 60)))
+            if enc is not None:
+                moved = enc.get_distance()
+                frac = moved / purge_len if purge_len else 0.0
+                gcmd.respond_info(
+                    "SA: Purge — asked %.1fmm, the encoder saw %.1fmm (%.0f%%)."
+                    % (purge_len, moved, frac * 100.0))
+                if frac < 0.8:
+                    gcmd.respond_info(
+                        "SA: WARNING — the extruder skipped on the purge: the "
+                        "melt could not take %.1fmm3/s at %.0f°C. Lower "
+                        "PURGE_SPEED= or raise PURGE_TEMP=; this tip did not "
+                        "get the purge it was meant to."
+                        % (rate * _FILAMENT_AREA, purge_temp))
             gcmd.respond_info(
                 "SA: Purge done — the melt zone now holds fresh filament.")
+            # Back down to the forming temperature before anything is formed.
+            # The purge was written when shear followed it, and shear switched
+            # the heater off and waited down by itself. Without shear the
+            # sever ran straight on at purge_temp -- 200C, where 185 is already
+            # known to string -- so a PURGE= test would have measured the
+            # wrong temperature. Caught before its first run, 2026-10-09.
+            self._hold_temp_for_forming(gcmd, extruder_name, temp,
+                                        self._extruder_temp(path))
 
         # ---- ram ---------------------------------------------------------
         if push_length > 0:

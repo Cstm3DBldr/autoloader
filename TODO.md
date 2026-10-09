@@ -53,6 +53,20 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       ("Encoder quiet 2x after 93mm retract — filament cleared").
       *Done when:* it has run on the machine.
 
+- [ ] **The cooling-move tip is 1.9mm across a SHORT section, not 1.75.**
+      It is the sequence, not leftovers: two identical `SA_FORM_TIP TOOL=0
+      MATERIAL=PLA` runs back to back on 2026-10-09 gave the same size, so it
+      is not material carried over from the shear run before them (Mike's
+      test, run so nobody has to wonder again). No string either time.
+      Tried, changed nothing: COOL_POS 35 -> 45, TEMP 165 -> 155.
+      `PURGE=15` -- fresh filament through just before forming -- first ran
+      clean on 2026-10-09 at 1.5mm/s: encoder 14.5 of 15mm (97%), back to
+      165C before the sever, ease 20mm, clear 95%. Its tip is waiting on
+      Mike's measurement. (Its first attempt was not a valid test -- see
+      the commit that fixed the purge's offset and temperature.)
+      *Done when:* a tip under 1.75mm, or Mike calls 1.9mm-short good enough
+      and this line goes.
+
 - [ ] **`wget ... | bash`, the install line in the README, never shows the
       setup menu.** stdin is the pipe, so `[ -t 0 ]` is false and every
       question takes its default. That is now at least CORRECT -- before

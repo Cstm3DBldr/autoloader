@@ -75,6 +75,7 @@ class Autoloader:
         'heatbreak_speed', 'retract_speed', 'slow_speed', 'dwell',
         'sever_dist', 'cooling_pos', 'cooling_len', 'cooling_moves',
         'cool_speed_in', 'cool_speed_out', 'purge_len', 'purge_temp',
+        'purge_speed',
     ), key=len, reverse=True))
 
 
@@ -268,6 +269,12 @@ class Autoloader:
         # default until it is measured -- see the SA_FORM_TIP row in CLAUDE.md.
         self.tip_form_purge_len      = config.getfloat('tip_form_purge_len',        0.0)
         self.tip_form_purge_temp     = config.getfloat('tip_form_purge_temp',     200.0)
+        # The tip purge's own rate, mm/s, never above the melt-flow ceiling
+        # recovery uses. That ceiling alone (3.1mm/s, 7.5mm3/s at 200C) is
+        # where Mike heard the extruder skip on the first PURGE=15 run; the
+        # purge is for fresh material, not throughput, so it defaults to half.
+        self.tip_form_purge_speed    = config.getfloat('tip_form_purge_speed',      1.5,
+                                                       above=0.)
         self.tip_form_heatbreak_dist = config.getfloat('tip_form_heatbreak_dist',  40.0)
         self.tip_form_heatbreak_speed= config.getfloat('tip_form_heatbreak_speed', 70.0)
         self.tip_form_retract_speed  = config.getfloat('tip_form_retract_speed',   70.0)
@@ -2199,6 +2206,7 @@ class Autoloader:
             'PUSH_SPEED' : 'push_speed',
             'PURGE'      : 'purge_len',
             'PURGE_TEMP' : 'purge_temp',
+            'PURGE_SPEED': 'purge_speed',
             'SEVER'      : 'sever_dist',
             'SEVER_SPEED': 'retract_speed',
             'EASE'       : 'slow_speed',
@@ -2276,7 +2284,21 @@ class Autoloader:
         is_printing = self.sequences._is_printing()
         self.sequences._park(gcmd, is_printing)
         self.sequences._switch_tool(gcmd, path)
-        self.sequences.form_tip(gcmd, path, is_printing, ov, material)
+        try:
+            self.sequences.form_tip(gcmd, path, is_printing, ov, material)
+        finally:
+            # What SA_UNLOAD's Branch A does after ITS tip: formed and out of
+            # the melt, so nothing after this needs heat. The retract below
+            # is Branch B, which never turns a heater off -- so every tuning
+            # run left the nozzle at forming temperature until idle_timeout,
+            # 30 minutes on this printer (seen 2026-10-09: 165C held after
+            # two runs). Hidden while shear mode was the default, because
+            # shear switched the heater off itself. In a finally, so a run
+            # that fails part way does not leave it hot either.
+            self.gcode.run_script_from_command(
+                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
+                % self._extruder_names[path])
+            gcmd.respond_info("SA: Heater off — filament clear of melt zone.")
 
         # Free the extruder so the filament can be wound out by hand. Measuring
         # the tip means pulling it out through the entry, and the gears hold it
