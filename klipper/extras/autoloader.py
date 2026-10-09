@@ -66,15 +66,15 @@ class Autoloader:
     TIP_FORM_TEMP_FLOOR = 150.0
 
     # Every tip_form_* value that may carry a per-material variant, longest
-    # name first. The order matters: matched shortest-first,
-    # tip_form_shear_temp_asa would resolve against 'temp' with a material of
-    # 'shear', which is silently wrong rather than an error.
+    # name first. The order matters: a base that is a prefix of another (say a
+    # future 'cool' beside 'cool_speed_in') must not claim the longer one's
+    # options and read the rest of the name as a material -- silently wrong
+    # rather than an error.
     TIP_FORM_BASES = tuple(sorted((
         'temp', 'push_length', 'push_speed', 'heatbreak_dist',
         'heatbreak_speed', 'retract_speed', 'slow_speed', 'dwell',
         'sever_dist', 'cooling_pos', 'cooling_len', 'cooling_moves',
-        'cool_speed_in', 'cool_speed_out', 'shear_temp', 'shear_speed',
-        'shear_timeout', 'purge_len', 'purge_temp',
+        'cool_speed_in', 'cool_speed_out', 'purge_len', 'purge_temp',
     ), key=len, reverse=True))
 
 
@@ -254,26 +254,6 @@ class Autoloader:
 
         # ── Load / extrusion params ───────────────────────────────────────────
         self.fill_nozzle_length    = config.getfloat('fill_nozzle_length',     50.0)
-        # DEFAULT 0 -- disabled, because it was tested and it did not work.
-        #
-        # The idea was that a soaked melt stretches the tip, so shearing colder
-        # would stop it. Measured on path 0, 2026-09-11, cold pull at 150C
-        # against hot pull at 125C, same path within ten minutes:
-        #
-        #   cold shear draw (encoder)           34.8   34.8
-        #   clear move (commanded)              66.4   66.4
-        #   extra retract to clear ext sensor   59.9   59.9
-        #
-        # Identical to 0.1mm. Temperature changes NOTHING about where the tip
-        # ends up. And the 125C tip was visibly worse -- bulged past 1.75mm,
-        # smushed, heavily strung -- which is PLA too stiff to part cleanly:
-        # the ram upsets it and it tears rather than shears.
-        #
-        # Kept as a parameter rather than deleted so the experiment can be
-        # re-run on a material with a different glass transition, where the
-        # answer may differ. Set it non-zero to try again.
-        self.tip_form_hot_shear_drop = config.getfloat(
-            'tip_form_hot_shear_drop', 0.0, minval=0.0, maxval=60.0)
         self.max_volumetric_flow   = config.getfloat('max_volumetric_flow',     5.0)
         self.wiggle_distance       = config.getfloat('wiggle_distance',         5.0)
         self.nozzle_to_sensor_dist = config.getfloat('nozzle_to_sensor_dist',  50.0)
@@ -305,23 +285,24 @@ class Autoloader:
         self.tip_form_cooling_moves  = config.getint('tip_form_cooling_moves',        4)
         self.tip_form_cool_speed_in  = config.getfloat('tip_form_cool_speed_in',   10.0)
         self.tip_form_cool_speed_out = config.getfloat('tip_form_cool_speed_out',  50.0)
-        # Cold-shear mode. When it runs, the heater is switched off after the
-        # ram, the hotend is allowed to fall to shear_temp, and the filament is
-        # drawn out slowly so it shears at a defined boundary rather than
-        # separating from a melt; the cooling moves then run as usual.
-        #
-        # tip_form_shear_enabled is the MODE and tip_form_shear_temp only the
-        # temperature. They used to be one value, which made every
-        # tip_form_shear_temp_<material> row a switch the global could not
-        # override. Off by default, because shear mode has not been measured
-        # since it started running the cooling moves.
-        self.tip_form_shear_enabled  = config.getboolean('tip_form_shear_enabled', False)
-        self.tip_form_shear_temp     = config.getfloat('tip_form_shear_temp',      0.0)
-        self.tip_form_shear_speed    = config.getfloat('tip_form_shear_speed',     3.0)
-        self.tip_form_shear_timeout  = config.getfloat('tip_form_shear_timeout', 180.0)
+        # Retired: cold shear, removed 2026-10-09 (see sa_sequences.py,
+        # the sever stage). A config that still sets one of its options must
+        # not stop Klipper starting -- an option nothing reads is a startup
+        # error -- so each is read here and reported as deprecated, which
+        # Mainsail shows, and otherwise ignored. Prefix matching catches the
+        # per-material rows (tip_form_shear_temp_pla and friends) as well.
+        _retired = (config.get_prefix_options('tip_form_shear')
+                    + config.get_prefix_options('tip_form_hot_shear'))
+        for _opt in _retired:
+            config.get(_opt)
+            if hasattr(config, 'deprecate'):
+                config.deprecate(_opt)
+        if _retired:
+            logging.warning("Autoloader: shear mode was removed; ignoring %s",
+                            ", ".join(sorted(_retired)))
 
         # Per-material tip forming. Any tip_form_<name> may be given a
-        # <MATERIAL> variant -- tip_form_shear_temp_asa, tip_form_temp_petg --
+        # <MATERIAL> variant -- tip_form_temp_asa, tip_form_cooling_pos_petg --
         # and the loaded profile's own material string selects it. Values above
         # stay the fallback, so a printer that configures nothing per material
         # behaves exactly as before.
@@ -2226,8 +2207,6 @@ class Autoloader:
             'COOL_MOVES' : 'cooling_moves',
             'COOL_IN'    : 'cool_speed_in',
             'COOL_OUT'   : 'cool_speed_out',
-            'SHEAR'      : 'shear_temp',
-            'SHEAR_SPEED': 'shear_speed',
             'DWELL'      : 'dwell',
         }
         ov = {}
@@ -2235,6 +2214,14 @@ class Autoloader:
             val = gcmd.get_float(arg, None)
             if val is not None:
                 ov[name] = val
+        # Klipper ignores a parameter nothing asks for, so without this a
+        # SHEAR= from an old note or macro would silently do nothing.
+        if gcmd.get('SHEAR', None) is not None or \
+                gcmd.get('SHEAR_SPEED', None) is not None:
+            gcmd.respond_info(
+                "SA_FORM_TIP: SHEAR= and SHEAR_SPEED= are gone — cold shear "
+                "was removed on 2026-10-09, after it never beat the cooling "
+                "moves. Forming with the cooling moves.")
 
         # Tuning a material means a dozen runs, and loading its spool for each
         # one costs more than the run does. MATERIAL= picks the per-material

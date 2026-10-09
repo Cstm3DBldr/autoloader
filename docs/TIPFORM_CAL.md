@@ -1,6 +1,10 @@
 # Tip-forming calibration — per product line, measured instead of guessed
 
-**Status: design note. Nothing is built.** Written 2026-09-11, after a night
+**Status: design note. Nothing is built.** *2026-10-09: cold shear was
+removed (it never beat the cooling moves on PLA), so every `shear_temp` row and
+the shear-delta experiment below are moot. The design still applies as written
+to the forming temperature (`tip_form_temp_<material>`) and the cooling-move
+values, which are what remain to calibrate.* Written 2026-09-11, after a night
 in which every tip judged was formed at the wrong temperature and nobody could
 tell, because there is no routine that forms one, scores it and saves the
 answer.

@@ -20,14 +20,12 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       they rode along with — recorded here because a commit message nobody
       re-reads is not a record.
       `SA_VERIFY_FEED` now names SCALE rather than a sampling ceiling below
-      ~4 samples per encoder state, and the tip-form shear warning now checks
-      the extruder sensor before blaming SHEAR. The arithmetic is verified
-      (the threshold lands on 235mm/s, exactly the boundary CLAUDE.md
-      documents) and both branches parse, but neither has EXECUTED: each fires
-      only inside a failure the machine has to actually be in.
-      *Done when:* a short `SA_VERIFY_FEED` pass prints the scale verdict, and
-      a tip-form run on a path with the extruder sensor clear prints the
-      broken-path wording instead of "Raise SHEAR".
+      ~4 samples per encoder state. The arithmetic is verified (the threshold
+      lands on 235mm/s, exactly the boundary CLAUDE.md documents) and the
+      branch parses, but it has not EXECUTED: it fires only inside a failure
+      the machine has to actually be in. (The second fix, the shear warning,
+      went with cold shear on 2026-10-09.)
+      *Done when:* a short `SA_VERIFY_FEED` pass prints the scale verdict.
 
 - [ ] **`drive_rotation_distance` unchanged at 5.6911** through the rebuild,
       and the verify's ruler read 198.0 against a commanded 200.0.
@@ -54,18 +52,6 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       worse, and the retract stopping at the encoder ran on 2026-09-12
       ("Encoder quiet 2x after 93mm retract — filament cleared").
       *Done when:* it has run on the machine.
-
-- [ ] **Measure the T0 tip waiting at the gate: is shear mode worth having?**
-      The code half is done. Shear mode used to return before the cooling
-      moves, which is why it made squashed, stringy tips; it now runs them,
-      and has its own switch (`tip_form_shear_enabled`, off). Run on T0 on
-      2026-10-09 with `SA_FORM_TIP TOOL=0 SHEAR=150`: heater off, drew out at
-      149C (encoder 29.0mm), four cooling moves 10 to 50mm/s, cleared, Branch B
-      unload, parked at the gate -- no min-extrude error. That tip is still
-      there. Pull T0 from the entry side and measure it against the
-      cooling-move tip (1.90 x 1.76, no squash, no stringing).
-      *Done when:* it is measured, and shear mode is either turned on with
-      evidence or its branch is deleted. Reload T0 afterwards (`SA_LOAD TOOL=0`).
 
 - [ ] **`wget ... | bash`, the install line in the README, never shows the
       setup menu.** stdin is the pipe, so `[ -t 0 ]` is false and every

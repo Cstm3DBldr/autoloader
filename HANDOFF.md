@@ -211,6 +211,11 @@ at boot since 2026-09-04, and the burst of rewrites that caused shut the
 autoloader board down once ("Timer too close"). Both fixed. `tests/` exists
 now, with a fresh-install sandbox that runs on the printer.
 
+**Cold shear removed, 2026-10-09.** With the cooling moves running after
+it, the T0 tip measured 1.9mm with a string, against 1.90 x 1.76 with none
+from the cooling moves alone, so it bought a string and a cooldown wait.
+Retired options in a user's config are reported as deprecated, not fatal.
+
 **Waiting on Mike at the machine:** the twelve-step guide on KlipperScreen,
 re-measuring all six toolheads by one method (that is guide step 12), and
 `SA_CALIBRATE_BOWDEN` at 160 (step 11).
