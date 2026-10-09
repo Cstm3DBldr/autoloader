@@ -769,7 +769,7 @@ class SASequences:
         while driven < max_dist:
             # SYNC=0 starts drive move immediately without waiting for the extruder queue.
             # G1 E queues right after — both execute in parallel, same distance and speed.
-            motion.note_drive_speed(sync_speed)
+            motion.note_drive_speed(sync_speed, step)
             owner.gcode.run_script_from_command(
                 "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.2f SPEED=%.1f SYNC=0"
                 % (dn, step, sync_speed))
@@ -1100,7 +1100,7 @@ class SASequences:
                     # flip is applied per move rather than baked into the
                     # stepper config -- drive_move does the same, and a raw
                     # MANUAL_STEPPER here would ignore it.
-                    motion.note_drive_speed(owner.feed_speed)
+                    motion.note_drive_speed(owner.feed_speed, owner.feed_step_size)
                     owner.gcode.run_script_from_command(
                         "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.3f "
                         "SPEED=%.1f SYNC=0"
@@ -1260,6 +1260,9 @@ class SASequences:
         """
         owner = self.owner
         ov    = dict(ov or {})
+        # What the operator typed, before the material table is layered in --
+        # needed below to tell "SHEAR=150 on the command line" from a table row.
+        explicit = set(ov)
 
         # A tip forms at a temperature the polymer chooses, not one the
         # machine does: what shears cleanly for PLA merely stretches ASA. So
@@ -1292,6 +1295,22 @@ class SASequences:
         shear_speed    = cfg('shear_speed')
         extruder_name = owner._extruder_names[path]
         current_temp  = self._extruder_temp(path)
+
+        # The MODE has its own switch; shear_temp is only the temperature.
+        # Every branch below asks `shear_temp > 0`, so a temperature used to
+        # BE the switch -- and a per-material row re-enabled the mode the
+        # global had turned off. On 2026-09-12 a real PLA unload ran the
+        # shear with tip_form_shear_temp : 0, because tip_form_shear_temp_pla
+        # said 150. Now a table row tunes the temperature and nothing else.
+        # SHEAR= on SA_FORM_TIP still turns it on for that run: typing a
+        # shear temperature is asking for a shear.
+        if (shear_temp > 0 and not owner.tip_form_shear_enabled
+                and 'shear_temp' not in explicit):
+            gcmd.respond_info(
+                "SA: Shear mode is off (tip_form_shear_enabled), so the "
+                "%.0f°C shear temperature is not used — forming with the "
+                "cooling moves." % shear_temp)
+            shear_temp = 0.0
 
         # Coming in hot is a different pull. The melt zone has had time to
         # reach up the filament, so the draw stretches the tip rather than
@@ -1448,7 +1467,8 @@ class SASequences:
         # bead forms at all. The cost is the cooldown wait, and the risk is
         # that a fully cold pull grips harder than the extruder can pull, so
         # step the temperature down rather than starting at the bottom.
-        if shear_temp > 0:
+        sheared = shear_temp > 0
+        if sheared:
             gcmd.respond_info(
                 "SA: Cold shear — heater off, waiting for %s to reach %.0f°C "
                 "(up to %.0fs)..."
@@ -1513,49 +1533,66 @@ class SASequences:
                 else:
                     gcmd.respond_info("SA: Cold shear — encoder %.1fmm." % moved)
 
-            self._clear_past_gears(gcmd, path, cooling_pos, ease_speed)
-            return
+            # It used to clear past the gears and RETURN here, so a sheared tip
+            # never saw the cooling moves -- the part that actually shapes it.
+            # That is why shear mode made squashed, stringy tips for two
+            # evenings while the cooling-move path made good ones. The draw
+            # above already leaves the tip at the cooling zone, so it skips
+            # only the sever and the ease, and joins the cooling moves below.
 
-        # ---- sever -------------------------------------------------------
-        # Everything from here is measured as distance of the tip back from the
-        # nozzle, so the ram has to be paid back before any of it counts.
-        to_cooling = pushed + cooling_pos
-        sever      = min(sever_dist, to_cooling)
-        gcmd.respond_info(
-            "SA: Sever %.1fmm at %.0fmm/s (break the melt)..." % (sever, sever_speed))
-        self._extrude_mm(-sever, int(sever_speed * 60))
-
-        # ---- ease back to the cooling zone -------------------------------
-        # Ramped 1.0 / 0.5 / 0.3 over 70 / 20 / 10 percent of what is left, the
-        # same taper Happy Hare uses: the tip is still soft here and pulling at
-        # one flat speed is what stretches the neck.
-        remaining = to_cooling - sever
-        if remaining > 0:
+        if not sheared:
+            # ---- sever -------------------------------------------------------
+            # Everything from here is measured as distance of the tip back from the
+            # nozzle, so the ram has to be paid back before any of it counts.
+            to_cooling = pushed + cooling_pos
+            sever      = min(sever_dist, to_cooling)
             gcmd.respond_info(
-                "SA: Ease %.1fmm to cooling zone at %.0f/%.0f/%.0f mm/s..."
-                % (remaining, ease_speed, ease_speed * 0.5, ease_speed * 0.3))
-            for fraction, scale in ((0.7, 1.0), (0.2, 0.5), (0.1, 0.3)):
-                seg = remaining * fraction
-                if seg > 0:
-                    self._extrude_mm(-seg, max(1, int(ease_speed * scale * 60)))
+                "SA: Sever %.1fmm at %.0fmm/s (break the melt)..." % (sever, sever_speed))
+            self._extrude_mm(-sever, int(sever_speed * 60))
+
+            # ---- ease back to the cooling zone -------------------------------
+            # Ramped 1.0 / 0.5 / 0.3 over 70 / 20 / 10 percent of what is left, the
+            # same taper Happy Hare uses: the tip is still soft here and pulling at
+            # one flat speed is what stretches the neck.
+            remaining = to_cooling - sever
+            if remaining > 0:
+                gcmd.respond_info(
+                    "SA: Ease %.1fmm to cooling zone at %.0f/%.0f/%.0f mm/s..."
+                    % (remaining, ease_speed, ease_speed * 0.5, ease_speed * 0.3))
+                for fraction, scale in ((0.7, 1.0), (0.2, 0.5), (0.1, 0.3)):
+                    seg = remaining * fraction
+                    if seg > 0:
+                        self._extrude_mm(-seg, max(1, int(ease_speed * scale * 60)))
 
         # ---- cooling moves -----------------------------------------------
         # In and out on the spot, accelerating as the plastic stiffens. Speed
         # steps across every half-move, so a 4-move run has 8 steps.
-        if cooling_moves > 0 and cooling_len > 0:
-            steps = max(1, 2 * cooling_moves - 1)
-            increment = (cool_speed_out - cool_speed_in) / float(steps)
-            gcmd.respond_info(
-                "SA: %d cooling moves of %.1fmm, %.0f→%.0f mm/s..."
-                % (cooling_moves, cooling_len, cool_speed_in, cool_speed_out))
-            speed = cool_speed_in
-            for _ in range(cooling_moves):
-                self._extrude_mm(cooling_len, max(1, int(speed * 60)))
-                speed += increment
-                self._extrude_mm(-cooling_len, max(1, int(speed * 60)))
-                speed += increment
+        #
+        # After a shear the heater is OFF and still falling, so the forming
+        # floor (shear_temp - 5) would be crossed part way through these moves
+        # and Klipper would stop the run on "Extrude below minimum temp". The
+        # guard is lifted for the rest of the sequence, as it is for the draw:
+        # the moves stay cooling_pos back from the nozzle, so nothing is ever
+        # pushed into cold plastic.
+        token = self._allow_cold_extrude(path, 0.0) if sheared else None
+        try:
+            if cooling_moves > 0 and cooling_len > 0:
+                steps = max(1, 2 * cooling_moves - 1)
+                increment = (cool_speed_out - cool_speed_in) / float(steps)
+                gcmd.respond_info(
+                    "SA: %d cooling moves of %.1fmm, %.0f→%.0f mm/s..."
+                    % (cooling_moves, cooling_len, cool_speed_in, cool_speed_out))
+                speed = cool_speed_in
+                for _ in range(cooling_moves):
+                    self._extrude_mm(cooling_len, max(1, int(speed * 60)))
+                    speed += increment
+                    self._extrude_mm(-cooling_len, max(1, int(speed * 60)))
+                    speed += increment
 
-        self._clear_past_gears(gcmd, path, cooling_pos, ease_speed)
+            self._clear_past_gears(gcmd, path, cooling_pos, ease_speed)
+        finally:
+            if token is not None:
+                self._restore_extrude_floor(token)
 
     def _hold_temp_for_forming(self, gcmd, extruder_name, temp, current_temp):
         """Pin the heater at the forming temperature and wait for it.
@@ -1966,7 +2003,7 @@ class SASequences:
         fed, last, strikes, stalled, arrived = 0.0, 0.0, 0, False, False
         try:
             while fed < span:
-                motion.note_drive_speed(flow_mms)
+                motion.note_drive_speed(flow_mms, step)
                 owner.gcode.run_script_from_command(
                     "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.2f "
                     "SPEED=%.1f SYNC=0" % (dn, step, flow_mms))
@@ -2130,7 +2167,7 @@ class SASequences:
 
                 # Single continuous move — drive starts async, extruder follows,
                 # M400 inside _extrude_mm waits for both to complete.
-                motion.note_drive_speed(sync_spd)
+                motion.note_drive_speed(sync_spd, max_sync)
                 owner.gcode.run_script_from_command(
                     "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 "
                     "MOVE=%.2f SPEED=%.1f SYNC=0"
@@ -2347,7 +2384,7 @@ class SASequences:
                     # direction flip is applied per move rather than baked
                     # into the stepper config -- drive_move does the same, and
                     # a raw MANUAL_STEPPER here would ignore it.
-                    motion.note_drive_speed(owner.feed_speed)
+                    motion.note_drive_speed(owner.feed_speed, owner.feed_step_size)
                     owner.gcode.run_script_from_command(
                         "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.3f "
                         "SPEED=%.1f SYNC=0"

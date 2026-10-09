@@ -181,7 +181,7 @@ describe nothing themselves. Adding a step is one edit there, and
 
 ---
 
-## Where things stand — 2026-09-29
+## Where things stand — 2026-10-09
 
 `main`, `dev` and `printer-dev` are one tree. **`TODO.md` is the list of what is
 open and what proves each item done**, so this section only records the shape.
@@ -190,19 +190,26 @@ open and what proves each item done**, so this section only records the shape.
 twelve guide steps; `SA_RECOVER` (force-feeding a remnant out with the new roll
 behind it) on a real broken T4; tip forming with the cooling moves, which made
 the tips usable: the squash is gone, a swell of about 9% in cross-section
-remains, with little stringing (shear mode is off because its branch returns
-before those moves); load and unload through the rebuilt KlipperScreen
-panels on all six heads; a restart guard that refuses to trip a toolhead MCU
-with a hot nozzle; and an install flow that ASKS before enabling KlipperScreen
-add-ons.
+remains, with little stringing; load and unload through the rebuilt
+KlipperScreen panels on all six heads; a restart guard that refuses to trip a
+toolhead MCU with a hot nozzle; and an install flow that ASKS before enabling
+KlipperScreen add-ons.
 
-**Found and repaired 2026-09-29:** three confirmed fixes from 2026-09-12 (the
-live DRIVE SPEED reading, the white colour-chip labels, and the whole `low`
-state) had been deleted by two commits whose messages said they added them,
-because dev was rebuilt from a stale local branch. CLAUDE.md, the cycle,
-step 3, now carries the one-line check that catches it. In the same pass,
-`install.sh` and `post_update.sh` turned out to abort on any KlipperScreen that
-was not already set up for add-ons, since 2026-09-13; both are fixed.
+**2026-09-29:** three confirmed fixes from 2026-09-12 (live DRIVE SPEED, white
+colour-chip labels, the `low` state) had been deleted by a stale promote and
+were restored; CLAUDE.md's cycle, step 3, now carries the check. `install.sh`
+and `post_update.sh` stopped aborting on a normal KlipperScreen answer.
+
+**2026-10-09, all measured on the machine:** DRIVE SPEED drops to 0 when the
+move ends instead of 120s later; shear mode has its own switch and runs the
+cooling moves; `SA_SET_STATE low` refuses a path that is not really low; the
+two ignored installer questions are wired up and an unattended install now
+gets its defaults; a moved template default reaches a value nobody tuned;
+KlipperScreen prefs live in the config directory, not the checkout. Two bugs
+turned up on the way: every path's saved state except T5's had been ignored
+at boot since 2026-09-04, and the burst of rewrites that caused shut the
+autoloader board down once ("Timer too close"). Both fixed. `tests/` exists
+now, with a fresh-install sandbox that runs on the printer.
 
 **Waiting on Mike at the machine:** the twelve-step guide on KlipperScreen,
 re-measuring all six toolheads by one method (that is guide step 12), and

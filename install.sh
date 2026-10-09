@@ -100,6 +100,12 @@ SA_RUN_MENU=1
 [ "${SA_NO_MENU:-}" = "1" ] && SA_RUN_MENU=0
 [ -t 0 ] || SA_RUN_MENU=0
 
+# Whether the user has answered before. Must be read BEFORE detect.py, which
+# creates the file to hold its pre-filled answers -- after that, "the file
+# exists" no longer means "someone chose these".
+SA_HAD_ANSWERS=0
+[ -f "${SA_ANSWERS}" ] && SA_HAD_ANSWERS=1
+
 # Read the printer and pre-fill what can be read, so the menu is mostly
 # confirming rather than typing. Never fatal: a printer it cannot read still
 # gets a working menu, just with fewer answers filled in.
@@ -121,19 +127,30 @@ if [ "${SA_RUN_MENU}" = "1" ]; then
             exit 1
         }
 else
-    if [ ! -f "${SA_ANSWERS}" ]; then
-        echo "[INSTALL] No terminal for the setup menu — writing defaults."
-        echo "          Re-run this from an interactive shell to change them,"
-        echo "          or edit ${SA_ANSWERS} by hand."
-        srctree="${INSTALL_PATH}" python3 -c "
-import sys; sys.path.insert(0, '${HOME}/klipper/lib/kconfiglib')
-import kconfiglib
-kc = kconfiglib.Kconfig('${INSTALL_PATH}/installer/Kconfig', warn=False)
-kc.write_config('${SA_ANSWERS}')
-"
+    if [ "${SA_HAD_ANSWERS}" = "0" ]; then
+        echo "[INSTALL] No terminal for the setup menu — using the defaults,"
+        echo "          plus what was detected above. Re-run this from an"
+        echo "          interactive shell to change them, or edit"
+        echo "          ${SA_ANSWERS} by hand."
     else
         echo "[INSTALL] Using your saved answers in ${SA_ANSWERS}"
     fi
+    # Complete the file: every answer it holds kept, every question it does
+    # not answer filled in with the menu's default. This used to run only when
+    # the file did not exist -- but detect.py has always created it first, so
+    # an unattended install never got its defaults written. Generation did not
+    # notice, because kconfiglib applies defaults when it loads; every grep in
+    # this script did, reading an unanswered question as "no". A piped install
+    # did not restart its services and did not add the printer.cfg include,
+    # both of which default to yes. The menu writes a complete file on save,
+    # so after this both paths leave the same kind of file behind.
+    srctree="${INSTALL_PATH}" python3 -c "
+import sys; sys.path.insert(0, '${HOME}/klipper/lib/kconfiglib')
+import kconfiglib
+kc = kconfiglib.Kconfig('${INSTALL_PATH}/installer/Kconfig', warn=False)
+kc.load_config('${SA_ANSWERS}')
+kc.write_config('${SA_ANSWERS}')
+" >/dev/null
 fi
 
 # Generation happens inside post_update.sh, which is also what Moonraker's
@@ -485,9 +502,26 @@ if grep -q '^CONFIG_WRITE_PRINTER_CFG_INCLUDE=y' "${SA_ANSWERS}" 2>/dev/null; th
     fi
 fi
 
+# ── Update Manager ───────────────────────────────────────────────────────────
+# The menu has always asked this, and the answer was ignored: the file below
+# was written whatever was said. Absent counts as yes -- the Kconfig default,
+# and what every install before this question was read already got -- so only
+# an explicit no changes anything.
+SA_UM_INI="${HOME}/.moonraker/config/update_manager/autoloader.ini"
+if grep -qE '^# CONFIG_REGISTER_UPDATE_MANAGER is not set|^CONFIG_REGISTER_UPDATE_MANAGER=n' \
+        "${SA_ANSWERS}" 2>/dev/null; then
+    echo "[INSTALL] Not registering with Moonraker's Update Manager (you said no)."
+    if [ -f "${SA_UM_INI}" ]; then
+        rm -f "${SA_UM_INI}"
+        echo "          Removed the registration an earlier install left:"
+        echo "            ${SA_UM_INI}"
+        echo "          Updates are now yours to pull: git -C ${INSTALL_PATH} pull,"
+        echo "          then ${INSTALL_PATH}/post_update.sh"
+    fi
+else
 echo "[INSTALL] Registering with Moonraker Update Manager..."
 mkdir -p "${HOME}/.moonraker/config/update_manager"
-cat > "${HOME}/.moonraker/config/update_manager/autoloader.ini" <<EOF
+cat > "${SA_UM_INI}" <<EOF
 [update_manager autoloader]
 type: git_repo
 channel: dev
@@ -497,15 +531,29 @@ managed_services: klipper
 primary_branch: main
 post_update_script: ${INSTALL_PATH}/post_update.sh
 EOF
+fi
 
 # ── Restart services ─────────────────────────────────────────────────────────
 # Honour the menu answer rather than always restarting: a user who said no
 # wants to restart in their own time, and an automated run must not need sudo.
-if grep -q '^CONFIG_RESTART_SERVICES=y' "${SA_ANSWERS}" 2>/dev/null    && [ "${SA_SKIP_RESTART:-0}" != "1" ]; then
+#
+# sudo needs a password and a password needs a terminal. With neither (the
+# piped `wget | bash` install) the first restart failed, `set -e` ended the
+# script, and "Install complete" and the CAN warning below never printed.
+# That only went unnoticed because the answers file used to be incomplete,
+# which made this read "no". `sudo -n true` asks whether sudo would work
+# without prompting -- passwordless setups still restart unattended.
+if grep -q '^CONFIG_RESTART_SERVICES=y' "${SA_ANSWERS}" 2>/dev/null    && [ "${SA_SKIP_RESTART:-0}" != "1" ] \
+        && { [ -t 0 ] || sudo -n true 2>/dev/null; }; then
     echo "[INSTALL] Restarting klipper, moonraker, KlipperScreen..."
     sudo systemctl restart klipper
     sudo systemctl restart moonraker
     sudo systemctl restart KlipperScreen 2>/dev/null || true
+elif grep -q '^CONFIG_RESTART_SERVICES=y' "${SA_ANSWERS}" 2>/dev/null \
+        && [ "${SA_SKIP_RESTART:-0}" != "1" ]; then
+    echo "[INSTALL] Not restarting services — there is no terminal to ask for"
+    echo "          your sudo password. Do it when you are ready:"
+    echo "            sudo systemctl restart klipper moonraker KlipperScreen"
 else
     echo "[INSTALL] Not restarting services — do it when you are ready:"
     echo "            sudo systemctl restart klipper moonraker KlipperScreen"
@@ -520,6 +568,33 @@ else
     echo "        [include autoloader/autoloader.cfg]"
 fi
 echo "  • Run ${INSTALL_PATH}/scripts/verify.sh to confirm everything is in sync"
+
+# ── toolchange LED hook: printed, never written ──────────────────────────────
+# The menu asked and nothing read the answer. As its help text promises, this
+# PRINTS the line rather than editing the toolchanger config: on a
+# klipper-toolchanger-easy install that file is a symlink into that project's
+# git checkout, and editing it would break their next update. The question
+# only exists when LEDs are on (Kconfig: depends on !LEDS_NONE), which is also
+# the only case where the macro it calls exists.
+if grep -q '^CONFIG_ADD_TOOLCHANGE_LED_HOOK=y' "${SA_ANSWERS}" 2>/dev/null; then
+    # -R, not -r: the toolchanger config is often a symlink into another
+    # project's checkout, and -r does not follow symlinks it meets.
+    SA_TC_CFG=$(grep -RlE '^\[toolchanger\]' "${CONFIG_DIR}" --include='*.cfg' 2>/dev/null \
+        | head -1 || true)
+    if [ -n "${SA_TC_CFG}" ] && grep -q '_SA_LEDS_INIT_ALL' "${SA_TC_CFG}" 2>/dev/null; then
+        echo "  • Toolchange LED hook already present in ${SA_TC_CFG}"
+    else
+        echo "  • For the LEDs to follow toolchanges, add this as the LAST line of"
+        echo "    after_change_gcode in your [toolchanger] section"
+        if [ -n "${SA_TC_CFG}" ]; then
+            echo "    (found in ${SA_TC_CFG}):"
+        else
+            echo "    (no [toolchanger] section found under ${CONFIG_DIR}):"
+        fi
+        echo "        _SA_LEDS_INIT_ALL ACTIVE={tool.tool_number}"
+        echo "    Indent it to match the lines above it, then restart Klipper."
+    fi
+fi
 
 # ── the one thing that will stop Klipper starting, said plainly ──────────────
 # The installer knows perfectly well the UUID is unset -- it tried to find one

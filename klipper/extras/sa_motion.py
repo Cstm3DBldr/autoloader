@@ -364,16 +364,37 @@ class SAMotion:
         dn = self._owner_drv_name()
 
         self._cancel_timeout(dn)
-        self.note_drive_speed(speed)
+        self.note_drive_speed(speed, distance_mm)
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
         owner.gcode.run_script_from_command("MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % dn)
         owner.gcode.run_script_from_command(
             "MANUAL_STEPPER STEPPER=%s MOVE=%.3f SPEED=%.1f"
             % (dn, self._drv_sign() * distance_mm, speed))
         owner.gcode.run_script_from_command("M400")
+        # M400 means the move has actually finished, which beats any estimate:
+        # let the reading go after the short hold rather than at the predicted
+        # end.
+        owner._drive_speed_until = min(
+            owner._drive_speed_until,
+            owner.reactor.monotonic() + self.DRIVE_SPEED_HOLD)
         self._arm_timeout(dn)
 
-    def note_drive_speed(self, speed):
+    # How long the speed reading outlives the move it describes. The feed
+    # loops are move, read a sensor, move again -- a gap of about
+    # sensor_polling_delay -- and without a hold the tile would flicker to
+    # Stopped between every step of a load that is plainly still running.
+    DRIVE_SPEED_HOLD = 0.75
+
+    def _drive_accel(self):
+        """The drive's configured accel in mm/s^2, or 0 if it has none."""
+        try:
+            ms = self.owner.printer.lookup_object(
+                'manual_stepper %s' % self._owner_drv_name())
+            return float(getattr(ms, 'accel', 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    def note_drive_speed(self, speed, distance=None):
         """Record the speed the drive is being commanded at, for the UIs.
 
         The status screen used to show `feed_speed` -- a config value that is
@@ -386,12 +407,37 @@ class SAMotion:
         caller: a blast runs at encoder_max_speed, a creep at feed_speed, a
         sync feed at whatever the melt can take. The one thing they share is
         that they all pass a number to the stepper, so that is what is
-        recorded. Cleared when the motor stops holding.
+        recorded.
+
+        With `distance`, the reading EXPIRES when the move should have ended:
+        its length at that speed, plus the time accel adds, plus
+        DRIVE_SPEED_HOLD. It used to clear only when the motor let go -- on
+        drive_disable() or the idle timeout, 120s later -- so a park that
+        finished in 13s read "5 mm/s" for two more minutes with nothing
+        moving (measured 2026-09-29). A stopped drive holding position is
+        calling for nothing, which is what Mike asked the tile to show.
+        Without `distance` the old behaviour stands: held until the motor
+        lets go.
         """
+        owner = self.owner
         try:
-            self.owner.drive_speed = float(speed or 0.0)
+            speed = float(speed or 0.0)
         except (TypeError, ValueError):
-            self.owner.drive_speed = 0.0
+            speed = 0.0
+        owner.drive_speed = speed
+        if speed <= 0.0:
+            owner._drive_speed_until = 0.0
+        elif distance is None:
+            owner._drive_speed_until = float('inf')
+        else:
+            # d/v + v/a bounds a trapezoid from above, and a short move that
+            # never reaches speed (a triangle) from above too.
+            accel = self._drive_accel()
+            span = abs(float(distance)) / speed
+            if accel > 0.0:
+                span += speed / accel
+            owner._drive_speed_until = (owner.reactor.monotonic() + span
+                                        + self.DRIVE_SPEED_HOLD)
 
     def drive_disable(self):
         """Immediately disable drive stepper (no timeout delay)."""

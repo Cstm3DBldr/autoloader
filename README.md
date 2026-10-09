@@ -251,7 +251,12 @@ SA_BUZZ_SELECTOR DISTANCE=20 SPEED=100
 ### State management
 
 #### `SA_SET_STATE TOOL=N STATE=x`
-Manually override the path state. Valid states: `unknown`, `empty`, `partial`, `loaded`.
+Manually override the path state. Valid states: `unknown`, `empty`, `partial`, `loaded`, `low`.
+
+`low` means a loaded path's roll has ended while its tube is still full. It is
+refused unless that is physically true: the path must be `loaded` and its entry
+sensor must read clear. To rehearse a runout, pull the roll back past the entry
+sensor first, then set it.
 
 ```
 SA_SET_STATE TOOL=0 STATE=empty

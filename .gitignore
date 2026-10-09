@@ -2,3 +2,9 @@ installer/__pycache__/
 installer/generated/
 __pycache__/
 *.pyc
+
+# KlipperScreen UI prefs used to be written inside the checkout; they now
+# live in ~/printer_data/config/autoloader/. Older installs may still have
+# the legacy directory until sa_ui_prefs.py migrates it.
+/klipperscreen
+KlipperScreen/sa_ui_prefs.json

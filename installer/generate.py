@@ -14,6 +14,19 @@ silently discard tuning, which is the failure mode this whole design exists to
 avoid. Anything the template no longer defines is reported rather than dropped
 in silence.
 
+**But only values the user actually CHOSE.** "Existing wins" cannot tell a
+tuned value from last version's default, so a shipped default that moved never
+arrived: the old default was carried forward as though someone had chosen it,
+under the new template's comment describing the new one. Three times --
+tip_form_hot_shear_drop formed tips 25C cold for an evening while the config
+said 0, and on 2026-09-12 the printer read `tip_form_shear_temp : 150.0`
+directly under a comment saying OFF. So each run records the template's
+defaults beside the generated files (DEFAULTS_FILE), and the next refresh asks
+of every differing value: is it still the default we wrote last time? If so
+nobody chose it, and the new default goes in -- value and comment both from
+the template, so they agree. If not, it is the user's, it stays, and if the
+default moved underneath it that is said out loud.
+
 **No dependencies.** Klipper ships kconfiglib (it is what `make menuconfig`
 uses) so reading .config is free, but jinja2 lives only in klippy-env, not in
 system python3. The template syntax below is therefore deliberately tiny:
@@ -22,6 +35,7 @@ more than that, the templates are doing too much.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -240,16 +254,60 @@ def parse_settings(path):
     return out
 
 
-def reapply(rendered, existing):
+# Beside the generated files: what the templates said each default was the last
+# time this ran. A dotfile, so post_update.sh's `*.cfg` copy never touches it.
+DEFAULTS_FILE = ".autoloader-defaults.json"
+
+
+def same_value(a, b):
+    """Equal as numbers when both are numbers -- "150.0" is "150" -- else as text."""
+    if a is None or b is None:
+        return a is b
+    try:
+        return float(a) == float(b)
+    except ValueError:
+        return a.strip() == b.strip()
+
+
+def template_defaults(rendered):
+    """{(section, key): value} as the freshly rendered template states them."""
+    out = {}
+    section = None
+    for line in rendered.split("\n"):
+        stripped = line.strip()
+        m = _SECTION.match(stripped)
+        if m:
+            section = m.group(1)
+            continue
+        if line[:1] in (" ", "\t") or not stripped or stripped.startswith("#"):
+            continue
+        m = _SETTING.match(line)
+        if m and section:
+            val = value_only(m.group(2))
+            if val != "":
+                out[(section, m.group(1))] = val
+    return out
+
+
+def reapply(rendered, existing, last_defaults=None):
     """Put the user's values back into freshly rendered text.
 
-    Returns (text, changed, dropped). `dropped` is everything the user had that
-    the new template no longer defines -- reported, never silently discarded.
+    Returns (text, changed, dropped, followed, moved).
+      changed   the user's values, kept
+      dropped   settings the user had that the template no longer defines --
+                reported, never silently discarded
+      followed  values that were only ever last run's default, replaced by the
+                template's new one
+      moved     the user's own values, kept, where the shipped default changed
+                underneath them -- the case worth reading the comment for
+    `last_defaults` is {(section, key): value} from the previous run, or None
+    when there is no record, in which case every differing value is kept as
+    before: without the record a default and a choice look the same.
     """
     if not existing:
-        return rendered, [], []
+        return rendered, [], [], [], []
 
-    changed = []
+    changed, followed, moved = [], [], []
     seen = set()
     out = []
     section = None
@@ -275,6 +333,20 @@ def reapply(rendered, existing):
             # immediately overwritten by the thing it was meant to replace.
             if old_val in PLACEHOLDER_VALUES:
                 old_val = None
+            last = (last_defaults or {}).get((section, key))
+            if (old_val is not None and last is not None
+                    and same_value(old_val, last)
+                    and not same_value(new_val, last)):
+                # Nobody chose it: it is exactly what we wrote last time, and
+                # the template has moved on. Take the new line whole.
+                followed.append((section, key, old_val, new_val))
+                out.append(line)
+                continue
+            if (old_val is not None and last is not None
+                    and not same_value(old_val, last)
+                    and not same_value(new_val, last)
+                    and not same_value(old_val, new_val)):
+                moved.append((section, key, old_val, last, new_val))
             if old_val is not None and old_val != new_val and new_val != "":
                 # Replace ONLY the value, leaving the template's own spelling
                 # of the line intact -- key, the alignment either side of the
@@ -291,7 +363,32 @@ def reapply(rendered, existing):
         out.append(line)
 
     dropped = [(s, k, v) for (s, k), v in existing.items() if (s, k) not in seen]
-    return "\n".join(out), changed, dropped
+    return "\n".join(out), changed, dropped, followed, moved
+
+
+def load_defaults(out_dir):
+    """{file: {(section, key): value}} from the last run, or {} if none."""
+    path = os.path.join(out_dir, DEFAULTS_FILE)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for fname, table in raw.items():
+        out[fname] = {tuple(k.split("|", 1)): v for k, v in table.items()}
+    return out
+
+
+def save_defaults(out_dir, defaults):
+    raw = {fname: {"%s|%s" % k: v for k, v in sorted(table.items())}
+           for fname, table in defaults.items()}
+    path = os.path.join(out_dir, DEFAULTS_FILE)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline=NL) as f:
+        json.dump(raw, f, indent=1, sort_keys=True)
+        f.write(NL)
+    os.replace(tmp, path)
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -332,6 +429,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     total_changed = 0
     would_change = []
+    last_defaults = load_defaults(args.out)
+    new_defaults = {}
 
     for tpl_name, out_name in TEMPLATES:
         tpl_path = os.path.join(args.templates, tpl_name)
@@ -344,9 +443,11 @@ def main():
                 sys.exit("ERROR in %s: %s" % (tpl_name, e))
 
         dest = os.path.join(args.out, out_name)
-        changed, dropped = [], []
+        new_defaults[out_name] = template_defaults(text)
+        changed, dropped, followed, moved = [], [], [], []
         if args.mode == "refresh":
-            text, changed, dropped = reapply(text, parse_settings(dest))
+            text, changed, dropped, followed, moved = reapply(
+                text, parse_settings(dest), last_defaults.get(out_name))
 
         if changed:
             total_changed += len(changed)
@@ -359,6 +460,19 @@ def main():
             print("  %s — these settings of yours are no longer used:" % out_name)
             for sec, key, val in dropped:
                 print("      [%s] %s: %s" % (sec, key, val))
+        if followed:
+            print("  %s — new shipped defaults, taken because you had not "
+                  "changed these:" % out_name)
+            for sec, key, old, new in followed:
+                print("      %s: %s -> %s" % (key, old, new))
+        if moved:
+            print("  %s — KEPT YOUR VALUE, but the shipped default changed "
+                  "underneath it." % out_name)
+            print("      Read the comment beside each in the file: it now "
+                  "describes the NEW default.")
+            for sec, key, old, last, new in moved:
+                print("      %s: yours %s  (default was %s, is now %s)"
+                      % (key, old, last, new))
 
         # Identical output is not worth a backup or a write. Updates run this
         # every time and most change nothing; backing up regardless would bury
@@ -390,6 +504,12 @@ def main():
 
     if args.mode == "refresh" and total_changed == 0:
         print("  (no existing values to carry forward)")
+
+    # Recorded after the files, and never on a dry run: verify.sh uses
+    # --dry-run to ask whether anything WOULD change, and a check that moved
+    # the baseline as a side effect would change the next answer.
+    if not args.dry_run:
+        save_defaults(args.out, new_defaults)
 
     # Non-zero when the on-disk config no longer matches what the answers and
     # templates say it should be -- a hand edit to a generated file, or an

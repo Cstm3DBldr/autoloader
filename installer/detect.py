@@ -494,7 +494,11 @@ def main():
         print("    would stop your printer from starting.")
         print("    Choose 'Filament color on the logo only' instead — it keeps")
         print("    the LEDs you already have.")
-        proposed["SA_STATUS_MACROS_EXIST"] = "y"
+        # No answer is recorded for this. SA_STATUS_MACROS_EXIST used to be
+        # written here, but it is not a Kconfig symbol and nothing ever read
+        # it -- `--check` finds the collision itself. Once install.sh began
+        # completing the answers file through kconfiglib, which drops unknown
+        # keys, it would have been re-added as "new" on every run.
 
     # ── write ────────────────────────────────────────────────────────────────
     # A placeholder is not an answer. CHANGE_ME sitting in the answers file

@@ -55,57 +55,28 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       ("Encoder quiet 2x after 93mm retract — filament cleared").
       *Done when:* it has run on the machine.
 
-- [ ] **Two installer questions are asked and the answers discarded.**
-      `REGISTER_UPDATE_MANAGER` — `install.sh` writes `autoloader.ini`
-      unconditionally. `ADD_TOOLCHANGE_LED_HOOK` — nothing reads it and
-      the `toolchanger.cfg` hook is still a manual edit.
-      Worse than documentation drift: the operator makes a choice and the
-      machine ignores it silently. Either wire each up in `install.sh` /
-      `generate.py`, or drop the question.
-      *Done when:* `scripts/check_drift.py` passes all five checks. It is red
-      today for exactly this. Confirming a change here means running
-      `install.sh` on a machine that has never seen the project — the reason
-      it was reported rather than guessed at.
+- [ ] **Measure the T0 tip waiting at the gate: is shear mode worth having?**
+      The code half is done. Shear mode used to return before the cooling
+      moves, which is why it made squashed, stringy tips; it now runs them,
+      and has its own switch (`tip_form_shear_enabled`, off). Run on T0 on
+      2026-10-09 with `SA_FORM_TIP TOOL=0 SHEAR=150`: heater off, drew out at
+      149C (encoder 29.0mm), four cooling moves 10 to 50mm/s, cleared, Branch B
+      unload, parked at the gate -- no min-extrude error. That tip is still
+      there. Pull T0 from the entry side and measure it against the
+      cooling-move tip (1.90 x 1.76, no squash, no stringing).
+      *Done when:* it is measured, and shear mode is either turned on with
+      evidence or its branch is deleted. Reload T0 afterwards (`SA_LOAD TOOL=0`).
 
-- [ ] **`generate.py`'s refresh mode can write a config that lies.** It puts
-      existing VALUES back, which is right — it protects calibration from an
-      update. But it adopts the template's new COMMENTS, so changing a comment
-      and a value together produces a live file where the two disagree. On
-      2026-09-12 the printer read `tip_form_shear_temp : 150.0` directly above
-      a comment saying `OFF`. Third time this class has fired; the
-      `tip_form_hot_shear_drop` instance cost an evening of tips formed at
-      125C while the config said 0.
-      *Done when:* refresh either carries the old comment with the old value,
-      or reports the disagreement the way it already reports dropped settings.
-
-- [ ] **`shear_temp` is a tuning value AND a mode switch.** The code branches
-      on `if shear_temp > 0`, so a per-material row does not tune the mode, it
-      RE-ENABLES it — and the global cannot turn it off. A real unload on
-      2026-09-12 ran the shear because `tip_form_shear_temp_pla` said 150
-      while the global said 0. The eleven per-material rows are commented out
-      as a patch; there is still no way to express "tune PLA's shear
-      temperature, leave the mode off".
-      *Done when:* the mode has its own switch, separate from the value.
-
-- [ ] **The shear branch returns before the cooling moves**
-      (`sa_sequences.py`, the `return` after `_clear_past_gears`). That is why
-      shear mode produced squashed, stringy tips for two evenings while the
-      cooling-move path produces good ones. Shear mode is disabled rather than
-      fixed, because disabling it was measured and fixing it was not.
-      *Done when:* the shear path runs the cooling moves and a measured tip
-      says whether the mode is worth having at all.
-
-- [ ] **DRIVE SPEED keeps showing the last speed for up to two minutes after
-      the drive stops.** It reads what the drive was last commanded at and
-      only zeroes when the motor lets go: on `drive_disable()` or the idle
-      timeout (`stepper_timeout`, 120s). Measured 2026-09-29: an `SA_PARK` on
-      T2 read 20, then 10, then 5mm/s through its approach, then held 5.0 for
-      ~128s with nothing moving. Mike asked for the tile to show "what the
-      process is calling for", and a stopped drive holding its position is
-      calling for nothing.
-      *Done when:* the reading drops to 0 when a move completes, not when
-      the motor lets go, with "Holding" in place of a speed if that
-      distinction is worth showing.
+- [ ] **`wget ... | bash`, the install line in the README, never shows the
+      setup menu.** stdin is the pipe, so `[ -t 0 ]` is false and every
+      question takes its default. That is now at least CORRECT -- before
+      2026-10-09 an unattended install read every unanswered question as "no"
+      -- but the person following the README is never asked anything, and the
+      KlipperScreen add-on question in docs/INSTALL.md is never put to them.
+      `bash <(wget -qO- URL)` or clone-then-run would keep the terminal.
+      Not changed without Mike: it is the first command every user types.
+      *Done when:* the README's install line reaches the menu, or the README
+      says plainly that it does not and how to get it.
 
 ## Never verified
 
@@ -199,18 +170,6 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       product lines, and survive a reload — and the table either keeps
       deriving with evidence or stops claiming to.
 
-- [ ] **`SA_SET_STATE STATE=low` on a path that is not physically low leaves
-      it claiming `loaded`.** Forcing the state by hand on T1 (entry sensor
-      reading FILAMENT, tube empty, tip parked at the gate) had the monitor's
-      recovery branch conclude "filament returned to a low path" and set
-      LOADED — correct for a genuinely low path, whose tube IS still full, and
-      wrong for a faked one. Harmless in practice, since the sequences read
-      sensors rather than the stored state, but it means the hand-set state
-      cannot be used to rehearse anything downstream of `low`.
-      *Done when:* either the recovery branch checks that the tube actually
-      holds filament, or SA_SET_STATE refuses `low` on a path whose entry
-      sensor still reads FILAMENT and says why.
-
 - [ ] **Try a lower drive current for the wiggle check.** Mike's read from
       watching it: the drive is strong enough to rip filament out of the
       extruder gears rather than ease it. `selector_stall_current` already
@@ -248,15 +207,6 @@ None of this changes behaviour. It is what makes the repo followable.
       - `backup/2026-05-04-stable`, four months old
       *Done when:* `git ls-remote --heads origin` lists `main`, `dev`,
       `printer-dev`, `old-dev` and whichever backups you consciously keep.
-- [ ] **Two untracked files in the printer's checkout** —
-      `KlipperScreen/sa_ui_prefs.json` and `klipperscreen`. They show as dirt
-      in every `git status` on the machine. Find out what writes them, then
-      either gitignore them or move them out of the repo.
-- [ ] **Test harnesses live in a scratch directory**, not the repo. The drift
-      checks are committed; the ad-hoc ones that verified the guide fixes and
-      the KlipperScreen add-on loader are not.
-      *Done when:* the ones worth keeping are under `tests/` and runnable.
-
 ## Deferred by decision
 
 *(nothing deferred right now)*

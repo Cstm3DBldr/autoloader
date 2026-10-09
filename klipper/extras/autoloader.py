@@ -174,9 +174,11 @@ class Autoloader:
         self.slip_tolerance          = config.getfloat('slip_tolerance',           15.0)
         self.feed_speed              = config.getfloat('feed_speed',               50.0)
         # Live drive speed in mm/s, written by SAMotion on every drive
-        # command and zeroed when the motor stops holding. Not a config
-        # value -- it is a reading.
+        # command. Not a config value -- it is a reading, and it expires at
+        # _drive_speed_until (reactor time) so a finished move stops being
+        # reported. See SAMotion.note_drive_speed.
         self.drive_speed             = 0.0
+        self._drive_speed_until      = 0.0
         self.feed_step_size          = config.getfloat('feed_step_size',           10.0)
         self.selector_speed          = config.getfloat('selector_speed',          200.0)
         self.sensor_delay            = config.getfloat('sensor_polling_delay',      0.2)
@@ -303,11 +305,17 @@ class Autoloader:
         self.tip_form_cooling_moves  = config.getint('tip_form_cooling_moves',        4)
         self.tip_form_cool_speed_in  = config.getfloat('tip_form_cool_speed_in',   10.0)
         self.tip_form_cool_speed_out = config.getfloat('tip_form_cool_speed_out',  50.0)
-        # Cold-shear mode. 0 disables and the normal sever/ease/cool sequence
-        # runs. Set to a temperature and the heater is switched off after the
-        # ram, the hotend is allowed to fall to it, and the filament is then
+        # Cold-shear mode. When it runs, the heater is switched off after the
+        # ram, the hotend is allowed to fall to shear_temp, and the filament is
         # drawn out slowly so it shears at a defined boundary rather than
-        # separating from a melt.
+        # separating from a melt; the cooling moves then run as usual.
+        #
+        # tip_form_shear_enabled is the MODE and tip_form_shear_temp only the
+        # temperature. They used to be one value, which made every
+        # tip_form_shear_temp_<material> row a switch the global could not
+        # override. Off by default, because shear mode has not been measured
+        # since it started running the cooling moves.
+        self.tip_form_shear_enabled  = config.getboolean('tip_form_shear_enabled', False)
         self.tip_form_shear_temp     = config.getfloat('tip_form_shear_temp',      0.0)
         self.tip_form_shear_speed    = config.getfloat('tip_form_shear_speed',     3.0)
         self.tip_form_shear_timeout  = config.getfloat('tip_form_shear_timeout', 180.0)
@@ -524,7 +532,16 @@ class Autoloader:
         'loaded'. Filament at the entry with nothing past it means the
         path holds filament that was never driven through, which is
         'partial'. Nothing anywhere is 'empty'.
+
+        Persisted in ONE write after the loop. It used to SAVE_VARIABLE per
+        path -- six full rewrites of variables.cfg back to back, at the
+        busiest moment of a start, with the autoloader board polling twelve
+        pins every 2ms. That is the shape d3b5a7b removed from SA_SET_MATERIAL
+        for "Timer too close", and on 2026-10-09 the board shut down with it
+        here, between path 4's line and path 5's, while KlipperScreen was
+        restarting alongside.
         """
+        updates = {}
         for i in range(self.num_paths):
             if self.path_states[i] != self.STATE_UNKNOWN:
                 continue
@@ -540,16 +557,13 @@ class Autoloader:
             else:
                 new_state = self.STATE_EMPTY
             self.path_states[i] = new_state
-            try:
-                self.gcode.run_script_from_command(
-                    "SAVE_VARIABLE VARIABLE=sa_state_%d VALUE=\"'%s'\""
-                    % (i, new_state))
-            except Exception:
-                logging.exception(
-                    "Autoloader: could not persist inferred state for path %d", i)
+            # str, as the SAVE_VARIABLE form stored it (VALUE="'%s'").
+            updates['sa_state_%d' % i] = str(new_state)
             logging.info("Autoloader: path %d state inferred from "
                          "sensors (entry=%s toolhead=%s): %s",
                          i, at_entry, at_toolhead, new_state)
+        if updates:
+            self._persist_variables(updates)
 
     def _start_state_monitor(self):
         """Reactor timer that reconciles path_states with the entry
@@ -1346,6 +1360,21 @@ class Autoloader:
             stashed = svars.get('sa_lastprofile_%d' % i, None)
             if isinstance(stashed, dict):
                 self._stashed_profiles[i] = stashed
+            # Restore path state as well if saved.
+            #
+            # This lived further down from 2026-09-04 to 2026-10-09 -- e1d0572
+            # inserted the motor-direction loop directly above it, and these
+            # lines became that loop's body, reading `i` left over from here.
+            # So only the LAST path's saved state was ever restored; the rest
+            # were re-guessed from the sensors at every boot, which is also
+            # why every boot rewrote variables.cfg once per path. `low` is in
+            # the list because a roll that ended is still a roll that ended
+            # after a restart -- left out, it would be re-guessed as loaded.
+            saved_state = svars.get('sa_state_%d' % i, None)
+            if saved_state in (self.STATE_UNKNOWN, self.STATE_EMPTY,
+                               self.STATE_PARTIAL, self.STATE_LOADED,
+                               self.STATE_LOW):
+                self.path_states[i] = saved_state
 
         # Servo angles found by SA_CALIBRATE_SERVO. Saved here rather than in
         # parameters.cfg so the installer's regeneration cannot discard them.
@@ -1366,11 +1395,6 @@ class Autoloader:
             if v is not None:
                 setattr(self, attr, str(v).strip().lower()
                         in ('1', 'true', 'yes', 'y'))
-            # Restore path state as well if saved
-            saved_state = svars.get('sa_state_%d' % i, None)
-            if saved_state in (self.STATE_UNKNOWN, self.STATE_EMPTY,
-                               self.STATE_PARTIAL, self.STATE_LOADED):
-                self.path_states[i] = saved_state
         # Apply the calibrated drive rotation_distance to the live stepper, the
         # same way sa_encoder applies its calibrated mm_per_pulse. This used to
         # rewrite hardware.cfg and ask for another restart, which does not
@@ -2040,6 +2064,30 @@ class Autoloader:
             gcmd.respond_info(
                 "SA: Invalid STATE '%s'. Valid values: %s" % (state, ', '.join(valid)))
             return
+        # `low` is a claim about the physical path: the roll has ENDED (entry
+        # sensor clear) and the tube behind it is still FULL (it was loaded).
+        # Forced onto a path where either is false, the monitor's recovery
+        # branch saw filament at the entry sensor, concluded "a spool went
+        # back on a low path" and set LOADED -- on 2026-09-12 that claimed a
+        # loaded T1 whose tube was empty and whose tip sat at the gate. So the
+        # hand-set state is held to what a real runout looks like, which also
+        # makes it a faithful rehearsal: take a loaded path's roll back past
+        # its entry sensor, then set it.
+        if state == self.STATE_LOW:
+            current = self.path_states[path]
+            if self._entry_sensor_active(path):
+                gcmd.respond_info(
+                    "SA: Not setting path %d low — its entry sensor still reads "
+                    "FILAMENT, and low means the roll has ended. To rehearse a "
+                    "runout, pull the roll back past the entry sensor first."
+                    % path)
+                return
+            if current != self.STATE_LOADED:
+                gcmd.respond_info(
+                    "SA: Not setting path %d low — it is '%s', and low means the "
+                    "tube is still full from a load. Only a loaded path can run "
+                    "low." % (path, current))
+                return
         self.path_states[path] = state
         sv = self.printer.lookup_object('save_variables', None)
         if sv:
@@ -2342,10 +2390,12 @@ class Autoloader:
             'path_load_temps'    : list(self.path_load_temps),
             'path_unload_temps'  : list(self.path_unload_temps),
             'feed_speed'              : self.feed_speed,
-            # Live: what the drive is being commanded at right now,
-            # 0 when the motor is not holding. See
-            # SAMotion.note_drive_speed.
-            'drive_speed'             : getattr(self, 'drive_speed', 0.0),
+            # Live: what the drive is being commanded at right now, and 0
+            # once that move has finished. See SAMotion.note_drive_speed.
+            'drive_speed'             : (
+                self.drive_speed
+                if eventtime < getattr(self, '_drive_speed_until', 0.0)
+                else 0.0),
             'selector_speed'          : self.selector_speed,
             'purge_length'            : self.purge_length,
             'nozzle_distance'         : self.nozzle_distance,
