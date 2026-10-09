@@ -71,9 +71,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       166C; after a purge it is already there and cuts at once, near 170C,
       still falling. 185 is known to string and 165 not, so a few degrees
       at the cut is the obvious difference between the two tips.
-      Next test, overrides only: `PURGE=15 TEMP=160` -- the wait then ends
-      at 165, where the baseline effectively cut. If the string goes and the
-      size holds, make the purge path settle at the target instead.
+      Tested, `PURGE=15 TEMP=160`: the cut measured at 165.0C (Moonraker's
+      temperature history), falling ~1.2C/s; ease at 163.5, cooling moves
+      at ~160. Mike: **1.85 x 1.95, no string.** So the cut temperature IS
+      the string lever -- the only change from the stringing 1.85 run was
+      cutting ~5C colder.
+      Size is NOT a clear win: the long axis, 1.95, is above the baseline's
+      1.9, and the 2026-09-12 cooling-move tip was 1.90 x 1.76. The baseline
+      has only been measured on one axis today, so the like-for-like
+      comparison is still open. The purge also adds ~25s to every unload.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9mm-short good enough
       and this line goes.
 
