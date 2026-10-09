@@ -212,8 +212,9 @@ autoloader board down once ("Timer too close"). Both fixed. `tests/` exists
 now, with a fresh-install sandbox that runs on the printer.
 
 **Cold shear removed, 2026-10-09.** With the cooling moves running after
-it, the T0 tip measured 1.9mm with a string, against 1.90 x 1.76 with none
-from the cooling moves alone, so it bought a string and a cooldown wait.
+it, the T0 tip measured 1.9mm with a string. The same path the same day with
+the cooling moves alone: 1.9mm, no string, and a much shorter 1.9mm section.
+So shear bought a string, a longer swell and a cooldown wait.
 Retired options in a user's config are reported as deprecated, not fatal.
 
 **Waiting on Mike at the machine:** the twelve-step guide on KlipperScreen,

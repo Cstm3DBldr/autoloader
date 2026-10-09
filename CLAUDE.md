@@ -988,8 +988,11 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   after it never beat the cooling moves: 2.02 x 1.50 squashed and stringy
   while its branch skipped them, 1.9mm with a string once it ran them, against
   1.90 x 1.76 with no string from the cooling moves alone, and a 10-180s
-  cooldown on top. The code is in 066fd08 if a material with a very different
-  glass transition ever needs it.
+  cooldown on top. The deciding pair was same path, same day (T0, PLA,
+  2026-10-09): shear then cooling moves gave 1.9mm WITH a string; cooling
+  moves alone gave 1.9mm with NO string, and the 1.9mm section itself much
+  shorter. The code is in 066fd08 if a material with a very different glass
+  transition ever needs it.
 - Do not run `scripts/klipper_service_restart.sh` from a dev machine without
   `SA_HOST` set. It posts to `localhost:7125`, which is the printer only when
   the script runs there.
