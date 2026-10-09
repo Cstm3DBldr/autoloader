@@ -61,9 +61,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       Tried, changed nothing: COOL_POS 35 -> 45, TEMP 165 -> 155.
       `PURGE=15` -- fresh filament through just before forming -- first ran
       clean on 2026-10-09 at 1.5mm/s: encoder 14.5 of 15mm (97%), back to
-      165C before the sever, ease 20mm, clear 95%. Its tip is waiting on
-      Mike's measurement. (Its first attempt was not a valid test -- see
-      the commit that fixed the purge's offset and temperature.)
+      165C before the sever, ease 20mm, clear 95%. Mike: **1.85mm, smaller
+      than the baseline's 1.9, but it strings again.** (Its first attempt
+      was not a valid test -- see the commit that fixed the purge's offset
+      and temperature.)
+      Likely why it strings: `_hold_temp_for_forming` stops waiting at
+      tip_form_temp + 5 on the way DOWN. Without a purge the run then
+      travels ~5s to the purge position before the sever, so it cuts near
+      166C; after a purge it is already there and cuts at once, near 170C,
+      still falling. 185 is known to string and 165 not, so a few degrees
+      at the cut is the obvious difference between the two tips.
+      Next test, overrides only: `PURGE=15 TEMP=160` -- the wait then ends
+      at 165, where the baseline effectively cut. If the string goes and the
+      size holds, make the purge path settle at the target instead.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9mm-short good enough
       and this line goes.
 
