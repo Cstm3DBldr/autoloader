@@ -973,6 +973,14 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   `filament_present` before that check returns, so the edge is consumed
   and never re-fires: two spools inserted in quick succession lost the
   second park outright.
+- Do not let a UI decide when a profile is cleared. The printer owns that:
+  the monitor wipes a profile once the entry sensor has read empty for
+  `runout_timeout`, keeps it while the entry sees filament, and stashes what
+  it wipes for `SA_RESTORE_PROFILE`. KlipperScreen used to run its own copy —
+  a 5-minute "not loaded yet" timer and an instant filament-gone clear, both
+  sending a blank `SA_SET_MATERIAL` that skips the stash — and on 2026-10-09
+  the timer wiped three profiles on paths with filament parked at the gate.
+  A UI may offer a CLEAR button; it may not clear on a schedule.
 - Do not make `SA_RESTORE_PROFILE` automatic. Restoring a stashed profile on
   re-insertion is right when the same spool goes back in and dangerous when a
   different one does — the machine would report red PLA while holding blue PETG

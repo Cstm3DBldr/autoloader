@@ -94,7 +94,6 @@ class Panel(ScreenPanel):
         self._path_ex        = []
         self._sel_path       = None
         self._sel_btn        = None
-        self._profile_timers = {}   # path -> GLib timeout id
 
         # ── Notebook ────────────────────────────────────────────────────────
         self._nb = Gtk.Notebook()
@@ -713,7 +712,10 @@ class Panel(ScreenPanel):
         self._save_profile_and_return(show_msg=False)
 
     def _save_profile_and_return(self, show_msg=True):
-        """Commit wizard profile to path, refresh grid, start auto-clear timer."""
+        """Commit wizard profile to path and refresh the grid.
+
+        DONE and SAVE ONLY both come here; they differ only in the popup.
+        """
         i = self._sel_path
         if i is None:
             return
@@ -733,31 +735,19 @@ class Panel(ScreenPanel):
         self._populate_path_page()   # rebuild grid with new color/material
         self._show_page('path')
         self._update_path_status()
-        self._start_profile_timer(i)
 
-    # ── 5-minute auto-clear timer ─────────────────────────────────────────────
-
-    def _start_profile_timer(self, path):
-        """If path isn't loaded within 5 minutes of profile save, clear it."""
-        self._cancel_profile_timer(path)
-        tid = GLib.timeout_add(5 * 60 * 1000, self._profile_timer_fired, path)
-        self._profile_timers[path] = tid
-
-    def _cancel_profile_timer(self, path):
-        tid = self._profile_timers.pop(path, None)
-        if tid is not None:
-            GLib.source_remove(tid)
-
-    def _profile_timer_fired(self, path):
-        """Auto-clear profile if path still hasn't been loaded."""
-        self._profile_timers.pop(path, None)
-        state = self._effective_state(path)
-        # 'low' is deliberately absent: a low path still holds a full tube
-        # and behaves like a loaded one until the tail actually runs out.
-        if state in ('empty', 'unknown', 'partial'):
-            logger.info("sa_load_unload: profile timer — clearing T%d (state=%s)", path, state)
-            self._clear_profile_gcode(path)
-        return False  # don't repeat
+    # When a profile is cleared is the PRINTER's decision, not this panel's.
+    # The autoloader monitor wipes a profile once the entry sensor has read
+    # empty for runout_timeout (10s), keeps a profile on a path whose entry
+    # still sees filament, and stashes what it wipes so SA_RESTORE_PROFILE can
+    # put it back. This panel used to run its own copy of that policy, and the
+    # copy disagreed: a 5-minute timer blanked any profile not loaded in time
+    # -- including on a path with filament parked at the gate -- and a
+    # filament-gone check blanked instantly, with no debounce and no stash.
+    # On 2026-10-09 the timer wiped T0, T1 and T2 exactly five minutes after
+    # Mike set them, with filament on all three. Mike's rule, which is the
+    # printer's: "hold them if I set it but didn't initiate a load, and only
+    # drop it if the entry sensor goes empty while just sitting."
 
     def _do_set_material(self, widget=None):
         if self._sel_path is None:
@@ -772,7 +762,6 @@ class Panel(ScreenPanel):
             self._screen.show_popup_message(
                 "Set material profile first", level=2)
             return
-        self._cancel_profile_timer(path)
         self._gcode("SA_LOAD TOOL=%d" % path)
         self._screen.show_panel('sa_main', 'SA Status')
 
@@ -793,7 +782,6 @@ class Panel(ScreenPanel):
             self._screen.show_popup_message(
                 "Cannot clear profile — unload filament first", level=2)
             return
-        self._cancel_profile_timer(path)
         self._clear_profile_gcode(path)
         # Update local cache
         if path < len(self._path_hexes):
@@ -877,18 +865,11 @@ class Panel(ScreenPanel):
 
         for i in range(len(new_entry)):
             old_entry = self._path_entry[i] if i < len(self._path_entry) else False
-            old_th    = self._path_th[i]    if i < len(self._path_th)    else False
-            old_ex    = self._path_ex[i]    if i < len(self._path_ex)    else False
 
             if not old_entry and new_entry[i]:
                 GLib.idle_add(self._on_filament_inserted, i)
-
-            had_fil = old_entry or old_th or old_ex
-            has_fil = (new_entry[i] or
-                       (new_th[i] if i < len(new_th) else False) or
-                       (new_ex[i] if i < len(new_ex) else False))
-            if had_fil and not has_fil:
-                GLib.idle_add(self._clear_material, i)
+            # No clear on filament-gone here: the printer does that, with a
+            # debounce and a stash. See the note above _do_set_material.
 
         changed = (new_states != self._path_states or
                    new_hexes  != self._path_hexes  or
@@ -922,8 +903,3 @@ class Panel(ScreenPanel):
         self._show_page('path')
         return False
 
-    def _clear_material(self, path):
-        self._cancel_profile_timer(path)
-        self._clear_profile_gcode(path)
-        return False
-        return False

@@ -67,7 +67,10 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       estimated.
       Cooling moves: 8 measured 1.9 x 1.8, no string -- identical to 4
       (cut 166.1C, same as the baseline's 166.0). Doubling them bought
-      nothing. Never run with today's sever and ease: 0 to 3. (Zero was the
+      nothing. 2 measured 1.93 x 1.78, no string (cut 165.6C) -- the same
+      tip again within caliper scatter, in 3.1s of moves instead of ~6s. So
+      anywhere from 2 to 8 the moves do not change the tip. Never run with
+      today's sever and ease: 0 and 1. (Zero was the
       routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
       pull that was fixed in the same commit, so that is not the same test.)
       Each pair of moves costs about 3s, so fewer is a small speed gain.
@@ -91,6 +94,17 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* every current Polymaker line and colour is in the
       database, the KlipperScreen and Mainsail pickers show Seafoam Green
       under Panchroma Matte, and the files on the printer match the repo.
+
+- [ ] **A profile's UNLOAD temperature is stored and shown, and nothing uses
+      it.** SA_SET_MATERIAL takes UNLOAD_TEMP, every UI shows "230C unload",
+      and no sequence reads `path_unload_temps`: an unload forms its tip at
+      the per-material `tip_form_temp_<material>` instead (PETG 192, ASA 207).
+      Its sibling, LOAD_TEMP, was ignored the same way until 2026-10-09.
+      Decide which is right -- the tip table (measured for PLA, derived for
+      the rest) or the profile's figure -- then either use it or stop showing
+      it. "Never describe behaviour the machine no longer has."
+      *Done when:* the unload temperature on screen is the one the machine
+      actually forms at.
 
 - [ ] **`wget ... | bash`, the install line in the README, never shows the
       setup menu.** stdin is the pipe, so `[ -t 0 ]` is false and every

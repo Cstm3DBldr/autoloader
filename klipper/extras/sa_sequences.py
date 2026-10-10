@@ -171,12 +171,29 @@ class SASequences:
         return int((self.owner.max_volumetric_flow / _FILAMENT_AREA) * 60)
 
     def _heat_for_load(self, gcmd, path):
-        """Heat extruder to load_temperature and wait."""
+        """Heat the extruder to this path's load temperature and wait.
+
+        The path's profile LOAD_TEMP, never below the global load_temperature,
+        which the config describes as the minimum before extruding. It used to
+        be the global alone: SA_SET_MATERIAL stored LOAD_TEMP, every UI showed
+        it, and the load never read it. Seen 2026-10-09 when a 205C Panchroma
+        Matte profile loaded at 200 -- and the PETG and ASA profiles beside it
+        say 250, which would have been fed and purged 50C cold.
+        """
         owner = self.owner
         extruder_name = owner._extruder_names[path]
-        gcmd.respond_info("SA: Heating %s to %.0f°C..." % (extruder_name, owner.load_temperature))
+        temp, why = float(owner.load_temperature), "load_temperature"
+        try:
+            prof = float(owner.path_load_temps[path])
+        except (TypeError, ValueError, IndexError):
+            prof = 0.0
+        if prof > temp:
+            temp = prof
+            why = "%s profile" % (owner.path_materials[path] or "path")
+        gcmd.respond_info("SA: Heating %s to %.0f°C (%s)..."
+                          % (extruder_name, temp, why))
         owner.gcode.run_script_from_command(
-            "SET_TOOL_TEMPERATURE T=%d TARGET=%.0f WAIT=1" % (path, owner.load_temperature))
+            "SET_TOOL_TEMPERATURE T=%d TARGET=%.0f WAIT=1" % (path, temp))
 
     def _restore_state(self, gcmd, path, is_printing, after_unload=False):
         """After load/unload: resume print or clean + park + heater off.
