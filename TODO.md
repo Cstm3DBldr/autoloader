@@ -65,8 +65,12 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       Learned: **the cut temperature is the string lever** -- 165 clean,
       170 strings -- read back from Moonraker's temperature history, not
       estimated.
-      Untried: the cooling moves themselves (COOL_MOVES=, COOL_LEN=,
-      COOL_IN=/COOL_OUT=). They are the stage that shapes the tip.
+      Cooling moves: 8 measured 1.9 x 1.8, no string -- identical to 4
+      (cut 166.1C, same as the baseline's 166.0). Doubling them bought
+      nothing. Never run with today's sever and ease: 0 to 3. (Zero was the
+      routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
+      pull that was fixed in the same commit, so that is not the same test.)
+      Each pair of moves costs about 3s, so fewer is a small speed gain.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
