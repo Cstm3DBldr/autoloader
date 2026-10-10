@@ -108,6 +108,10 @@ class SASequences:
             owner.gcode.run_script_from_command("PARK_ON_COOLING_PAD")
         owner.gcode.run_script_from_command("M400")
 
+    # How far above min_extrude_temp a forming temperature still gets the
+    # lowered extrude floor -- see form_tip.
+    FORM_TEMP_MARGIN = 5.0
+
     def _move_to_purge_position(self, gcmd, is_printing):
         """After heating, move toolhead to the purge/extrude position."""
         owner = self.owner
@@ -1319,7 +1323,14 @@ class SASequences:
             heater = owner.printer.lookup_object(extruder_name).get_heater()
         except Exception:
             pass
-        if heater is not None and temp < heater.min_extrude_temp:
+        # Within a few degrees ABOVE min_extrude_temp counts too. The heater
+        # holds the forming temperature to a degree or two either side, so a
+        # PETG tip formed at 180 -- the next rung of its ladder on 2026-10-10
+        # -- would have sat at 179.8 during the moves and had them refused
+        # with "Extrude below minimum temp" part way through, had the floor
+        # been left where it was.
+        if (heater is not None
+                and temp < heater.min_extrude_temp + self.FORM_TEMP_MARGIN):
             if temp < owner.TIP_FORM_TEMP_FLOOR:
                 gcmd.respond_info(
                     "SA: tip_form_temp %.0f is below the %.0f°C floor — refusing "

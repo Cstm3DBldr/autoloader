@@ -80,7 +80,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       table TEMP 192 -- cut measured at 193.0C, clear 94%: **1.9 x 2.0,
       swell 3.3mm long, no string.** ~24% over round in cross-section
       against PLA's ~12%, and the same 2.0mm long axis as PLA with zero
-      moves. Next: PETG at 4 moves, which says whether 2 is enough for it. (Zero was the
+      moves.
+      Mike: the swell is ROUND, "like it's the cold side's shape" -- melt that
+      set in the cold-side bore, a casting rather than a gear squeeze. So the
+      bore sets the diameter and only the volume of excess melt, i.e. the
+      LENGTH, can change. Cooling moves cannot change that (they add and
+      remove nothing), so PETG at 4 moves was dropped as a test.
+      PETG TEMP=185 (cut measured 186.2C, clear 94%): **1.9 x 2.0, swell
+      2.75mm long, no string** -- 17% shorter than at 193C, same diameter.
+      The cut temperature is the length lever. Next: 180. (Zero was the
       routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
       pull that was fixed in the same commit, so that is not the same test.)
       Each pair of moves costs about 3s, so fewer is a small speed gain.
