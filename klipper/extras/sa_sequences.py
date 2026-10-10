@@ -721,8 +721,22 @@ class SASequences:
             remaining -= move
         owner.gcode.run_script_from_command("M400")
 
+    # Below this share of the commanded fill + purge, the extruder did not
+    # push filament into the melt -- see _fill_and_purge.
+    FILL_MIN_FRACTION = 0.8
+
     def _fill_and_purge(self, gcmd, path):
-        """Fill nozzle + purge at volumetric flow rate. Extruder must be hot."""
+        """Fill nozzle + purge at volumetric flow rate. Extruder must be hot.
+
+        Returns False when the path's encoder says the filament did not
+        actually go in. It used to extrude and trust it: on 2026-10-10 a PETG
+        reload with an unsnipped tip -- swollen to the cold-side bore's own
+        2.0mm -- wedged short of the melt, the extruder stepper slipped
+        through the whole fill and purge, and the load still printed "Load
+        complete". Before a print that is a print starting with nothing
+        coming out. The encoder sits upstream on the same strand, so whatever
+        the extruder really pulls it counts (the tip purge reads 97-103%).
+        """
         owner = self.owner
         f = self._extrude_speed_mmm()
         # Toolhead sensor to tip, measured by step 12 where it has been run.
@@ -733,8 +747,46 @@ class SASequences:
             % (fill, purge, f, why,
                "" if owner.th_measured(path) else "  (config default)"))
         owner.gcode.run_script_from_command("M83")
-        self._extrude_mm(fill, f)
-        self._extrude_mm(purge, f)
+        return self._extrude_verified(gcmd, path, (fill, purge), f,
+                                      "Fill + purge")
+
+    def _extrude_verified(self, gcmd, path, amounts, speed_mmm, what):
+        """Extrude each of `amounts` in turn and prove it went in.
+
+        True when the path's encoder saw at least FILL_MIN_FRACTION of the
+        total. Otherwise the heater goes off -- a head jammed short of the
+        melt only cooks filament into the heatbreak while it waits -- the
+        failure is said plainly, and False tells the caller to stop.
+        """
+        owner = self.owner
+        enc = owner._encoder(path)
+        try:
+            enc.set_direction(forward=True)
+            enc.reset_distance()
+        except Exception:
+            enc = None
+        for mm in amounts:
+            self._extrude_mm(mm, speed_mmm)
+        if enc is None:
+            return True
+        asked = float(sum(amounts))
+        moved = enc.get_distance()
+        frac = moved / asked if asked > 0 else 1.0
+        gcmd.respond_info(
+            "SA: %s — asked %.1fmm, the encoder saw %.1fmm (%.0f%%)."
+            % (what, asked, moved, frac * 100.0))
+        if frac >= self.FILL_MIN_FRACTION:
+            return True
+        owner.gcode.run_script_from_command(
+            "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
+            % owner._extruder_names[path])
+        gcmd.respond_info(
+            "SA: ERROR — load FAILED on path %d: the extruder pushed only "
+            "%.0f%% of it, so the filament never reached the melt. Usually "
+            "an old tip swollen to the bore, wedged on the way in. Heater "
+            "off. Pull the filament, snip the end, and load again. Aborting "
+            "load." % (path, frac * 100.0))
+        return False
 
     def _sync_feed_to_toolhead_sensor(self, gcmd, path):
         """Run drive motor and extruder together at feed_speed until toolhead sensor fires.
@@ -1051,7 +1103,9 @@ class SASequences:
             gcmd.respond_info("SA: Purging %.1fmm..." % owner.purge_length)
             f = self._extrude_speed_mmm()
             owner.gcode.run_script_from_command("M83")
-            self._extrude_mm(owner.purge_length, f)
+            if not self._extrude_verified(gcmd, path, (owner.purge_length,),
+                                          f, "Purge"):
+                return
 
             owner.path_states[path] = 'loaded'
             gcmd.respond_info(
@@ -1220,7 +1274,8 @@ class SASequences:
         motion.servo_disengage()
 
         # Fill nozzle (extruder gears → nozzle tip) then initial purge
-        self._fill_and_purge(gcmd, path)
+        if not self._fill_and_purge(gcmd, path):
+            return
 
         owner.path_states[path] = 'loaded'
 

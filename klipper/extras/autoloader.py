@@ -2275,6 +2275,15 @@ class Autoloader:
                     "form. Check the load before tuning a tip against it."
                     % path)
                 return
+            # The sensor alone is not enough: on 2026-10-10 a tip wedged
+            # PAST the toolhead sensor and short of the melt, and this went
+            # on to form a "tip" from filament that had never melted. A load
+            # only marks the path loaded once the fill actually went in.
+            if self.path_states[path] != self.STATE_LOADED:
+                gcmd.respond_info(
+                    "SA_FORM_TIP: T%d's load did not complete — see above. "
+                    "Nothing formed." % path)
+                return
 
         if ov:
             gcmd.respond_info(
