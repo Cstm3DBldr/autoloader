@@ -103,7 +103,13 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       the ladder beside it. coPETG follows it.
       What the bad load exposed is fixed separately: a load now proves its
       fill went in (encoder), and a park cannot report "parked" for a
-      filament pushed further in than it retracted. (Zero was the
+      filament pushed further in than it retracted.
+      **ASA** (T2, PolyLite ASA, loaded at the profile's 250C, snipped start,
+      fill 95%), 2 moves, table TEMP 207 -- cut measured at 208.0C, clear
+      86% (lowest yet): **1.9 x 1.85, swell 2.2mm, and a 1.1mm-thick STRING
+      28mm long.** Shape better than PETG's; the cut is too hot. A strand
+      that size can fold or break off and jam the next load, so it is not
+      cosmetic. Next: 200, then 195, until the string goes or it shears. (Zero was the
       routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
       pull that was fixed in the same commit, so that is not the same test.)
       Each pair of moves costs about 3s, so fewer is a small speed gain.
