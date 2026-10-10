@@ -70,6 +70,24 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
+- [ ] **The filament database is behind Polymaker's catalogue.** Mike,
+      2026-10-09: the Panchroma Matte line has new colours -- Seafoam Green
+      among them, and more -- other lines have new colours, and there are
+      whole new product lines. The database has 38 Matte colours and no
+      Seafoam anywhere; `polymaker.cfg` and `polymaker_panchroma.cfg` have not
+      changed since 2026-09-07 and carry 35 product lines between them.
+      Where it lives: `filaments/brands/*.cfg`, copied by `post_update.sh` to
+      `~/printer_data/config/autoloader/filament_profiles/` WITHOUT deleting,
+      so a brand file a user added survives. The printer's copies were
+      identical to the repo's on 2026-10-09; pull-first again before editing.
+      HANDOFF.md's backlog item 2 and its "Research brief -- filament colour
+      database refresh" already describe the job for a research pass. New
+      colours need real hex codes from the product pages, same as the
+      existing rows ("hex codes verified from product pages"), not guesses.
+      *Done when:* every current Polymaker line and colour is in the
+      database, the KlipperScreen and Mainsail pickers show Seafoam Green
+      under Panchroma Matte, and the files on the printer match the repo.
+
 - [ ] **`wget ... | bash`, the install line in the README, never shows the
       setup menu.** stdin is the pipe, so `[ -t 0 ]` is false and every
       question takes its default. That is now at least CORRECT -- before
