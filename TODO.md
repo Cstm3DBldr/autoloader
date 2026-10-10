@@ -75,7 +75,12 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       the moves do round the tip, and 2 is enough -- the fastest setting
       that matches 4 (one sample each, PLA only). Not yet the default:
       PETG and ASA are being tested at 2 first, since what holds for PLA
-      may not hold for the two that string more. (Zero was the
+      may not hold for the two that string more.
+      **PETG** (T1, Polymaker PETG, loaded at its profile's 250C), 2 moves,
+      table TEMP 192 -- cut measured at 193.0C, clear 94%: **1.9 x 2.0,
+      swell 3.3mm long, no string.** ~24% over round in cross-section
+      against PLA's ~12%, and the same 2.0mm long axis as PLA with zero
+      moves. Next: PETG at 4 moves, which says whether 2 is enough for it. (Zero was the
       routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
       pull that was fixed in the same commit, so that is not the same test.)
       Each pair of moves costs about 3s, so fewer is a small speed gain.
