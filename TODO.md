@@ -69,8 +69,13 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       (cut 166.1C, same as the baseline's 166.0). Doubling them bought
       nothing. 2 measured 1.93 x 1.78, no string (cut 165.6C) -- the same
       tip again within caliper scatter, in 3.1s of moves instead of ~6s. So
-      anywhere from 2 to 8 the moves do not change the tip. Never run with
-      today's sever and ease: 0 and 1. (Zero was the
+      anywhere from 2 to 8 the moves do not change the tip. 0 measured
+      2.0 x 1.75, no string (cut 166.1C): same area, but more oval, and the
+      long axis is what has to pass back through the tube and gears. So
+      the moves do round the tip, and 2 is enough -- the fastest setting
+      that matches 4 (one sample each, PLA only). Not yet the default:
+      PETG and ASA are being tested at 2 first, since what holds for PLA
+      may not hold for the two that string more. (Zero was the
       routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
       pull that was fixed in the same commit, so that is not the same test.)
       Each pair of moves costs about 3s, so fewer is a small speed gain.
