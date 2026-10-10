@@ -371,6 +371,7 @@ class SASequences:
             # didn't rotate = filament no longer in encoder contact.
             enc.set_direction(forward=False)
             max_chunks = int(owner.park_load_retract_max / owner.park_load_retract_chunk)
+            cleared = False
             for _ in range(max_chunks):
                 enc.reset_distance()
                 motion.drive_move(-owner.park_load_retract_chunk,
@@ -378,7 +379,25 @@ class SASequences:
                 owner.reactor.pause(
                     owner.reactor.monotonic() + owner.park_load_retract_pause)
                 if abs(enc.get_distance()) < mpp:
+                    cleared = True
                     break
+            if not cleared:
+                # Still at the encoder after the whole retract, so the tip is
+                # further down the tube than a fresh insert can be -- someone
+                # fed it in by hand. Carrying on used to find the encoder at
+                # once in steps 3-5 (the filament never left it), retract 5mm
+                # and report "parked" with the tip far down the tube; the load
+                # then trusted that, and its blast ran into the extruder gears
+                # with ~200mm still to go (T1, 2026-10-10: blast asked 1448mm,
+                # encoder stopped at 1249.6mm). The unload's park is built for
+                # exactly "the tip is somewhere in the bowden", so hand over.
+                gcmd.respond_info(
+                    "SA: Filament still at the encoder after %.0fmm of retract "
+                    "— it is further in than a fresh insert. Retracting it back "
+                    "to the encoder before parking (path %d)."
+                    % (owner.park_load_retract_max, path))
+                return self._park_filament_at_encoder(gcmd, path,
+                                                      from_load=False)
 
             # Step 3 — Pass 1: feed forward until encoder detects.
             # Cumulative distance (no per-chunk reset) so sub-pulse motion
@@ -491,9 +510,16 @@ class SASequences:
             else:
                 quiet_iters = 0
         else:
+            # The filament never left the encoder, so phases 2-3 would find it
+            # at once and call it parked with the tip still far down the tube
+            # -- the same false park as the load path's, one level down.
             gcmd.respond_info(
-                "SA: WARNING — retract limit (%.0fmm) reached on path %d "
-                "without encoder going quiet." % (owner.park_unload_max, path))
+                "SA: PARK FAILED on path %d — retracted %.0fmm and the filament "
+                "is still at the encoder, so its tip is further in than the "
+                "park can reach. NOT parked. Pull it back by hand past the "
+                "encoder, then: SA_PARK TOOL=%d"
+                % (path, owner.park_unload_max, path))
+            return False
 
         # Phase 2 — feed forward to re-find tip. If not found, still proceed
         # to Phase 3 so filament always ends at a defined offset.
@@ -633,7 +659,8 @@ class SASequences:
         blast_speed = saved_max if saved_max > 0 else 75.0
         target      = owner._bowden_lengths[path]
 
-        remaining = (target * 0.98) - enc.get_distance()
+        start_enc = enc.get_distance()
+        remaining = (target * 0.98) - start_enc
         if remaining > 0:
             gcmd.respond_info("SA: Blasting %.1fmm at %.0fmm/s..." % (remaining, blast_speed))
             motion.drive_move(remaining, speed=blast_speed)
@@ -641,6 +668,21 @@ class SASequences:
         gcmd.respond_info(
             "SA: Blast complete (enc=%.1fmm). Approaching extruder sensor..."
             % enc.get_distance())
+        # The blast is one blind move measured from the park, so a filament
+        # that was further in than its park said reaches the extruder gears
+        # early and the drive slips on it for the rest -- nothing can stop a
+        # queued move. It cannot be prevented here, only noticed: the encoder
+        # stops short while the extruder sensor already reads filament.
+        if remaining > 0 and owner._extruder_sensor_active(path):
+            seen = enc.get_distance() - start_enc
+            if seen < remaining * 0.9:
+                gcmd.respond_info(
+                    "SA: WARNING — the filament reached the extruder ~%.0fmm "
+                    "before the blast ended (encoder %.0f of %.0fmm), so the "
+                    "drive slipped on it for the rest. It was further in than "
+                    "its park said: re-park this path (SA_PARK TOOL=%d) before "
+                    "trusting its position again."
+                    % (remaining - seen, seen, remaining, path))
 
         has_sensor   = bool(owner._extruder_sensor_names[path])
         overshoot    = target * 0.10
@@ -1238,7 +1280,13 @@ class SASequences:
                 gcmd.respond_info(
                     "SA: Entry sensor only — parking filament for consistent start...")
                 motion.servo_engage()
-                self._park_filament_at_encoder(gcmd, path)
+                if not self._park_filament_at_encoder(gcmd, path):
+                    motion.servo_disengage()
+                    gcmd.respond_info(
+                        "SA: Not loading path %d — the park did not establish "
+                        "where the filament is, and the blast is measured from "
+                        "there. Aborting load." % path)
+                    return
                 self._retract_to_clear(gcmd, path)
 
             if not self._engage_check(gcmd, path):
@@ -2234,19 +2282,29 @@ class SASequences:
 
             # Park precisely at drive gear encoder (servo still engaged)
             gcmd.respond_info("SA: Positioning filament precisely at drive gear...")
-            self._park_filament_at_encoder(gcmd, path, from_load=False)
+            parked = self._park_filament_at_encoder(gcmd, path, from_load=False)
 
             motion.servo_disengage()
-            owner.path_states[path] = 'partial'
             motion.save_position()
-            gcmd.respond_info(
-                "SA: Filament parked at drive gear — path %d. "
-                "Pull from roll end to remove." % path)
+            if parked:
+                owner.path_states[path] = 'partial'
+                gcmd.respond_info(
+                    "SA: Filament parked at drive gear — path %d. "
+                    "Pull from roll end to remove." % path)
+            else:
+                # `partial` is what the next load trusts as "at the datum" and
+                # blasts from, so it is only written when the park confirmed
+                # the position. Unknown makes the next load park first.
+                owner.path_states[path] = 'unknown'
+                gcmd.respond_info(
+                    "SA: Unload finished but path %d is NOT parked at a known "
+                    "position — see above. The next load will park it first."
+                    % path)
 
-            # Path is empty — force LEDs to UNLOADED (dim white logo,
-            # nozzle off) regardless of any stale color still set in
-            # the autoloader status object. sa_load_unload's UI clears
-            # the color via SA_SET_MATERIAL on its next status update.
+            # Toolhead is empty — force LEDs to UNLOADED (dim white logo,
+            # nozzle off). The profile itself stays: the filament is still at
+            # the entry sensor, and the printer wipes a profile only once the
+            # entry reads empty.
             owner.gcode.run_script_from_command(
                 "_SA_LED_UNLOADED TOOL=%d" % path)
 

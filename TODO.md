@@ -95,8 +95,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       draw the stiffer swell out of the cold-side bore, or the load was bad.
       Mike does not snip the old tip between runs; it is purged out (84mm
       through the nozzle at 250C), but it still travels back through the
-      gears and the cold side on the load. Next: snip, re-run 180. If it
-      skips again, 180 is too cold and PETG's value is 185. (Zero was the
+      gears and the cold side on the load. Mike: it was a BAD LOAD -- the
+      stepper slipped, the tip never reached the melt -- so that run formed
+      nothing at 180. Snipped and re-run: clear 94%, **1.9 x 2.0, swell
+      3.0mm, less string, and SHEARED rather than pulled clean.** Too stiff.
+      **PETG's value is 185** -- now the table's, in parameters.cfg, with
+      the ladder beside it. coPETG follows it.
+      What the bad load exposed is fixed separately: a load now proves its
+      fill went in (encoder), and a park cannot report "parked" for a
+      filament pushed further in than it retracted. (Zero was the
       routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
       pull that was fixed in the same commit, so that is not the same test.)
       Each pair of moves costs about 3s, so fewer is a small speed gain.
