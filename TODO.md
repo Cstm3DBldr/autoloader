@@ -53,34 +53,21 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       ("Encoder quiet 2x after 93mm retract — filament cleared").
       *Done when:* it has run on the machine.
 
-- [ ] **The cooling-move tip is 1.9mm across a SHORT section, not 1.75.**
-      It is the sequence, not leftovers: two identical `SA_FORM_TIP TOOL=0
-      MATERIAL=PLA` runs back to back on 2026-10-09 gave the same size, so it
-      is not material carried over from the shear run before them (Mike's
-      test, run so nobody has to wonder again). No string either time.
-      Tried, changed nothing: COOL_POS 35 -> 45, TEMP 165 -> 155.
-      `PURGE=15` -- fresh filament through just before forming -- first ran
-      clean on 2026-10-09 at 1.5mm/s: encoder 14.5 of 15mm (97%), back to
-      165C before the sever, ease 20mm, clear 95%. Mike: **1.85mm, smaller
-      than the baseline's 1.9, but it strings again.** (Its first attempt
-      was not a valid test -- see the commit that fixed the purge's offset
-      and temperature.)
-      Likely why it strings: `_hold_temp_for_forming` stops waiting at
-      tip_form_temp + 5 on the way DOWN. Without a purge the run then
-      travels ~5s to the purge position before the sever, so it cuts near
-      166C; after a purge it is already there and cuts at once, near 170C,
-      still falling. 185 is known to string and 165 not, so a few degrees
-      at the cut is the obvious difference between the two tips.
-      Tested, `PURGE=15 TEMP=160`: the cut measured at 165.0C (Moonraker's
-      temperature history), falling ~1.2C/s; ease at 163.5, cooling moves
-      at ~160. Mike: **1.85 x 1.95, no string.** So the cut temperature IS
-      the string lever -- the only change from the stringing 1.85 run was
-      cutting ~5C colder.
-      Size is NOT a clear win: the long axis, 1.95, is above the baseline's
-      1.9, and the 2026-09-12 cooling-move tip was 1.90 x 1.76. The baseline
-      has only been measured on one axis today, so the like-for-like
-      comparison is still open. The purge also adds ~25s to every unload.
-      *Done when:* a tip under 1.75mm, or Mike calls 1.9mm-short good enough
+- [ ] **The tip is 1.9 x 1.8mm, not 1.75.** No string, the swell a short
+      section, and the same from run to run -- it is the sequence, not
+      leftovers (Mike ran it twice back to back to check). Measured
+      2026-10-09 on T0, PLA, and it is the shipped baseline in
+      parameters.cfg. Mike: "plenty usable".
+      Ruled out, all the same day unless dated: cold shear (removed: 1.9mm
+      with a string); COOL_POS 35 -> 45 and TEMP 165 -> 155 (no change,
+      2026-09-12); a purge, PURGE=15 (1.85 x 1.95 when cut at 165C, so no
+      smaller, ~25s slower, and it strung when cut at 170C).
+      Learned: **the cut temperature is the string lever** -- 165 clean,
+      170 strings -- read back from Moonraker's temperature history, not
+      estimated.
+      Untried: the cooling moves themselves (COOL_MOVES=, COOL_LEN=,
+      COOL_IN=/COOL_OUT=). They are the stage that shapes the tip.
+      *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
 - [ ] **`wget ... | bash`, the install line in the README, never shows the
