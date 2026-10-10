@@ -1293,6 +1293,7 @@ class SASequences:
         purge_len     = cfg('purge_len')
         purge_temp    = cfg('purge_temp')
         purge_speed   = cfg('purge_speed')
+        dwell         = cfg('dwell')
         sever_dist    = cfg('sever_dist')
         sever_speed   = cfg('retract_speed')
         ease_speed    = cfg('slow_speed')
@@ -1341,7 +1342,7 @@ class SASequences:
                                  sever_dist, sever_speed, ease_speed,
                                  cooling_pos, cooling_len, cooling_moves,
                                  cool_speed_in, cool_speed_out,
-                                 purge_len, purge_temp, purge_speed)
+                                 purge_len, purge_temp, purge_speed, dwell)
         finally:
             if saved_min is not None:
                 heater.min_extrude_temp = saved_min
@@ -1353,7 +1354,8 @@ class SASequences:
                         current_temp, push_length, push_speed, sever_dist,
                         sever_speed, ease_speed, cooling_pos, cooling_len,
                         cooling_moves, cool_speed_in, cool_speed_out,
-                        purge_len=0.0, purge_temp=200.0, purge_speed=1.5):
+                        purge_len=0.0, purge_temp=200.0, purge_speed=1.5,
+                        dwell=None):
         """The moves themselves. Split out so form_tip can wrap them in the
         min_extrude_temp override without a long try block."""
         # The ram is paid back before any retract below counts, because what
@@ -1492,7 +1494,7 @@ class SASequences:
                 self._extrude_mm(-cooling_len, max(1, int(speed * 60)))
                 speed += increment
 
-        self._clear_past_gears(gcmd, path, cooling_pos, ease_speed)
+        self._clear_past_gears(gcmd, path, cooling_pos, ease_speed, dwell)
 
     def _hold_temp_for_forming(self, gcmd, extruder_name, temp, current_temp):
         """Pin the heater at the forming temperature and wait for it.
@@ -1526,7 +1528,7 @@ class SASequences:
     # handover to the synced phase possible at all.
     NIP_MARGIN = 5.0
 
-    def _clear_past_gears(self, gcmd, path, cooling_pos, speed):
+    def _clear_past_gears(self, gcmd, path, cooling_pos, speed, dwell=None):
         """Take the finished tip out of the melt zone -- and STOP while the
         extruder still grips it.
 
@@ -1607,7 +1609,16 @@ class SASequences:
         # every other tip value. The 0.5s default is almost certainly too short
         # for this job -- it is left alone so behaviour does not change
         # silently, and raising it is the experiment.
-        dwell = float(owner.tip_form_dwell)
+        #
+        # It read owner.tip_form_dwell -- the config value -- so DWELL= on
+        # SA_FORM_TIP went into the overrides and was never looked at. Four
+        # DWELL runs on 2026-09-12 (5, 15, 15, 15) and this message printed
+        # zero times: none of them dwelled, and the "shear + DWELL=15" sizes
+        # recorded that day were shear with no dwell at all. The override is
+        # passed in now; the config value is only the fallback.
+        if dwell is None:
+            dwell = owner.tip_form_dwell
+        dwell = float(dwell)
         if dwell > 0:
             gcmd.respond_info(
                 "SA: Holding %.1fs short of the gears to let the tip firm up "
