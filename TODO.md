@@ -88,7 +88,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       remove nothing), so PETG at 4 moves was dropped as a test.
       PETG TEMP=185 (cut measured 186.2C, clear 94%): **1.9 x 2.0, swell
       2.75mm long, no string** -- 17% shorter than at 193C, same diameter.
-      The cut temperature is the length lever. Next: 180. (Zero was the
+      The cut temperature is the length lever.
+      PETG TEMP=180 (cut 181.3C; the extrude floor was lowered, 180 -> 150):
+      **the clear move got 20.1 of 34.7mm (58%)**, against 94% at 193 and at
+      185, and Mike heard the extruder skipping. Either 180 is too cold to
+      draw the stiffer swell out of the cold-side bore, or the load was bad.
+      Mike does not snip the old tip between runs; it is purged out (84mm
+      through the nozzle at 250C), but it still travels back through the
+      gears and the cold side on the load. Next: snip, re-run 180. If it
+      skips again, 180 is too cold and PETG's value is 185. (Zero was the
       routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
       pull that was fixed in the same commit, so that is not the same test.)
       Each pair of moves costs about 3s, so fewer is a small speed gain.
