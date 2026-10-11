@@ -563,11 +563,43 @@ class SASequences:
 
         Called by SA_PARK and the state monitor's auto-park queue.
         """
-        self.owner._op_paths.add(path)
+        return self._run_op(gcmd, path, self._park_filament_inner)
+
+    def _run_op(self, gcmd, path, inner):
+        """Run a load, unload or park so that stopping part way is visible.
+
+        Marks the path in flight for the state monitor, as before. And
+        writes 'unknown' to variables.cfg for the duration, so a power loss
+        mid-sequence leaves the one state that is true about it: the
+        filament is somewhere along the path. The in-memory state is left
+        alone while the sequence runs, because the sequence reads it.
+
+        On 2026-10-10 the power failed four times on this printer, three of
+        them inside 40 minutes. The sequences only ever set path_states in
+        memory, so after each boot every path came back with whatever the
+        monitor had last written -- 'partial', which a load trusts as
+        "parked at the gate" and blasts a whole Bowden from. A filament
+        stopped half way down the tube would have been blasted into the
+        extruder at 160mm/s.
+
+        At the end the real state is written, and a sequence that raised is
+        'unknown' in memory too: it stopped somewhere in the middle.
+        """
+        owner = self.owner
+        owner._op_paths.add(path)
+        owner._persist_variables(
+            {'sa_state_%d' % path: str(owner.STATE_UNKNOWN)})
+        finished = False
         try:
-            return self._park_filament_inner(gcmd, path)
+            result = inner(gcmd, path)
+            finished = True
+            return result
         finally:
-            self.owner._op_paths.discard(path)
+            owner._op_paths.discard(path)
+            if not finished:
+                owner.path_states[path] = owner.STATE_UNKNOWN
+            owner._persist_variables(
+                {'sa_state_%d' % path: str(owner.path_states[path])})
 
     def _park_filament_inner(self, gcmd, path):
         owner = self.owner
@@ -577,6 +609,17 @@ class SASequences:
             gcmd.respond_info(
                 "SA: No filament at entry of path %d — nothing to park." % path)
             return
+
+        # A park starts by feeding forward, on the assumption that the tip is
+        # near the gate. With the tip at the extruder or in the toolhead that
+        # feeds it into the gears or into whatever stopped it, so refuse and
+        # name the sequence that starts from the sensors instead.
+        if owner._past_entry(path):
+            gcmd.respond_info(
+                "SA: Not parking path %d — its filament is past the extruder "
+                "sensor, and a park feeds forward first. SA_UNLOAD TOOL=%d "
+                "brings it back to the gate." % (path, path))
+            return False
 
         self._ensure_selector(gcmd, path)
         motion.servo_engage()
@@ -589,7 +632,13 @@ class SASequences:
         # gripped the filament still wrote a state a later SA_LOAD would act
         # on -- the machine believing filament sat at the drive gear while it
         # was still at the entry sensor.
+        #
+        # And say it is unknown rather than leave what was there: the monitor
+        # writes 'partial' BEFORE queueing an auto-park, so a park that failed
+        # left the path claiming the very position it had just failed to
+        # establish.
         if not ok:
+            owner.path_states[path] = owner.STATE_UNKNOWN
             return False
 
         owner.path_states[path] = 'partial'
@@ -822,12 +871,17 @@ class SASequences:
         owner.gcode.run_script_from_command(
             "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
             % owner._extruder_names[path])
+        # Past the toolhead sensor and short of the melt: neither parked nor
+        # loaded. Left as it was ('partial'), this is the state that came
+        # back after the power cut on 2026-10-10.
+        owner.path_states[path] = 'unknown'
         gcmd.respond_info(
             "SA: ERROR — load FAILED on path %d: the extruder pushed only "
             "%.0f%% of it, so the filament never reached the melt. Usually "
             "an old tip swollen to the bore, wedged on the way in. Heater "
-            "off. Pull the filament, snip the end, and load again. Aborting "
-            "load." % (path, frac * 100.0))
+            "off. SA_UNLOAD TOOL=%d brings it back to the gate; snip the end "
+            "before loading again. Aborting load."
+            % (path, frac * 100.0, path))
         return False
 
     def _sync_feed_to_toolhead_sensor(self, gcmd, path):
@@ -1058,11 +1112,7 @@ class SASequences:
         material_select_timeout, which would let the monitor wipe the
         very profile the load is using.
         """
-        self.owner._op_paths.add(path)
-        try:
-            return self._do_load_inner(gcmd, path)
-        finally:
-            self.owner._op_paths.discard(path)
+        return self._run_op(gcmd, path, self._do_load_inner)
 
     def do_unload(self, gcmd, path):
         """Marks the path in-flight, then runs the unload sequence.
@@ -1070,11 +1120,7 @@ class SASequences:
         Same reasoning as do_load: transient sensor readings during the
         sequence are not runout evidence.
         """
-        self.owner._op_paths.add(path)
-        try:
-            return self._do_unload_inner(gcmd, path)
-        finally:
-            self.owner._op_paths.discard(path)
+        return self._run_op(gcmd, path, self._do_unload_inner)
 
     def _do_load_inner(self, gcmd, path):
         """Full filament load sequence for *path*.
@@ -1260,7 +1306,10 @@ class SASequences:
                 "Filament tip just before extruder gears." % retracted)
 
             motion.servo_disengage()
-            owner.path_states[path] = 'partial'
+            # Not 'partial': that means parked at the gate, and a load reads
+            # it as the datum to blast a whole Bowden from. The tip is at the
+            # extruder gears. Only the end of a load says where it finished.
+            owner.path_states[path] = 'unknown'
             motion.save_position()
             # Fall through to heat + fill + purge
 
@@ -1289,6 +1338,12 @@ class SASequences:
                     return
                 self._retract_to_clear(gcmd, path)
 
+            # The filament leaves the datum from here. Were this left
+            # 'partial', a blast or approach that stops short would hand the
+            # next load a datum the filament is no longer at -- and that load
+            # blasts the whole Bowden from it.
+            owner.path_states[path] = 'unknown'
+
             if not self._engage_check(gcmd, path):
                 return
 
@@ -1296,7 +1351,6 @@ class SASequences:
                 return
 
             # Keep servo engaged — common section needs it for sync feed
-            owner.path_states[path] = 'partial'
             motion.save_position()
             # Fall through to heat + sync feed + purge
 
@@ -2156,7 +2210,10 @@ class SASequences:
         if has_toolhead:
             self.form_tip(gcmd, path, is_printing)
 
-            owner.path_states[path] = 'partial'
+            # Out of the nozzle, not yet parked. The park below decides
+            # between 'partial' and 'unknown'; an error return before it
+            # leaves the honest answer.
+            owner.path_states[path] = 'unknown'
 
             # Heater off — tip is past heatbreak (60mm+), safe to cool now
             gcmd.respond_info("SA: Heater off — filament clear of melt zone.")

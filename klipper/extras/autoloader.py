@@ -383,6 +383,12 @@ class Autoloader:
         self._stashed_profiles = {}
         self._stash_announced  = set()
 
+        # Paths whose state came back from variables.cfg, as opposed to being
+        # guessed from the sensors. Only these are reconciled at boot.
+        self._saved_state_paths = set()
+        # 'unknown' paths already told what to run, so it is said once.
+        self._unknown_announced = set()
+
         # SA_RESPOND mailbox (used by calibration routines)
         self._pending_response = None
         self._response_ready   = False
@@ -508,11 +514,13 @@ class Autoloader:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _initialize_states_from_sensors(self):
-        """For paths still STATE_UNKNOWN after _restore_material_profiles
-        (no `sa_state_<N>` saved), infer a state from the sensors and
-        persist it. Skips paths that already have a known state — those
-        have an explicit save and shouldn't be overridden on boot just
-        because a sensor disagrees momentarily.
+        """For paths with no `sa_state_<N>` saved, infer a state from the
+        sensors and persist it. Paths that have a save keep it -- they
+        shouldn't be overridden on boot just because a sensor disagrees
+        momentarily -- except a 'partial' the sensors flatly contradict,
+        which becomes 'unknown'. A saved 'unknown' is never re-guessed: it
+        is what an interrupted operation leaves behind (see
+        SASequences._run_op).
 
         All three sensors are consulted, because each answers a different
         question. The toolhead sensor is the only one that can say the
@@ -531,12 +539,30 @@ class Autoloader:
         """
         updates = {}
         for i in range(self.num_paths):
-            if self.path_states[i] != self.STATE_UNKNOWN:
-                continue
             try:
                 at_entry    = self._entry_sensor_active(i)
+                at_extruder = self._extruder_sensor_active(i)
                 at_toolhead = self._toolhead_sensor_active(i)
             except Exception:
+                continue
+            if i in self._saved_state_paths:
+                # A saved state is trusted, with one exception the sensors
+                # can disprove outright: 'partial' means parked at the gate,
+                # and a parked path has nothing at the extruder or toolhead.
+                # On 2026-10-10 a load failed with the filament wedged past
+                # T2's toolhead sensor, the power went a minute later, and
+                # the path came back 'partial' -- which a load reads as "at
+                # the datum, blast the whole Bowden from here".
+                if (self.path_states[i] == self.STATE_PARTIAL
+                        and (at_extruder or at_toolhead)):
+                    self.path_states[i] = self.STATE_UNKNOWN
+                    updates['sa_state_%d' % i] = str(self.STATE_UNKNOWN)
+                    logging.info(
+                        "Autoloader: path %d saved as partial but the %s "
+                        "sensor reads filament -- position unknown", i,
+                        "toolhead" if at_toolhead else "extruder")
+                # A saved 'unknown' stays unknown. Guessing it from the
+                # sensors would make an interrupted load 'partial' again.
                 continue
             if at_toolhead:
                 new_state = self.STATE_LOADED
@@ -581,6 +607,8 @@ class Autoloader:
     def _state_monitor_tick(self, eventtime):
         try:
             for i in range(self.num_paths):
+                if self.path_states[i] != self.STATE_UNKNOWN:
+                    self._unknown_announced.discard(i)
                 if i in self._op_paths:
                     # Load or unload in flight on this path. Its sensor
                     # goes clear and back mid-sequence, and a load can
@@ -640,13 +668,28 @@ class Autoloader:
                             "SA: Path %d is no longer low — filament is back "
                             "at the entry sensor." % i)
                         self._queue_led_refresh(i)
-                    elif self.path_states[i] in (self.STATE_EMPTY,
-                                                 self.STATE_UNKNOWN):
+                    elif (self.path_states[i] == self.STATE_EMPTY
+                          or (self.path_states[i] == self.STATE_UNKNOWN
+                              and was is False
+                              and not self._past_entry(i))):
                         self._set_state_persist(
                             i, self.STATE_PARTIAL,
                             "entry sensor detected filament")
                         self._queue_led_refresh(i)
                         self._queue_park(i)
+                    elif self.path_states[i] == self.STATE_UNKNOWN:
+                        # Not a fresh insert: the filament was already here
+                        # when its last load, unload or park stopped short,
+                        # so it can be anywhere from the gate to the nozzle.
+                        # Promoting it to 'partial' and parking is what this
+                        # did before, and a park assumes the tip is near the
+                        # gate -- it feeds forward first. With the tip in the
+                        # toolhead that feeds a jam. SA_UNLOAD is the one
+                        # sequence that starts from whatever the sensors say,
+                        # so the operator is pointed at it instead. A spool
+                        # pulled and put back IS a fresh insert, which is the
+                        # `was is False` case above.
+                        self._announce_unknown(i)
                     elif was is False:
                         # Filament left and came back inside the runout
                         # debounce, so the state never reached 'empty' and the
@@ -1213,6 +1256,29 @@ class Autoloader:
         gcmd.respond_info("SA: T%d profile restored — %s"
                           % (path, self._profile_label(prof)))
 
+    def _past_entry(self, path):
+        """True if the extruder or toolhead sensor reads filament."""
+        return (self._extruder_sensor_active(path)
+                or self._toolhead_sensor_active(path))
+
+    def _announce_unknown(self, path):
+        """Say once what recovers a path whose filament position is unknown."""
+        if path in self._unknown_announced:
+            return
+        self._unknown_announced.add(path)
+        if self._toolhead_sensor_active(path):
+            where = " Its filament is in the toolhead."
+        elif self._extruder_sensor_active(path):
+            where = " Its filament is at the extruder."
+        else:
+            where = ""
+        self.gcode.respond_info(
+            "SA: T%d — run SA_UNLOAD TOOL=%d before loading it. Its last "
+            "load, unload or park did not finish (a failed step or a power "
+            "loss), so the printer does not know where the filament is.%s "
+            "The unload works from the sensors and parks it at the gate."
+            % (path, path, where))
+
     def _announce_stash(self, path):
         """Tell the operator a wiped profile is still recoverable.
 
@@ -1363,6 +1429,7 @@ class Autoloader:
                                self.STATE_PARTIAL, self.STATE_LOADED,
                                self.STATE_LOW):
                 self.path_states[i] = saved_state
+                self._saved_state_paths.add(i)
 
         # Servo angles found by SA_CALIBRATE_SERVO. Saved here rather than in
         # parameters.cfg so the installer's regeneration cannot discard them.
@@ -2235,6 +2302,43 @@ class Autoloader:
         # one costs more than the run does. MATERIAL= picks the per-material
         # values without touching what is actually in the path.
         material = gcmd.get('MATERIAL', None)
+
+        if (self._toolhead_sensor_active(path)
+                and self.path_states[path] not in (self.STATE_LOADED,
+                                                   self.STATE_LOW)):
+            # Filament past the toolhead sensor on a path that is not loaded
+            # is a load that stopped short -- 2026-10-10, T2: wedged past the
+            # sensor, the fill check failed it, then the power went. Forming
+            # from it would shape filament that never reached the melt, and
+            # loading straight over it is what wedged it. So recover first:
+            # SA_UNLOAD starts from the sensors and brings it to the gate.
+            # Then STOP rather than reload, because the end that comes back
+            # is the end that jammed, and an unsnipped end is what wedged the
+            # PETG reload on T1 the same night.
+            gcmd.respond_info(
+                "SA_FORM_TIP: T%d has filament in the toolhead from a load "
+                "that did not finish (state: %s), so there is nothing melted "
+                "to form. Retracting it to the gate first. Snip the end, "
+                "then run this again." % (path, self.path_states[path]))
+            try:
+                self.gcode.run_script_from_command("SA_UNLOAD TOOL=%d" % path)
+            except Exception:
+                logging.exception("SA_FORM_TIP: recovery unload failed")
+                gcmd.respond_info(
+                    "SA_FORM_TIP: the recovery unload did not finish — see "
+                    "above. Nothing formed.")
+                return
+            if self.path_states[path] == self.STATE_PARTIAL:
+                gcmd.respond_info(
+                    "SA_FORM_TIP: T%d recovered and parked at the gate — "
+                    "nothing was formed this run. Snip the end before the "
+                    "next one." % path)
+            else:
+                gcmd.respond_info(
+                    "SA_FORM_TIP: T%d's recovery unload did not park it "
+                    "(state: %s) — see above. Nothing formed."
+                    % (path, self.path_states[path]))
+            return
 
         if not self._toolhead_sensor_active(path):
             # Load it ourselves rather than refusing.
