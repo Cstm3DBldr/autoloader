@@ -158,6 +158,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
 
 ## Never verified
 
+- [ ] **Recovery from a stopped load, unload or park (54b88a6).** Four power
+      losses on 2026-10-10 brought every path back as whatever the monitor
+      last wrote, because the sequences only set states in memory; T2 came
+      back 'partial' (parked at the gate) with its filament wedged past the
+      toolhead sensor from a failed fill. *Verified 2026-10-11:* the boot
+      turned that 'partial' into 'unknown' on disk and in memory, named
+      SA_UNLOAD once, and queued no park. *Not yet run:* `SA_FORM_TIP` on a
+      toolhead holding an unfinished load (should unload to the gate and stop
+      for a snip); a load or park interrupted by a Klipper restart (the path
+      should come back 'unknown', not 'partial'); `SA_PARK` with filament
+      past the extruder sensor (should refuse). *Done when:* each has been
+      seen on the machine.
+
 - [ ] **The status table fits by measurement, not by construction.** `_row_h`
       predicts the status row, the table header, the button bar and the
       padding before any of them exists, and each prediction has been wrong
