@@ -2328,6 +2328,11 @@ class Autoloader:
                     "SA_FORM_TIP: the recovery unload did not finish — see "
                     "above. Nothing formed.")
                 return
+            # The unload ends on its own "what next?" dialog, whose LOAD
+            # would put the end that jammed straight back in before it is
+            # snipped. This sequence has said what comes next, so close it.
+            if self._cal_state == 'unload_done':
+                self.clear_cal_state()
             if self.path_states[path] == self.STATE_PARTIAL:
                 gcmd.respond_info(
                     "SA_FORM_TIP: T%d recovered and parked at the gate — "

@@ -167,14 +167,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       SA_UNLOAD once, and queued no park. Then `SA_FORM_TIP TOOL=2` on it took
       the recovery branch: homed, toolchanger found T2 by its probe, unloaded
       (clear move 91%, extruder sensor cleared at 60.6mm), parked at the gate,
-      formed nothing, and variables.cfg read 'partial' afterwards. One wart:
-      the unload's own "what next?" dialog still appears, and its LOAD option
-      would reload the end that jammed before it is snipped -- the recovery
-      should clear that dialog itself. *Not yet run:* a load or park
+      formed nothing, and variables.cfg read 'partial' afterwards. The
+      unload's own "what next?" dialog appeared at the end, and its LOAD would
+      reload the end that jammed before it is snipped; the recovery now closes
+      it (not yet seen). *Not yet run:* a load or park
       interrupted by a Klipper restart (the path
       should come back 'unknown', not 'partial'); `SA_PARK` with filament
       past the extruder sensor (should refuse). *Done when:* each has been
       seen on the machine.
+
+      Seen in passing 2026-10-11 (ba6400c, the park that escalates): T2's
+      filament went back in further than a fresh insert, the auto-park said
+      "still at the encoder after 50mm of retract -- further in than a fresh
+      insert", retracted it back past the encoder and parked it 5.0mm before.
 
 - [ ] **The status table fits by measurement, not by construction.** `_row_h`
       predicts the status row, the table header, the button bar and the
