@@ -164,9 +164,14 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       back 'partial' (parked at the gate) with its filament wedged past the
       toolhead sensor from a failed fill. *Verified 2026-10-11:* the boot
       turned that 'partial' into 'unknown' on disk and in memory, named
-      SA_UNLOAD once, and queued no park. *Not yet run:* `SA_FORM_TIP` on a
-      toolhead holding an unfinished load (should unload to the gate and stop
-      for a snip); a load or park interrupted by a Klipper restart (the path
+      SA_UNLOAD once, and queued no park. Then `SA_FORM_TIP TOOL=2` on it took
+      the recovery branch: homed, toolchanger found T2 by its probe, unloaded
+      (clear move 91%, extruder sensor cleared at 60.6mm), parked at the gate,
+      formed nothing, and variables.cfg read 'partial' afterwards. One wart:
+      the unload's own "what next?" dialog still appears, and its LOAD option
+      would reload the end that jammed before it is snipped -- the recovery
+      should clear that dialog itself. *Not yet run:* a load or park
+      interrupted by a Klipper restart (the path
       should come back 'unknown', not 'partial'); `SA_PARK` with filament
       past the extruder sensor (should refuse). *Done when:* each has been
       seen on the machine.
