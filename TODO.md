@@ -217,8 +217,13 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       c89d00b's fast Branch A ending:** pull-out 3.5s (sensor clear after
       30mm) instead of 8.3s, sensor-stopped zero 0.5s (9.7mm) instead of
       10.9s; heater off to parked 31s against 46s on T2's recovery that
-      morning. Clear 61% (the stuck tip sat high, as on T2). Next: ASA at
-      190C on T0 with a snipped end, `SA_TIP_CYCLE TOOL=0 TEMP=190`.
+      morning. Clear 61% (the stuck tip sat high, as on T2).
+      **ASA at 190C on T0, snipped end, 5 cycles: all clean.** Cycle 1 came
+      straight from the gate in one sensor-stopped move (1508.1mm against
+      1516.6 calibrated -- d546565's single sensor hit, seen); fills 94 / 94
+      / 94 / 95 / 94%, clears 93 / 95 / 95 / 98 / 98% (195C gave 95%),
+      toolhead sensor at 50mm every time. Then the fast unload from the tube:
+      found at 116.0mm, blast, parked. Strings: Mike to report.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
