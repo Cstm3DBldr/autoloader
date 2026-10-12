@@ -216,6 +216,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       feed to the toolhead sensor then took 50mm instead of 40, because the
       polled approach used to overshoot the sensor by up to one 10mm step.
       The same load started from 'unknown' and parked first, as intended.
+      Then T0-T2 back to back (2026-10-11): **T1 -2.7mm, T2 -8.3mm, and T0
+      stopped 333mm EARLY** -- 1174.0mm against 1506.9mm calibrated, encoder
+      1189.6. T0's own 10-09 loads blasted to ~1505mm on the encoder, so the
+      calibration is right and the filament was 333mm further in than its
+      park said. T0 had not moved since an auto-park on 10-09 -- the old park,
+      before ba6400c, that could report "parked" with the filament still on
+      the encoder. The polled blast would have driven those 333mm into T0's
+      gears at 160mm/s, as it did to T1 on 10-10; this one stopped at the
+      sensor and said why. No homing timeouts on any of the three boards.
       *Done when:* a
       load stops at the sensor and its fed length sits within a few mm of
       calibrated, on more than one path -- and the multi-board stop has not
