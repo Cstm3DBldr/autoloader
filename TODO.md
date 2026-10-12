@@ -251,6 +251,31 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* a fresh install loads slowly, the last guide page turns
       on full speed, and Settings can turn it back off.
 
+- [ ] **Toolhead LEDs: dark colours breathe to black, and half the heads
+      sometimes do nothing.** Mike, 2026-10-12. Two separate things:
+      1. *Dark colours go fully dark.* Why, in the code: the pulse is the
+         filament colour times an envelope that runs from `min_brightness`
+         (0.0) to `max_brightness` (0.40). A colour whose brightest channel is
+         under 0.15 is first rescaled to 0.0075 (`_hex_to_logo_rgb`, mirroring
+         the LOCKED pipeline in `_sa_set_logo_filament` -- see CLAUDE.md's
+         LED row). Black #0D0D0D therefore peaks at 0.0075 x 0.40 = 0.003,
+         under one 8-bit step, and the trough is exactly off. Mike's fix:
+         an absolute floor just above off; the colour's own brightness as the
+         top of its pulse; and the SAME period for every head, so a dark
+         colour takes proportionally smaller steps (his example: 25 levels
+         against 255, so each step is 25/255 of the others') -- it fades in
+         time with its neighbours and never switches off when they do not.
+         This changes the locked pipeline, by Mike's request; change the
+         macro and the animator together, and re-run the
+         `_SA_LED_TEST_CASELIGHT_*` checks.
+      2. *Sometimes only T0-T2 light, T3-T5 not.* Not seen recently -- all six
+         were breathing correctly at the time of the report -- so it may be
+         intermittent or already gone. Worth checking first whether it lines
+         up with a restart, a toolchange or one MCU group.
+      *Done when:* black and other dark filaments visibly breathe on the
+      same beat as the rest without ever going dark, and the half-dark case
+      is either reproduced and fixed or seen not to happen over a few days.
+
 - [ ] **More than one channel per toolhead (MMU-style, later).** Mike,
       2026-10-12: "not something i need now but people are crazy and i know
       it will get asked for" -- Happy Hare runs 4-16 lanes into one toolhead.
