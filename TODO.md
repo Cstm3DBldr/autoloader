@@ -164,10 +164,14 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       past the encoder after 1390mm" and parked, but crawled 10mm at a time for
       114s. Mike: far too slow. a80d5c5 makes an unload from 'unknown' find the
       extruder sensor first (fast, sensor-stopped) and then unload normally;
-      the crawl is only the fallback. **a80d5c5 is loaded but NOT yet run** --
-      the test was stopped by emergency stop during its G28 when Mike had to
-      leave (2026-10-11 23:35). T1 is 'unknown' from that (its filament did
-      not move: still parked). T2 cycles not run.
+      the crawl is only the fallback. (A first attempt was emergency-stopped
+      during its G28 when Mike had to leave, 2026-10-11 23:35; no filament had
+      moved.) **Run 2026-10-12:** one more cycle (in 98.5mm, fill 94%, clear
+      91%), then `SA_UNLOAD TOOL=1` from 'unknown': found the extruder sensor
+      after 110.4mm in 2.6s, blasted back 1413mm in 9.6s, parked (quiet after
+      83mm, re-acquired after 16mm -- clear of the 4mm snag check). 27s from
+      "position unknown" to parked, against ~130s for the crawl. Saved
+      'partial'. T2 cycles not run.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
