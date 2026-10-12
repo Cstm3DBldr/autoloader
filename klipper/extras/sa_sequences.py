@@ -537,6 +537,18 @@ class SASequences:
             if enc.get_distance() >= mpp:
                 found = True
                 break
+        if found and feed_mm <= 2 * owner.park_unload_find_chunk:
+            # A tip that really went past the encoder comes back to it only
+            # after the quiet retract that confirmed it -- measured 18-24mm.
+            # Motion inside the first two steps means the filament was still
+            # on the encoder: whatever stopped the retract was a snag in the
+            # tube, not the tip passing, and the tip is somewhere else.
+            gcmd.respond_info(
+                "SA: PARK FAILED on path %d — the encoder saw the filament again "
+                "after only %.1fmm, so it never left the encoder: the retract "
+                "stopped on a snag, not the tip passing. NOT parked."
+                % (path, feed_mm))
+            return False
         if found:
             gcmd.respond_info(
                 "SA: Encoder re-acquired filament after %.1fmm feed (path %d)."
@@ -2782,6 +2794,21 @@ class SASequences:
         # and not the whole tube.
         tail = 150.0
         fast = 300.0
+        # Where the tip starts decides whether "a Bowden back" means anything.
+        # From the extruder (Branches A and B) the tip reaches the encoder
+        # about bowden_length back, so long runs are safe until the last
+        # stretch. From Branch C -- entry sensor only -- it can be ANYWHERE in
+        # the tube: a failed load, an interrupted one, SA_TIP_CYCLE's 100mm
+        # behind the extruder sensor. On 2026-10-11 T1's tip started there,
+        # passed the encoder ~1380mm back, short of bowden_length_1 (1487.5),
+        # and the encoder going quiet was read as a jam: "encoder stopped
+        # after 1371.3mm", path left 'unknown', and the drive pulled 37mm past
+        # the encoder -- past the drive gear's reach. So from an unknown start
+        # every step is short, and quiet after real motion is the end of the
+        # retract, which is the encoder doing the job Mike described for it:
+        # "the sensor to poll to see when it stops reading to stop the feed
+        # motor". A snag that looks the same is caught by the park after.
+        unknown_start = not has_extruder and not has_toolhead
         # Long runs have to be EARNED. The no-motion check is three strikes,
         # so making a strike 300mm made a blind drive cost 900mm instead of
         # 30: measured on a path parked before the encoder, which drove 900mm
@@ -2794,7 +2821,7 @@ class SASequences:
             while owner._entry_sensor_active(path) and retracted < limit:
                 syncing = (cold is not None
                            and owner._extruder_sensor_active(path))
-                if syncing or not proved:
+                if syncing or not proved or unknown_start:
                     step = owner.feed_step_size
                 else:
                     remaining = owner._bowden_lengths[path] - retracted - tail
@@ -2835,9 +2862,11 @@ class SASequences:
                 # path 1: 1530mm driven against 1485mm at the encoder, then a
                 # false jam that aborted an otherwise good unload and left the
                 # path 'unknown' for the monitor to park.
+                was_proved = proved
                 if moved >= step * 0.2:
                     proved = True
-                if retracted > owner._bowden_lengths[path]:
+                if (retracted > owner._bowden_lengths[path]
+                        or (unknown_start and was_proved)):
                     no_motion = 0
                     # The tip is past the encoder now, which is the whole point
                     # of this retract -- keep going and the only thing that
