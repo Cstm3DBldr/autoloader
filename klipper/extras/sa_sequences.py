@@ -1717,10 +1717,15 @@ class SASequences:
                 "%.0fmm of pull (encoder %.1fmm). The tip may be caught in the "
                 "gears." % (path, pulled, enc.get_distance()))
             return None
-        gcmd.respond_info(
-            "SA: Extruder sensor cleared after %.0fmm (encoder %.1fmm); back "
-            "%.0fmm more." % (pulled, enc.get_distance(), back))
-        motion.drive_move(-back, speed=owner.feed_speed)
+        if back > 0:
+            gcmd.respond_info(
+                "SA: Extruder sensor cleared after %.0fmm (encoder %.1fmm); "
+                "back %.0fmm more." % (pulled, enc.get_distance(), back))
+            motion.drive_move(-back, speed=owner.feed_speed)
+        else:
+            gcmd.respond_info(
+                "SA: Extruder sensor cleared after %.0fmm (encoder %.1fmm)."
+                % (pulled, enc.get_distance()))
         return enc.get_distance()
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -2549,6 +2554,54 @@ class SASequences:
             % (fed, enc.get_distance(), fed, bowden))
         return True
 
+    def _zero_at_extruder_sensor(self, gcmd, path):
+        """Bring the tip forward onto the extruder sensor -- the known point the
+        blast back is measured from. A sensor-stopped move where the path has
+        one (well under a second); the old 5mm polled steps otherwise.
+        Returns True when the sensor confirmed it."""
+        owner  = self.owner
+        motion = owner.motion
+        enc = owner._encoder(path)
+        enc.set_direction(forward=True)
+        enc.reset_distance()
+        endstops = getattr(owner, '_ext_endstops', None) or []
+        if path < len(endstops) and endstops[path] is not None:
+            try:
+                res = motion.drive_to_sensor(path, owner.sensor_retry_dist * 3,
+                                             owner.feed_speed)
+            except Exception as e:
+                if owner.printer.is_shutdown():
+                    raise
+                logging.exception("Autoloader: sensor zero failed on path %d", path)
+                res = None
+                gcmd.respond_info(
+                    "SA: WARNING — the sensor-stopped zero failed (%s); "
+                    "zeroing in steps." % e)
+            if res and (res[0] or owner._extruder_sensor_active(path)):
+                gcmd.respond_info(
+                    "SA: Zero confirmed — %.1fmm forward to sensor." % res[1])
+                return True
+            enc.reset_distance()
+        # Polled fallback: push forward 5mm at a time until the sensor
+        # re-triggers, so the blast back is still measured from a known point.
+        gcmd.respond_info("SA: Zeroing — pushing forward to extruder sensor...")
+        zeroed   = False
+        max_zero = owner.sensor_retry_dist * 3   # 60mm ceiling
+        while abs(enc.get_distance()) < max_zero:
+            motion.drive_move(5.0, speed=owner.tip_form_slow_speed)
+            owner.reactor.pause(owner.reactor.monotonic() + owner.sensor_delay)
+            if owner._extruder_sensor_active(path):
+                zeroed = True
+                gcmd.respond_info(
+                    "SA: Zero confirmed — %.1fmm forward to sensor."
+                    % abs(enc.get_distance()))
+                break
+        if not zeroed:
+            gcmd.respond_info(
+                "SA: WARNING — extruder sensor did not re-trigger after %.0fmm "
+                "forward. Proceeding with bowden_length as estimate." % max_zero)
+        return zeroed
+
     def _blast_back_and_park(self, gcmd, path, is_printing, enc):
         """From the extruder sensor (tip at it): blast back 95% of
         the Bowden, park precisely at the encoder, and finish the unload --
@@ -2683,94 +2736,26 @@ class SASequences:
             enc.set_direction(forward=False)
             enc.reset_distance()
 
-            # If extruder sensor still triggered: filament tip has passed the gears
-            # but hasn't fully cleared the sensor.  The extruder motor can no longer
-            # grip it — sync drive + extruder together in one continuous move.
+            # Out of the extruder, then onto the sensor, then the blast back.
+            # This was a 60mm sync pull at tip_form_slow_speed (7.5mm/s, ~8s)
+            # and a zero pushed forward 5mm at a time at the same speed
+            # (~11s) -- 19 of the 46 seconds on 2026-10-12's T2 recovery.
+            # Mike: "lets make them all the fast test". The pull is now
+            # SA_TIP_CYCLE's, at feed_speed, proven on 18 reloads across
+            # three materials; the zero is a sensor-stopped move.
             has_ext_sensor = bool(owner._extruder_sensor_names[path])
-            if has_ext_sensor and owner._extruder_sensor_active(path):
-                gcmd.respond_info(
-                    "SA: Extruder sensor still active — sync drive+extruder "
-                    "to pull filament clear...")
-
-                dn       = owner._drv_name()
-                sync_spd = owner.tip_form_slow_speed
-                sync_f   = int(sync_spd * 60)
-                max_sync = owner.sensor_retry_dist * 3   # e.g. 60mm
-
-                owner.gcode.run_script_from_command("M83")
-                motion._cancel_timeout(dn)
-                owner.gcode.run_script_from_command(
-                    "MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
-
-                # Single continuous move — drive starts async, extruder follows,
-                # M400 inside _extrude_mm waits for both to complete.
-                motion.note_drive_speed(sync_spd, max_sync)
-                owner.gcode.run_script_from_command(
-                    "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 "
-                    "MOVE=%.2f SPEED=%.1f SYNC=0"
-                    % (dn, -max_sync, sync_spd))
-                # The heater was switched off a few lines above and the tip is
-                # already past the gears, so this move is always below
-                # min_extrude_temp. It is pulling filament out, not pushing it
-                # into a cold nozzle.
-                cold = self._allow_cold_extrude(path)
-                try:
-                    self._extrude_mm(-max_sync, sync_f)
-                finally:
-                    self._restore_extrude_floor(cold)
-                motion._arm_timeout(dn)
-
-                # Encoder grip check
-                enc_dist = abs(enc.get_distance())
-                if enc_dist < max_sync * 0.3:
-                    gcmd.respond_info(
-                        "SA: WARNING — low encoder motion (%.1fmm / %.0fmm) "
-                        "on path %d. Drive gear may not have grip."
-                        % (enc_dist, max_sync, path))
-
-                if owner._extruder_sensor_active(path):
-                    motion.servo_disengage()
-                    gcmd.respond_info(
-                        "SA: ERROR — extruder sensor path %d still active after "
-                        "%.0fmm sync retract.\n"
-                        "Check for jam near extruder_sensor_%d or verify "
-                        "sensor wiring.\n"
-                        "Clear manually then re-run SA_UNLOAD TOOL=%d."
-                        % (path, max_sync, path, path))
-                    owner.clear_cal_state()
-                    return
-
-                gcmd.respond_info(
-                    "SA: Extruder sensor cleared (encoder: %.1fmm)." % enc_dist)
-            else:
-                gcmd.respond_info("SA: Extruder sensor already clear.")
-
-            # ── Zero at extruder sensor ──────────────────────────────────────────
-            # Push filament forward slowly until the extruder sensor re-triggers.
-            # This gives an exact reference position so the bowden retract distance
-            # is based on the calibrated bowden_length from a known point.
             if has_ext_sensor:
-                gcmd.respond_info(
-                    "SA: Zeroing — pushing forward to extruder sensor...")
-                enc.set_direction(forward=True)
-                enc.reset_distance()
-                zeroed   = False
-                max_zero = owner.sensor_retry_dist * 3   # 60mm ceiling
-                while abs(enc.get_distance()) < max_zero:
-                    motion.drive_move(5.0, speed=owner.tip_form_slow_speed)
-                    owner.reactor.pause(
-                        owner.reactor.monotonic() + owner.sensor_delay)
-                    if owner._extruder_sensor_active(path):
-                        zeroed = True
+                if owner._extruder_sensor_active(path):
+                    if self._retract_past_extruder_sensor(gcmd, path, 0.0) is None:
+                        motion.servo_disengage()
                         gcmd.respond_info(
-                            "SA: Zero confirmed — %.1fmm forward to sensor."
-                            % abs(enc.get_distance()))
-                        break
-                if not zeroed:
-                    gcmd.respond_info(
-                        "SA: WARNING — extruder sensor did not re-trigger "
-                        "after %.0fmm forward. "
-                        "Proceeding with bowden_length as estimate." % max_zero)
+                            "SA: Clear the jam near extruder_sensor_%d by hand, "
+                            "then re-run SA_UNLOAD TOOL=%d." % (path, path))
+                        owner.clear_cal_state()
+                        return
+                else:
+                    gcmd.respond_info("SA: Extruder sensor already clear.")
+                self._zero_at_extruder_sensor(gcmd, path)
 
             self._blast_back_and_park(gcmd, path, is_printing, enc)
             return  # Branch A complete — do not fall through to entry-sensor loop
@@ -2791,7 +2776,22 @@ class SASequences:
                 motion.servo_disengage()
                 return
 
-            gcmd.respond_info("SA: Filament confirmed. Retracting to entry sensor...")
+            # Same ending as Branch A: out of the extruder, onto the sensor,
+            # one blast back at encoder_max_speed, the precise park. It used to
+            # fall into the stepped retract below -- 300mm runs at feed_speed,
+            # ~65s from the gears to parked on 2026-10-11's T0-T2 runs against
+            # ~46s for Branch A's single blast. The stepped retract stays for
+            # when the pull-out cannot clear the sensor.
+            gcmd.respond_info(
+                "SA: Filament confirmed — out of the extruder, then one blast "
+                "back to the gate.")
+            if self._retract_past_extruder_sensor(gcmd, path, 0.0) is not None:
+                self._zero_at_extruder_sensor(gcmd, path)
+                self._blast_back_and_park(gcmd, path, is_printing,
+                                          owner._encoder(path))
+                return
+            gcmd.respond_info(
+                "SA: Falling back to the stepped retract to the entry sensor...")
 
         # ══════════════════════════════════════════════════════════════════════
         # Branch C: ENTRY ONLY — filament in bowden

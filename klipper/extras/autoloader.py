@@ -2523,6 +2523,10 @@ class Autoloader:
                     "SA_FORM_TIP: the tip is formed but the retract did not "
                     "finish — see above. Pull from the roll end to reach it.")
                 return
+            # The unload now ends like a full one, with its own "what next?"
+            # dialog. This run has said what comes next, so close it.
+            if self._cal_state == 'unload_done':
+                self.clear_cal_state()
             gcmd.respond_info(
                 "SA_FORM_TIP: done. The tip is parked at the drive gear — pull "
                 "it out from the entry side and measure. Target is under "
