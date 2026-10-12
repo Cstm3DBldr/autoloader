@@ -692,7 +692,7 @@ class SASequences:
         gcmd.respond_info("SA: Grip confirmed (%.2fmm)." % enc.get_distance())
         return True
 
-    def _blast_and_approach(self, gcmd, path):
+    def _blast_and_approach(self, gcmd, path, from_unknown=False):
         """Blast to the extruder sensor. Returns False on sensor miss.
 
         With a sensor endstop (motion.drive_to_sensor) the blast stops on the
@@ -752,7 +752,25 @@ class SASequences:
                 # so the polled blast below runs from wherever the filament
                 # actually is -- measured, not assumed.
                 res = None
-        if res:
+        if from_unknown and not res:
+            # No datum, so the polled blast below would be 98% of a Bowden
+            # from an unknown point -- up to the whole length into the gears.
+            # Never fall back from an unknown start.
+            motion.servo_disengage()
+            gcmd.respond_info(
+                "SA: ERROR — the sensor-stopped blast did not run, and path "
+                "%d's position is unknown, so it will not blast blind. "
+                "SA_UNLOAD TOOL=%d brings it back to the gate." % (path, path))
+            return False
+        if res and from_unknown:
+            stopped, fed = res
+            gcmd.respond_info(
+                "SA: Blast %s after %.1fmm, from an unknown position — so the "
+                "filament was about %.0fmm short of the extruder sensor "
+                "(calibrated path %.1fmm)."
+                % ("stopped at the extruder sensor" if stopped
+                   else "ran its full length", fed, fed, target))
+        elif res:
             stopped, fed = res
             seen = enc.get_distance() - start_enc
             diff = fed - expected
@@ -1398,12 +1416,30 @@ class SASequences:
         # Branch C: ENTRY ONLY — filament in bowden (or fresh insert or parked)
         # ══════════════════════════════════════════════════════════════════════
         elif has_entry and not has_extruder and not has_toolhead:
+            endstops = getattr(owner, '_ext_endstops', None) or []
+            stops_on_sensor = path < len(endstops) and endstops[path] is not None
+            unknown = owner.path_states[path] == 'unknown' and stops_on_sensor
             if owner.path_states[path] == 'partial':
                 # Filament parked at drive gears from previous unload.
                 # Skip park+clear: engage and verify grip, then blast through bowden.
                 gcmd.respond_info(
                     "SA: Parked filament on path %d — engaging and verifying grip..."
                     % path)
+                motion.servo_engage()
+            elif unknown:
+                # Somewhere between the gate and the extruder sensor, and the
+                # park cannot find it from there: it retracts at most
+                # park_unload_max (800mm) waiting for the encoder to go quiet,
+                # and a tip 1400mm in never lets it -- so it said PARK FAILED
+                # and refused. With the sensor stopping the blast there is no
+                # datum to find. Feed until the sensor fires, and the length
+                # says where the filament was. Mike, 2026-10-11: compare the
+                # feed with the calibrated length "for clearing unknown load
+                # states".
+                gcmd.respond_info(
+                    "SA: Path %d's position is unknown — no park: the blast "
+                    "runs until the extruder sensor stops it, wherever the "
+                    "filament is." % path)
                 motion.servo_engage()
             else:
                 # Fresh filament inserted: park at encoder for consistent start.
@@ -1428,7 +1464,7 @@ class SASequences:
             if not self._engage_check(gcmd, path):
                 return
 
-            if not self._blast_and_approach(gcmd, path):
+            if not self._blast_and_approach(gcmd, path, from_unknown=unknown):
                 return
 
             # Keep servo engaged — common section needs it for sync feed
