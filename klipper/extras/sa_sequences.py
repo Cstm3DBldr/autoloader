@@ -1040,14 +1040,26 @@ class SASequences:
 
         driven    = 0.0
         triggered = False
+        # The encoder is on the same strand, so it says whether the filament
+        # is actually going anywhere. On 2026-10-12 T2's tip stopped ~41mm
+        # past the extruder sensor, short of the toolhead sensor, and this
+        # drove the full 200mm anyway -- 160mm of the drive grinding on
+        # filament that could not move.
+        enc = owner._encoder(path)
+        enc.set_direction(forward=True)
+        enc.reset_distance()
+        stalled = 0
 
         while driven < max_dist:
             # SYNC=0 starts drive move immediately without waiting for the extruder queue.
             # G1 E queues right after — both execute in parallel, same distance and speed.
+            # _drv_sign(): the direction flip is applied per move, not baked
+            # into the stepper config, so a raw MANUAL_STEPPER must apply it.
             motion.note_drive_speed(sync_speed, step)
+            before = enc.get_distance()
             owner.gcode.run_script_from_command(
                 "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.2f SPEED=%.1f SYNC=0"
-                % (dn, step, sync_speed))
+                % (dn, motion._drv_sign() * step, sync_speed))
             owner.gcode.run_script_from_command(
                 "G1 E%.2f F%d" % (step, sync_f))
             owner.gcode.run_script_from_command("M400")
@@ -1061,8 +1073,26 @@ class SASequences:
                 triggered = True
                 break
 
+            if enc.get_distance() - before < step * 0.2:
+                stalled += 1
+                if stalled >= 2:
+                    break
+            else:
+                stalled = 0
+
         motion._arm_timeout(dn)
         motion.servo_disengage()
+
+        if not triggered and stalled >= 2:
+            gcmd.respond_info(
+                "SA: ERROR — the filament stopped on path %d: %.1fmm past the "
+                "extruder sensor by the encoder, with the toolhead sensor "
+                "about %.0fmm on. Something in the toolhead is blocking it. "
+                "Stopped after %.0fmm of drive instead of grinding on. "
+                "Aborting load."
+                % (path, enc.get_distance(), owner.th_sensor_to_toolhead(path),
+                   driven))
+            return False
 
         if not triggered:
             gcmd.respond_info(
@@ -1530,6 +1560,13 @@ class SASequences:
         # Handles dead zone (extruder sensor → extruder gears, ~20mm) and beyond.
         # Disengages servo on return.
         if not self._sync_feed_to_toolhead_sensor(gcmd, path):
+            # Heater off on EVERY failed load, not only the fill check's. On
+            # 2026-10-12 this return left T2 holding 205C over a stopped load.
+            owner.path_states[path] = 'unknown'
+            owner.gcode.run_script_from_command(
+                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
+                % owner._extruder_names[path])
+            gcmd.respond_info("SA: Heater off.")
             return False
 
         # Ensure servo is disengaged before extruder-only fill+purge
