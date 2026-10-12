@@ -76,6 +76,10 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       that matches 4 (one sample each, PLA only). Not yet the default:
       PETG and ASA are being tested at 2 first, since what holds for PLA
       may not hold for the two that string more.
+      (Zero was the routine before 2026-09-01 and made 2.25mm balls, but
+      with a 48mm hot pull that was fixed in the same commit, so that is not
+      the same test.) Each pair of moves costs about 3s, so fewer is a small
+      speed gain.
       **PETG** (T1, Polymaker PETG, loaded at its profile's 250C), 2 moves,
       table TEMP 192 -- cut measured at 193.0C, clear 94%: **1.9 x 2.0,
       swell 3.3mm long, no string.** ~24% over round in cross-section
@@ -109,10 +113,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       86% (lowest yet): **1.9 x 1.85, swell 2.2mm, and a 1.1mm-thick STRING
       28mm long.** Shape better than PETG's; the cut is too hot. A strand
       that size can fold or break off and jam the next load, so it is not
-      cosmetic. Next: 200, then 195, until the string goes or it shears. (Zero was the
-      routine before 2026-09-01 and made 2.25mm balls, but with a 48mm hot
-      pull that was fixed in the same commit, so that is not the same test.)
-      Each pair of moves costs about 3s, so fewer is a small speed gain.
+      cosmetic.
+      ASA TEMP=200 (2026-10-11; the first try wedged short of the melt, fill
+      24%, and was recovered by SA_FORM_TIP's new recovery branch; the end came
+      back clean, then the same spool loaded at 93%): cut 199.5C, clear 89%,
+      **1.85 x 2.0, swell 3.5mm, and a 0.33mm string 25mm long.** Colder
+      thinned the string from 1.1 to 0.33mm but barely shortened it, and the
+      swell grew 2.2 -> 3.5mm -- the opposite of PETG, where colder shortened
+      it until it sheared. Next: 195, to see whether the string goes before
+      the swell gets worse or it shears.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
