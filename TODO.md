@@ -120,8 +120,14 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       **1.85 x 2.0, swell 3.5mm, and a 0.33mm string 25mm long.** Colder
       thinned the string from 1.1 to 0.33mm but barely shortened it, and the
       swell grew 2.2 -> 3.5mm -- the opposite of PETG, where colder shortened
-      it until it sheared. Next: 195, to see whether the string goes before
-      the swell gets worse or it shears.
+      it until it sheared.
+      ASA TEMP=195 (cut 195.1C, fill 93%, clear 89%): **1.9 x 2.0, swell
+      3.0mm, and a 0.2mm string 62mm long.** Thinner again, but more than
+      twice as long -- about the whole distance the tip travels after the
+      sever (ease 20mm + 2 cooling moves + 36.9mm clear), so at 195 the thread
+      no longer breaks at all and is drawn the length of the retract. Colder
+      trades a thick short string for a fine long one rather than removing
+      it.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
