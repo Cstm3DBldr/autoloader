@@ -181,8 +181,12 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       longest, 3.5mm) broke off and stayed in the toolhead -- but T2 also
       wedged on 10-10 from a clean snipped end, and Mike notes these are the
       OLD extruders. Separating them: the cycle test with ASA on a head that
-      passed, or PLA on T2. T2 is 'unknown' with filament in the toolhead,
-      awaiting `SA_FORM_TIP TOOL=2` (recovery) and a look at the end.
+      passed, or PLA on T2 -- Mike is swapping the T0 and T2 rolls for that.
+      Recovered with `SA_FORM_TIP TOOL=2`: recovery branch, unload (clear 60%,
+      expected -- the wedged tip sat ~20mm above where the clear move assumes),
+      sync retract, blast back, parked (re-acquired after 20mm), saved
+      'partial', and **cal_state empty afterwards -- 6da7e2a's dialog close
+      seen working.**
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
