@@ -229,7 +229,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       fits heat soak building over back-to-back cycles. So colder does not
       cure ASA either: 208, 200, 195 and 190C all string with the standard
       pull. Mike: "maybe asa is to elastic and needs a tip melt" -- the
-      skinny dip, built 2026-10-12 (tip_form_dip_len, DIP=), untested.
+      skinny dip, built 2026-10-12 (tip_form_dip_len, DIP=).
+      **Dip test 1, 2026-10-13, T0, snipped: TEMP=190 DIP=20** (tip from the
+      35mm cooling zone to 15mm above the nozzle, at 30mm/s, out at 70):
+      strings on cycles 1, 3, 4 and 5, none on 2 (Mike). All five loaded,
+      none failed: fills 96 / 95 / 96 / 95 / **86%**, clears 95 / 98 / 98 /
+      98 / 95%. 20mm is not enough -- probably short of the heat. Cycle 5's
+      fill fell to 86% after four at 95-96, the fifth cycle again: more
+      weight on heat soak. Next: DIP=28 DIP_PAUSE=0.5 (7mm above the
+      nozzle for half a second), watching for a re-melted, swollen tip.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
