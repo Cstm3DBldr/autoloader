@@ -286,10 +286,10 @@ class Autoloader:
         # sever the melt with one fast pull, ease back to the cooling zone, then
         # oscillate there while the plastic stiffens. The oscillation is what
         # actually shapes the tip -- without it a hot pull just necks and balls.
-        self.tip_form_sever_dist     = config.getfloat('tip_form_sever_dist',      15.0)
+        self.tip_form_sever_dist     = config.getfloat('tip_form_sever_dist',      38.0)
         self.tip_form_cooling_pos    = config.getfloat('tip_form_cooling_pos',     35.0)
         self.tip_form_cooling_len    = config.getfloat('tip_form_cooling_len',     10.0)
-        self.tip_form_cooling_moves  = config.getint('tip_form_cooling_moves',        4)
+        self.tip_form_cooling_moves  = config.getint('tip_form_cooling_moves',        2)
         self.tip_form_cool_speed_in  = config.getfloat('tip_form_cool_speed_in',   10.0)
         self.tip_form_cool_speed_out = config.getfloat('tip_form_cool_speed_out',  50.0)
         # Retired: cold shear, removed 2026-10-09 (see sa_sequences.py,

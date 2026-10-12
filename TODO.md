@@ -132,9 +132,14 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       toolhead allows, then back down and cool; 5746a07 lets the sever pass
       the cooling zone, capped 10mm short of the toolhead sensor): cut
       195.3C, back down 3mm, clear 89%: **1.95 x 1.85, swell 3.5mm, NO
-      STRING.** ASA is now 195C + 38mm sever in the table. Open: whether the
-      long sever helps or hurts PLA and PETG, which never strung at 15mm --
-      if it is neutral there it could be the default and drop a special case.
+      STRING.**
+      **Standardised 2026-10-11 (Mike: "id rather standardize the unload then
+      need a bunch of settings"):** the 38mm sever and 2 cooling moves are now
+      the default for every material; per material only the temperature
+      varies (PLA 165, PETG 185, ASA 195). *Next:* plain `SA_FORM_TIP TOOL=N`
+      with no overrides on T0 PLA, T1 PETG and T2 ASA, measured against their
+      15mm-sever results. A material that gets worse is the evidence for a
+      per-material override -- not before.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
