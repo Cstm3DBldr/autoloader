@@ -200,7 +200,7 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       **cycle 5 stopped before the toolhead sensor**: the encoder says the tip
       went ~41mm past the extruder sensor (the toolhead sensor is 49mm on)
       and no further, while the sync feed drove its full 200mm and left T2 at
-      205C (both fixed, 2e... see the commit "a stalled push"). So T2 also
+      205C (both fixed in def47ed). So T2 also
       fails with PLA, in a different place -- the zone between its gears and
       its toolhead sensor, where T2's ASA wedge tripped that sensor 10mm early.
       Reading: T2 likely has debris or a fault in that zone (old extruder),
