@@ -185,6 +185,17 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       past the extruder sensor (should refuse). *Done when:* each has been
       seen on the machine.
 
+- [ ] **The load blast stops on the extruder sensor (a1f186c).** Each
+      extruder sensor pin is shared with an endstop on the drive motor, and
+      the blast is a homing move capped at 110% of bowden_length_N, reporting
+      fed length against calibrated. *Verified 2026-10-11, no motion:* Klipper
+      came up with endstops on all six paths after its own automated MCU
+      restart (CRC mismatch, expected -- the boards' config changed), and the
+      filament sensors still report. *Not yet run:* a load. *Done when:* a
+      load stops at the sensor and its fed length sits within a few mm of
+      calibrated, on more than one path -- and the multi-board stop has not
+      raised "Communication timeout during homing".
+
       Seen in passing 2026-10-11 (ba6400c, the park that escalates): T2's
       filament went back in further than a fresh insert, the auto-park said
       "still at the encoder after 50mm of retract -- further in than a fresh
