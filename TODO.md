@@ -211,7 +211,14 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       after 40mm, sensor-stopped zero 8.0mm, blast 1381mm, park (re-acquired
       after 16mm). 28s from "filament confirmed" to parked, against 63-66s for
       the stepped retract. The tip came back freely, so whatever stopped it
-      is ahead of it, not holding it. T0 still 'unknown' with ASA in it.
+      is ahead of it, not holding it. Mike: the T2 PLA tips were "perfect no
+      string on any test", so **stringing is ASA's alone**.
+      T0's ASA recovered with `SA_FORM_TIP TOOL=0` -- **the first run of
+      c89d00b's fast Branch A ending:** pull-out 3.5s (sensor clear after
+      30mm) instead of 8.3s, sensor-stopped zero 0.5s (9.7mm) instead of
+      10.9s; heater off to parked 31s against 46s on T2's recovery that
+      morning. Clear 61% (the stuck tip sat high, as on T2). Next: ASA at
+      190C on T0 with a snipped end, `SA_TIP_CYCLE TOOL=0 TEMP=190`.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
