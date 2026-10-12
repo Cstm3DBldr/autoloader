@@ -205,8 +205,13 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       its toolhead sensor, where T2's ASA wedge tripped that sensor 10mm early.
       Reading: T2 likely has debris or a fault in that zone (Mike then said
       the extruders are probably already his new printed ones, so debris is
-      the stronger suspect), AND ASA strings/wedges on its own (T0). T0 and T2 both 'unknown' with
-      filament in the toolhead, awaiting recovery and a look inside T2.
+      the stronger suspect), AND ASA strings/wedges on its own (T0).
+      T2 recovered with a plain `SA_UNLOAD TOOL=2` -- **the first run of
+      c89d00b's fast Branch B ending:** wiggle 4.81mm, extruder sensor clear
+      after 40mm, sensor-stopped zero 8.0mm, blast 1381mm, park (re-acquired
+      after 16mm). 28s from "filament confirmed" to parked, against 63-66s for
+      the stepped retract. The tip came back freely, so whatever stopped it
+      is ahead of it, not holding it. T0 still 'unknown' with ASA in it.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
