@@ -203,8 +203,9 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       205C (both fixed in def47ed). So T2 also
       fails with PLA, in a different place -- the zone between its gears and
       its toolhead sensor, where T2's ASA wedge tripped that sensor 10mm early.
-      Reading: T2 likely has debris or a fault in that zone (old extruder),
-      AND ASA strings/wedges on its own (T0). T0 and T2 both 'unknown' with
+      Reading: T2 likely has debris or a fault in that zone (Mike then said
+      the extruders are probably already his new printed ones, so debris is
+      the stronger suspect), AND ASA strings/wedges on its own (T0). T0 and T2 both 'unknown' with
       filament in the toolhead, awaiting recovery and a look inside T2.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.

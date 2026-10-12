@@ -104,11 +104,13 @@ It earned its place the hard way: the original tip tuning produced a clean
 0.27mm is the gears flattening the filament — mechanical, so it survived every
 shear temperature and speed tried against it. See `docs/TIPFORM_CAL.md`.
 
-**The extruders are the OLD set (Mike, 2026-10-12).** A new set is planned and
-may have to be printed. Every tip and reload result to date is on the old ones,
-so re-run `SA_TIP_CYCLE` on each head once the new set is fitted. T2 is the one
-head that has wedged on a reload -- twice, once from a clean snipped end -- so a
-T2 failure is not by itself evidence against the software.
+**Extruders: probably already the new printed set.** Mike first said these were
+the old extruders (2026-10-12), then, looking at the parts the same day: "i think
+i did already print the extruders on my bambu so they should be less likely to
+be the problem". Confirm before blaming them. T2 is the head that keeps failing
+reloads -- ASA wedged it twice (once from a clean snipped end), and PLA stalled
+in it short of the toolhead sensor -- so look for debris in T2's path between
+its gears and its toolhead sensor before suspecting the software.
 
 ## Topology
 
