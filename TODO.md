@@ -197,7 +197,14 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       fed length against calibrated. *Verified 2026-10-11, no motion:* Klipper
       came up with endstops on all six paths after its own automated MCU
       restart (CRC mismatch, expected -- the boards' config changed), and the
-      filament sensors still report. *Not yet run:* a load. *Done when:* a
+      filament sensors still report. First load (T2, 2026-10-11, after
+      ea85c12 fixed an import that shut Klipper down before the first blast
+      moved): **stopped at the sensor after 1440.6mm against 1448.4mm
+      calibrated (-7.8mm), encoder 1453.9mm, no homing timeout.** The sync
+      feed to the toolhead sensor then took 50mm instead of 40, because the
+      polled approach used to overshoot the sensor by up to one 10mm step.
+      The same load started from 'unknown' and parked first, as intended.
+      *Done when:* a
       load stops at the sensor and its fed length sits within a few mm of
       calibrated, on more than one path -- and the multi-board stop has not
       raised "Communication timeout during homing".
