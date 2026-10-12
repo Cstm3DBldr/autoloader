@@ -1689,7 +1689,22 @@ class SASequences:
         # (066fd08) if a material with a very different glass transition
         # ever wants it back.
         to_cooling = pushed + cooling_pos
-        sever      = min(sever_dist, to_cooling)
+        # The sever may run PAST the cooling zone and come back to it. It was
+        # capped at the cooling position, so a longer SEVER= silently did
+        # nothing. Mike, 2026-10-11, on ASA at 195C: a 0.2mm string 62mm long,
+        # "very thin like it wanted to break and thicker in other areas like
+        # we didn't pull it far enough out" -- so pull fast as far as the
+        # toolhead allows, then go back down short of the melt and cool from
+        # there. The cap keeps the tip below the toolhead sensor, which stays
+        # triggered, and so far below the gear nip.
+        sever_cap = pushed + max(
+            0.0, owner.th_toolhead_to_nozzle(path) - self.SEVER_SENSOR_MARGIN)
+        sever     = min(sever_dist, max(to_cooling, sever_cap))
+        if sever < sever_dist:
+            gcmd.respond_info(
+                "SA: Sever capped at %.1fmm (asked %.1fmm) — %.0fmm short of "
+                "T%d's toolhead sensor." % (sever, sever_dist,
+                                           self.SEVER_SENSOR_MARGIN, path))
         gcmd.respond_info(
             "SA: Sever %.1fmm at %.0fmm/s (break the melt)..." % (sever, sever_speed))
         self._extrude_mm(-sever, int(sever_speed * 60))
@@ -1699,7 +1714,14 @@ class SASequences:
         # same taper Happy Hare uses: the tip is still soft here and pulling at
         # one flat speed is what stretches the neck.
         remaining = to_cooling - sever
-        if remaining > 0:
+        if remaining < 0:
+            # Pulled past the cooling zone: back down to it, gently -- the
+            # point is to stop short of the melt, not to re-wet the tip.
+            gcmd.respond_info(
+                "SA: Back down %.1fmm to the cooling zone at %.0fmm/s..."
+                % (-remaining, ease_speed))
+            self._extrude_mm(-remaining, max(1, int(ease_speed * 60)))
+        elif remaining > 0:
             gcmd.respond_info(
                 "SA: Ease %.1fmm to cooling zone at %.0f/%.0f/%.0f mm/s..."
                 % (remaining, ease_speed, ease_speed * 0.5, ease_speed * 0.3))
@@ -1757,6 +1779,10 @@ class SASequences:
     # filament its gears grip, so stopping short of the nip is what keeps the
     # handover to the synced phase possible at all.
     NIP_MARGIN = 5.0
+
+    # How far short of the toolhead sensor the longest sever stops. Mike's
+    # figure was 10-15mm; 10 is the cap, and SEVER= picks within it.
+    SEVER_SENSOR_MARGIN = 10.0
 
     def _clear_past_gears(self, gcmd, path, cooling_pos, speed, dwell=None):
         """Take the finished tip out of the melt zone -- and STOP while the
