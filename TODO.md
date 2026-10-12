@@ -144,6 +144,13 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       1.85 x 1.95 with no swell section (better than 15mm's 1.93 x 1.78 with
       one); T1 PETG 1.85 x 2.0, swell 3.0mm (2.75 before -- held); T2 ASA
       1.75 x 2.0, swell 3.5mm (repeats). No material needs its own move.
+      **Repeatability (Mike: no promote until a formed tip loads and unloads
+      well repeatedly).** `SA_TIP_CYCLE` (c827c67) reloads one UNSNIPPED tip
+      over ~100mm instead of the Bowden. T0 PLA, 5 cycles, 2026-10-11: in at
+      98.6 / 109.7 / 109.3 / 108.9 / 109.8mm (100 back + the ~10mm the pull
+      overshoots the sensor), fill 93 / 91 / 91 / 93 / 93%, clear 93 / 93 /
+      90 / 93 / 93%, extruder sensor clear after 30mm every time. No failure.
+      T1 and T2 still to run.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 

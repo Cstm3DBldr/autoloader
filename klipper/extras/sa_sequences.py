@@ -1618,6 +1618,10 @@ class SASequences:
             "%s: all %d cycles done. The tip is %.0fmm behind the extruder "
             "sensor; SA_UNLOAD TOOL=%d takes it back to the gate."
             % (tag, count, back, path))
+        # 'unknown' on purpose, and the line above already says what to run.
+        # The monitor's own notice would call it "a failed step or a power
+        # loss", which this was not.
+        owner._unknown_announced.add(path)
 
     def _retract_past_extruder_sensor(self, gcmd, path, back):
         """Pull a formed tip out of the extruder until its sensor clears,
