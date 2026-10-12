@@ -150,7 +150,12 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       98.6 / 109.7 / 109.3 / 108.9 / 109.8mm (100 back + the ~10mm the pull
       overshoots the sensor), fill 93 / 91 / 91 / 93 / 93%, clear 93 / 93 /
       90 / 93 / 93%, extruder sensor clear after 30mm every time. No failure.
-      T1 and T2 still to run.
+      Then recovery with the standard calls on that tip (left 'unknown',
+      ~1400mm in, 100mm behind the sensor): `SA_LOAD TOOL=0` skipped the park
+      (271050c -- the park would have pulled 800mm, said PARK FAILED and
+      refused), blasted until the sensor stopped it after 100.6mm, filled 91%;
+      then `SA_RESPOND VALUE=unload:0` formed a tip (clear 95%), retracted
+      the Bowden and parked 5.0mm before the encoder. T1 and T2 still to run.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
