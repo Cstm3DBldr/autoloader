@@ -253,6 +253,23 @@ Retired options in a user's config are reported as deprecated, not fatal.
   to make that the standard for every material, with 2 cooling moves, so
   only temperature varies per material. PLA and PETG are being re-measured.
 
+**Queued for the morning of 2026-10-13 (Mike: "no more tests for the night
+just que them till the morning").** Everything below is deployed; nothing has
+run on it yet.
+1. ASA skinny dip on T0 (snip the end first): `SA_TIP_CYCLE TOOL=0 TEMP=190
+   DIP=20` -- Mike watches each cycle's string. DIP=20 takes the tip from the
+   35mm cooling zone to 15mm above the nozzle, about the top of the melt; try
+   15 or 25 by the result. If it works, set tip_form_dip_len_asa.
+2. Heat soak: `SA_TIP_CYCLE TOOL=2 HOLD=120` with T2's PLA (restore its profile
+   first -- the stash is the Forest Green PLA now on T2). T2 PLA failed on
+   cycle 5 with 20s holds; if 120s holds pass, heat soak is the cause.
+3. Auto-recover: any failure in 1 or 2 now recovers and continues -- check the
+   log says so.
+4. The two never-seen pieces: `SA_PARK` refusing a tip past the extruder
+   sensor (`SA_FORM_TIP TOOL=N UNLOAD=0`, then `SA_PARK TOOL=N`, then
+   `SA_UNLOAD`), and `DWELL=` (one `SA_FORM_TIP TOOL=N DWELL=2`).
+5. Then promote printer-dev to dev and main (CLAUDE.md, the cycle).
+
 **Waiting on Mike at the machine:** the twelve-step guide on KlipperScreen,
 re-measuring all six toolheads by one method (that is guide step 12), and
 `SA_CALIBRATE_BOWDEN` at 160 (step 11).

@@ -223,7 +223,13 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       1516.6 calibrated -- d546565's single sensor hit, seen); fills 94 / 94
       / 94 / 95 / 94%, clears 93 / 95 / 95 / 98 / 98% (195C gave 95%),
       toolhead sensor at 50mm every time. Then the fast unload from the tube:
-      found at 116.0mm, blast, parked. Strings: Mike to report.
+      found at 116.0mm, blast, parked. **But it strung every cycle (Mike):**
+      cycle 1 a tiny string; 2 worse, "a blob on a string"; 3 the same; 4
+      and 5 "long skinny string" -- getting worse as the run went on, which
+      fits heat soak building over back-to-back cycles. So colder does not
+      cure ASA either: 208, 200, 195 and 190C all string with the standard
+      pull. Mike: "maybe asa is to elastic and needs a tip melt" -- the
+      skinny dip, built 2026-10-12 (tip_form_dip_len, DIP=), untested.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
@@ -288,13 +294,18 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* a fresh install loads slowly, the last guide page turns
       on full speed, and Settings can turn it back off.
 
-- [ ] **Recover a failed load automatically, and retry once.** Mike,
+- [ ] **Recover a failed load automatically, and retry once -- BUILT
+      2026-10-12, not yet seen on the machine.** Mike approved "one retry then
+      stop". SA_LOAD: a failure at the nozzle unloads to the gate, waits 5s,
+      tries once more, and stops on a second failure. SA_TIP_CYCLE: recovers
+      and carries on, two in a row stop it. *Done when:* a real failure is
+      seen recovering and retrying -- the original request follows. Mike,
       2026-10-12, after T0 and T2 both failed their 5th reload: "shouldn't we
       build in an auto recover when we sense an error so we don't fail a print
       and or make sure testing finishes (forward thinking for mmu use)".
       The recovery is proven: the unload brought a wedged load back to the
       gate every time it was asked (T2 on 10-11 and twice on 10-12, T0 once).
-      Proposed, awaiting Mike's call on the retry count and what follows:
+      As proposed and approved:
       - a load that fails the fill check or stalls short of the toolhead
         sensor unloads itself to the gate, waits, and tries once more;
       - a second failure stops and asks (a pause, under a print) instead of

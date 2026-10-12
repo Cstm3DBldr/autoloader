@@ -75,8 +75,32 @@ class Autoloader:
         'heatbreak_speed', 'retract_speed', 'slow_speed', 'dwell',
         'sever_dist', 'cooling_pos', 'cooling_len', 'cooling_moves',
         'cool_speed_in', 'cool_speed_out', 'purge_len', 'purge_temp',
-        'purge_speed',
+        'purge_speed', 'dip_len', 'dip_speed', 'dip_pause',
     ), key=len, reverse=True))
+
+    # SA_FORM_TIP / SA_TIP_CYCLE inline override -> tip_form_* name. One map
+    # for both, so a value that can be tried with one can be tried with the
+    # other.
+    TIP_ARGMAP = {
+        'TEMP'       : 'temp',
+        'PUSH'       : 'push_length',
+        'PUSH_SPEED' : 'push_speed',
+        'PURGE'      : 'purge_len',
+        'PURGE_TEMP' : 'purge_temp',
+        'PURGE_SPEED': 'purge_speed',
+        'SEVER'      : 'sever_dist',
+        'SEVER_SPEED': 'retract_speed',
+        'EASE'       : 'slow_speed',
+        'COOL_POS'   : 'cooling_pos',
+        'COOL_LEN'   : 'cooling_len',
+        'COOL_MOVES' : 'cooling_moves',
+        'COOL_IN'    : 'cool_speed_in',
+        'COOL_OUT'   : 'cool_speed_out',
+        'DWELL'      : 'dwell',
+        'DIP'        : 'dip_len',
+        'DIP_SPEED'  : 'dip_speed',
+        'DIP_PAUSE'  : 'dip_pause',
+    }
 
 
     # ── Path states ───────────────────────────────────────────────────────────
@@ -292,6 +316,16 @@ class Autoloader:
         self.tip_form_cooling_moves  = config.getint('tip_form_cooling_moves',        2)
         self.tip_form_cool_speed_in  = config.getfloat('tip_form_cool_speed_in',   10.0)
         self.tip_form_cool_speed_out = config.getfloat('tip_form_cool_speed_out',  50.0)
+        # Skinny dip: after the cooling moves, push the tip back toward the
+        # melt for a moment and pull it out fast, so the heat takes off the
+        # string a stretchy plastic leaves (ASA, 2026-10-12: strings at 190
+        # and 195C whatever the pull). 0 = off.
+        self.tip_form_dip_len        = config.getfloat('tip_form_dip_len',          0.0,
+                                                       minval=0.)
+        self.tip_form_dip_speed      = config.getfloat('tip_form_dip_speed',       30.0,
+                                                       above=0.)
+        self.tip_form_dip_pause      = config.getfloat('tip_form_dip_pause',        0.0,
+                                                       minval=0.)
         # Retired: cold shear, removed 2026-10-09 (see sa_sequences.py,
         # the sever stage). A config that still sets one of its options must
         # not stop Klipper starting -- an option nothing reads is a startup
@@ -1763,7 +1797,7 @@ class Autoloader:
             ('SA_TIP_CYCLE',
              self._cmd_tip_cycle,
              "Reload and re-form one tip repeatedly over a short travel: "
-             "TOOL=N [COUNT=5] [BACK=100] [HOLD=20] [TEMP=]"),
+             "TOOL=N [COUNT=5] [BACK=100] [HOLD=20] [any SA_FORM_TIP override]"),
         ]
         for name, fn, desc in cmds:
             self.gcode.register_command(name, fn, desc=desc)
@@ -2311,23 +2345,31 @@ class Autoloader:
             "SA_SET_CONFIG: staged autoloader.%s = %s  "
             "(run SAVE_CONFIG to persist and restart)" % (param, value))
 
+    def _tip_overrides(self, gcmd):
+        """The SA_FORM_TIP-style inline overrides present on `gcmd`."""
+        ov = {}
+        for arg, name in self.TIP_ARGMAP.items():
+            val = gcmd.get_float(arg, None)
+            if val is not None:
+                ov[name] = val
+        return ov
+
     def _cmd_tip_cycle(self, gcmd):
-        """SA_TIP_CYCLE TOOL=N [COUNT=5] [BACK=100] [HOLD=20] [TEMP=] -- see
-        SASequences.tip_cycle. Uses the configured tip values: the point is to
-        test the standard as shipped. TEMP= is the one override, because the
-        forming temperature is the one value meant to vary per material, and
-        trying a new one should not mean editing the config first
-        (2026-10-12: ASA strung on T0 at 195C, 190 next)."""
+        """SA_TIP_CYCLE TOOL=N [COUNT=5] [BACK=100] [HOLD=20] [overrides] -- see
+        SASequences.tip_cycle. With no overrides it tests the configured
+        standard as shipped. It takes the same inline overrides as
+        SA_FORM_TIP, so a candidate (TEMP=190, DIP=20) can be proved over
+        repeated reloads before it goes in the config."""
         path  = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
         count = gcmd.get_int('COUNT', 5, minval=1, maxval=20)
         back  = gcmd.get_float('BACK', 100.0, minval=20.0, maxval=300.0)
         hold  = gcmd.get_float('HOLD', 20.0, minval=0.0, maxval=300.0)
-        temp  = gcmd.get_float('TEMP', None, minval=0.0, maxval=350.0)
-        ov = {'temp': temp} if temp is not None else None
+        ov = self._tip_overrides(gcmd)
         if ov:
-            gcmd.respond_info("SA_TIP_CYCLE: forming at TEMP=%.0f (override)."
-                              % temp)
-        self.sequences.tip_cycle(gcmd, path, count, back, hold, ov)
+            gcmd.respond_info(
+                "SA_TIP_CYCLE: overrides %s"
+                % ", ".join("%s=%g" % (k, v) for k, v in sorted(ov.items())))
+        self.sequences.tip_cycle(gcmd, path, count, back, hold, ov or None)
 
     def _cmd_form_tip(self, gcmd):
         """SA_FORM_TIP TOOL=N [overrides] — tip forming on its own, for tuning.
@@ -2345,28 +2387,7 @@ class Autoloader:
         path = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
 
         # Inline name -> config name. Anything omitted falls back to config.
-        argmap = {
-            'TEMP'       : 'temp',
-            'PUSH'       : 'push_length',
-            'PUSH_SPEED' : 'push_speed',
-            'PURGE'      : 'purge_len',
-            'PURGE_TEMP' : 'purge_temp',
-            'PURGE_SPEED': 'purge_speed',
-            'SEVER'      : 'sever_dist',
-            'SEVER_SPEED': 'retract_speed',
-            'EASE'       : 'slow_speed',
-            'COOL_POS'   : 'cooling_pos',
-            'COOL_LEN'   : 'cooling_len',
-            'COOL_MOVES' : 'cooling_moves',
-            'COOL_IN'    : 'cool_speed_in',
-            'COOL_OUT'   : 'cool_speed_out',
-            'DWELL'      : 'dwell',
-        }
-        ov = {}
-        for arg, name in argmap.items():
-            val = gcmd.get_float(arg, None)
-            if val is not None:
-                ov[name] = val
+        ov = self._tip_overrides(gcmd)
         # Klipper ignores a parameter nothing asks for, so without this a
         # SHEAR= from an old note or macro would silently do nothing.
         if gcmd.get('SHEAR', None) is not None or \

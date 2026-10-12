@@ -1263,7 +1263,60 @@ class SASequences:
         """
         return self._run_op(gcmd, path, self._do_unload_inner)
 
+    # Seconds between the recovery unload and the retry. The unload itself
+    # takes ~30-45s, which is most of the rest; this is the margin.
+    LOAD_RETRY_WAIT = 5.0
+
     def _do_load_inner(self, gcmd, path):
+        """One load, and if it fails at the nozzle, ONE recovery and retry.
+
+        Mike, 2026-10-12: "build in an auto recover when we sense an error so
+        we don't fail a print and or make sure testing finishes" -- "one retry
+        then stop". The recovery is the plain unload, which brought a wedged
+        load back to the gate every time it was asked that day. Only a
+        failure at the nozzle stage retries (the fill check, or a push that
+        stalled short of the toolhead sensor); anything earlier is a fault
+        the same load would just meet again. A second failure stops and says
+        so, rather than grinding on.
+        """
+        owner = self.owner
+        self._nozzle_failed = False
+        self._load_once(gcmd, path)
+        if not self._nozzle_failed:
+            return
+        gcmd.respond_info(
+            "SA: Load failed at the nozzle — recovering: unloading path %d to "
+            "the gate, then ONE more try." % path)
+        if not self._recover_to_gate(gcmd, path):
+            gcmd.respond_info(
+                "SA: ERROR — the recovery unload did not park path %d, so it "
+                "will not retry. See above." % path)
+            return
+        owner.reactor.pause(owner.reactor.monotonic() + self.LOAD_RETRY_WAIT)
+        gcmd.respond_info("SA: Retrying the load on path %d." % path)
+        self._nozzle_failed = False
+        self._load_once(gcmd, path)
+        if self._nozzle_failed:
+            gcmd.respond_info(
+                "SA: ERROR — path %d failed to load twice, so it has stopped "
+                "rather than try again. Snip the end and look at the toolhead "
+                "between the gears and the nozzle; SA_UNLOAD TOOL=%d brings it "
+                "back to the gate." % (path, path))
+
+    def _recover_to_gate(self, gcmd, path):
+        """Unload *path* to the gate as part of something else -- no
+        what-next dialog and no RESUME. True when it ended parked."""
+        owner = self.owner
+        owner._suppress_unload_prompt = True
+        try:
+            self._do_unload_inner(gcmd, path)
+        finally:
+            owner._suppress_unload_prompt = False
+        if owner._cal_state == 'unload_done':
+            owner.clear_cal_state()
+        return owner.path_states[path] == 'partial'
+
+    def _load_once(self, gcmd, path):
         """Full filament load sequence for *path*.
 
         Sensor state determines which phases are skipped:
@@ -1560,6 +1613,7 @@ class SASequences:
         # Handles dead zone (extruder sensor → extruder gears, ~20mm) and beyond.
         # Disengages servo on return.
         if not self._sync_feed_to_toolhead_sensor(gcmd, path):
+            self._nozzle_failed = True
             # Heater off on EVERY failed load, not only the fill check's. On
             # 2026-10-12 this return left T2 holding 205C over a stopped load.
             owner.path_states[path] = 'unknown'
@@ -1574,6 +1628,7 @@ class SASequences:
 
         # Fill nozzle (extruder gears → nozzle tip) then initial purge
         if not self._fill_and_purge(gcmd, path):
+            self._nozzle_failed = True
             return False
 
         owner.path_states[path] = 'loaded'
@@ -1653,6 +1708,13 @@ class SASequences:
         gcmd.respond_info("%s: %d cycles; each pulls back %.0fmm past the "
                           "extruder sensor." % (tag, count, back))
 
+        # A failed load recovers to the gate and the test carries on -- the
+        # next cycle is the retry -- so a run finishes with a failure rate
+        # instead of stopping at the first one. Two in a row stops it: the
+        # same one-retry rule as SA_LOAD (Mike, 2026-10-12).
+        next_cap    = first_cap
+        failures    = 0
+        failed_last = False
         for k in range(1, count + 1):
             label = "%s %d/%d" % (tag, k, count)
             # in -- the sensor stops the drive
@@ -1660,7 +1722,7 @@ class SASequences:
             enc = owner._encoder(path)
             enc.set_direction(forward=True)
             enc.reset_distance()
-            cap = first_cap if k == 1 else back + 60.0
+            cap = next_cap
             stopped, fed = motion.drive_to_sensor(path, cap, speed)
             if not stopped:
                 gcmd.respond_info(
@@ -1672,13 +1734,28 @@ class SASequences:
             gcmd.respond_info(
                 "%s: in — at the extruder sensor after %.1fmm (encoder "
                 "%.1fmm; %s)." % (label, fed, enc.get_distance(),
-                                  "from where it started" if k == 1
+                                  "from where it started" if cap > back + 60.0
                                   else "expected ~%.0f" % back))
             # load -- sync feed, fill + purge with the fill check
             if not self._load_into_nozzle(gcmd, path, is_printing):
+                failures += 1
+                if failed_last:
+                    gcmd.respond_info(
+                        "%s: FAILED on the load again, straight after a "
+                        "recovery — stopping (one retry, then stop). %d of %d "
+                        "cycles failed." % (label, failures, k))
+                    return
+                failed_last = True
                 gcmd.respond_info(
-                    "%s: FAILED on the load — see above. Stopping." % label)
-                return
+                    "%s: FAILED on the load — recovering to the gate and "
+                    "carrying on; the next cycle is the retry." % label)
+                if not self._recover_to_gate(gcmd, path):
+                    gcmd.respond_info(
+                        "%s: the recovery did not park it — stopping." % label)
+                    return
+                next_cap = owner._bowden_lengths[path] * 1.10
+                continue
+            failed_last = False
             # form, with the standard (TEMP= may override the temperature)
             self.form_tip(gcmd, path, is_printing, ov)
             owner.gcode.run_script_from_command(
@@ -1690,16 +1767,23 @@ class SASequences:
                     "%s: FAILED on the pull-back — see above. Stopping." % label)
                 return
             owner.path_states[path] = 'unknown'
+            next_cap = back + 60.0
             gcmd.respond_info(
                 "%s: out — the tip is %.0fmm behind the extruder sensor. "
                 "Holding %.0fs." % (label, back, hold))
             owner.reactor.pause(owner.reactor.monotonic() + hold)
 
         motion.servo_disengage()
+        if failed_last:
+            gcmd.respond_info(
+                "%s: all %d cycles done, %d failed and recovered -- the last "
+                "one too, so the tip is parked at the gate."
+                % (tag, count, failures))
+            return
         gcmd.respond_info(
-            "%s: all %d cycles done. The tip is %.0fmm behind the extruder "
-            "sensor; SA_UNLOAD TOOL=%d takes it back to the gate."
-            % (tag, count, back, path))
+            "%s: all %d cycles done, %d failed and recovered. The tip is "
+            "%.0fmm behind the extruder sensor; SA_UNLOAD TOOL=%d takes it "
+            "back to the gate." % (tag, count, failures, back, path))
         # 'unknown' on purpose, and the line above already says what to run.
         # The monitor's own notice would call it "a failed step or a power
         # loss", which this was not.
@@ -1824,6 +1908,9 @@ class SASequences:
         cooling_moves = int(cfg('cooling_moves'))
         cool_speed_in = cfg('cool_speed_in')
         cool_speed_out = cfg('cool_speed_out')
+        dip_len       = cfg('dip_len')
+        dip_speed     = cfg('dip_speed')
+        dip_pause     = cfg('dip_pause')
         extruder_name = owner._extruder_names[path]
         current_temp  = self._extruder_temp(path)
 
@@ -1871,7 +1958,8 @@ class SASequences:
                                  sever_dist, sever_speed, ease_speed,
                                  cooling_pos, cooling_len, cooling_moves,
                                  cool_speed_in, cool_speed_out,
-                                 purge_len, purge_temp, purge_speed, dwell)
+                                 purge_len, purge_temp, purge_speed, dwell,
+                                 dip_len, dip_speed, dip_pause)
         finally:
             if saved_min is not None:
                 heater.min_extrude_temp = saved_min
@@ -1884,7 +1972,8 @@ class SASequences:
                         sever_speed, ease_speed, cooling_pos, cooling_len,
                         cooling_moves, cool_speed_in, cool_speed_out,
                         purge_len=0.0, purge_temp=200.0, purge_speed=1.5,
-                        dwell=None):
+                        dwell=None, dip_len=0.0, dip_speed=30.0,
+                        dip_pause=0.0):
         """The moves themselves. Split out so form_tip can wrap them in the
         min_extrude_temp override without a long try block."""
         # The ram is paid back before any retract below counts, because what
@@ -2044,6 +2133,27 @@ class SASequences:
                 speed += increment
                 self._extrude_mm(-cooling_len, max(1, int(speed * 60)))
                 speed += increment
+
+        # ---- skinny dip (optional) --------------------------------------
+        # Back toward the melt for a moment, then out fast: the heat takes
+        # the string off a stretchy plastic while the tip itself barely
+        # touches the melt. Mike, 2026-10-12, on ASA at 190C (a string every
+        # cycle, a blob on it by the second, getting worse each cycle):
+        # "maybe asa is to elastic and needs a tip melt". Off unless
+        # tip_form_dip_len (or DIP=) asks for it. Never deeper than 5mm short
+        # of the nozzle tip.
+        if dip_len > 0:
+            dip = min(dip_len, max(0.0, cooling_pos - 5.0))
+            gcmd.respond_info(
+                "SA: Skinny dip %.1fmm toward the melt at %.0fmm/s%s, out at "
+                "%.0fmm/s..."
+                % (dip, dip_speed,
+                   (", %.1fs in it" % dip_pause) if dip_pause > 0 else "",
+                   sever_speed))
+            self._extrude_mm(dip, max(1, int(dip_speed * 60)))
+            if dip_pause > 0:
+                owner.reactor.pause(owner.reactor.monotonic() + dip_pause)
+            self._extrude_mm(-dip, max(1, int(sever_speed * 60)))
 
         self._clear_past_gears(gcmd, path, cooling_pos, ease_speed, dwell)
 
@@ -2694,6 +2804,9 @@ class SASequences:
         owner.gcode.run_script_from_command(
             "_SA_LED_UNLOADED TOOL=%d" % path)
 
+        if getattr(owner, '_suppress_unload_prompt', False):
+            # Part of a recovery: whatever called it decides what is next.
+            return
         if is_printing:
             gcmd.respond_info("SA: Resuming print...")
             owner.gcode.run_script_from_command("RESUME")
@@ -3090,6 +3203,9 @@ class SASequences:
         owner.gcode.run_script_from_command(
             "_SA_LED_UNLOADED TOOL=%d" % path)
 
+        if getattr(owner, '_suppress_unload_prompt', False):
+            # Part of a recovery: whatever called it decides what is next.
+            return
         if is_printing:
             gcmd.respond_info("SA: Resuming print...")
             owner.gcode.run_script_from_command("RESUME")
