@@ -140,6 +140,10 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       with no overrides on T0 PLA, T1 PETG and T2 ASA, measured against their
       15mm-sever results. A material that gets worse is the evidence for a
       per-material override -- not before.
+      **Done 2026-10-11, all three string-free on the standard:** T0 PLA
+      1.85 x 1.95 with no swell section (better than 15mm's 1.93 x 1.78 with
+      one); T1 PETG 1.85 x 2.0, swell 3.0mm (2.75 before -- held); T2 ASA
+      1.75 x 2.0, swell 3.5mm (repeats). No material needs its own move.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
