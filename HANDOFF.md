@@ -104,6 +104,12 @@ It earned its place the hard way: the original tip tuning produced a clean
 0.27mm is the gears flattening the filament — mechanical, so it survived every
 shear temperature and speed tried against it. See `docs/TIPFORM_CAL.md`.
 
+**The extruders are the OLD set (Mike, 2026-10-12).** A new set is planned and
+may have to be printed. Every tip and reload result to date is on the old ones,
+so re-run `SA_TIP_CYCLE` on each head once the new set is fitted. T2 is the one
+head that has wedged on a reload -- twice, once from a clean snipped end -- so a
+T2 failure is not by itself evidence against the software.
+
 ## Topology
 
 ### Hardware

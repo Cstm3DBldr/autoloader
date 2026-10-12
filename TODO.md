@@ -171,7 +171,18 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       after 110.4mm in 2.6s, blasted back 1413mm in 9.6s, parked (quiet after
       83mm, re-acquired after 16mm -- clear of the 4mm snag check). 27s from
       "position unknown" to parked, against ~130s for the crawl. Saved
-      'partial'. T2 cycles not run.
+      'partial'.
+      T2 ASA, 2026-10-12: cycles 1-3 clean (in 98.5/109.9/110.2mm, toolhead
+      sensor after 50mm each, fill 93/93/94%, clear 89% each). **Cycle 4
+      wedged: toolhead sensor after 40mm -- 10mm early -- then fill 34%.**
+      Something sat ahead of the tip: tripped the sensor first, then blocked
+      the melt. Fill check failed it, heater off, test stopped, unload not
+      run. Leading guess: a piece of cycle 3's tip (ASA's swell is the
+      longest, 3.5mm) broke off and stayed in the toolhead -- but T2 also
+      wedged on 10-10 from a clean snipped end, and Mike notes these are the
+      OLD extruders. Separating them: the cycle test with ASA on a head that
+      passed, or PLA on T2. T2 is 'unknown' with filament in the toolhead,
+      awaiting `SA_FORM_TIP TOOL=2` (recovery) and a look at the end.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
