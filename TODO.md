@@ -187,6 +187,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       sync retract, blast back, parked (re-acquired after 20mm), saved
       'partial', and **cal_state empty afterwards -- 6da7e2a's dialog close
       seen working.**
+      **Swap test (Mike swapped the T0 and T2 rolls, ends snipped, looked
+      fine).** ASA on T0, 195C + 38mm sever: fills 97/96/96/95%, clears
+      101/95/95/95%, but Mike saw a "decent length string" on cycles 1, 3 and
+      4 -- and **cycle 5 wedged: fill 16%** (toolhead sensor at the normal
+      50mm this time, so the tip itself, not something ahead of it). ASA has
+      now failed a reload on two different heads, so it follows the material,
+      not T2's extruder; 195C is on the edge -- clean twice on T2, strings on
+      T0. Next: 190C (SA_TIP_CYCLE TEMP=, 1dcd44d), watching for strings and
+      for shear, which PETG hit 5C under its best. PLA on T2 running.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
