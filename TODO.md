@@ -215,6 +215,27 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* the README's install line reaches the menu, or the README
       says plainly that it does not and how to get it.
 
+## Requested, not built
+
+- [ ] **A high-speed switch, and a last guide page that turns it on.** Mike,
+      2026-10-12, after the 27s unload: "we should have a mode for testing
+      for slow loads and unloads for first time users to ensure everything
+      works, but otherwise we run full speed". Shape agreed:
+      - a setting, `high_speed_moves`, OFF on a fresh install and stored in
+        variables.cfg (a user setting, so never in a tracked file). Off, the
+        blast and the unload blast run at `feed_speed` instead of
+        `encoder_max_speed`; nothing else changes, so a first load is the
+        same sequence, only watchable.
+      - a final guide page in `_GUIDE`: load and unload every channel at the
+        slow speed; when all of them work, flip the switch on that page --
+        which finishes the guide. The page says the switch also lives in
+        Settings, for troubleshooting.
+      - the switch in both UIs' settings. The guide page renders itself on
+        both (it is derived), but the settings screens are not.
+      This machine is already proven, so it would ship ON here.
+      *Done when:* a fresh install loads slowly, the last guide page turns
+      on full speed, and Settings can turn it back off.
+
 ## Never verified
 
 - [ ] **Recovery from a stopped load, unload or park (54b88a6).** Four power
