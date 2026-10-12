@@ -1546,7 +1546,7 @@ class SASequences:
     # Tip cycle test -- a formed tip, reloaded and re-formed, short travel
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def tip_cycle(self, gcmd, path, count, back, hold):
+    def tip_cycle(self, gcmd, path, count, back, hold, ov=None):
         """SA_TIP_CYCLE: does a formed tip load and unload well, repeatedly?
 
         Every real reload sends an UNSNIPPED formed tip back through the
@@ -1558,9 +1558,9 @@ class SASequences:
         """
         return self._run_op(gcmd, path,
                             lambda g, p: self._tip_cycle_inner(
-                                g, p, count, back, hold))
+                                g, p, count, back, hold, ov))
 
-    def _tip_cycle_inner(self, gcmd, path, count, back, hold):
+    def _tip_cycle_inner(self, gcmd, path, count, back, hold, ov=None):
         owner  = self.owner
         motion = owner.motion
         tag = "SA_TIP_CYCLE T%d" % path
@@ -1645,8 +1645,8 @@ class SASequences:
                 gcmd.respond_info(
                     "%s: FAILED on the load — see above. Stopping." % label)
                 return
-            # form, with the standard
-            self.form_tip(gcmd, path, is_printing)
+            # form, with the standard (TEMP= may override the temperature)
+            self.form_tip(gcmd, path, is_printing, ov)
             owner.gcode.run_script_from_command(
                 "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0" % extruder_name)
             # out -- past the sensor and back to the start
