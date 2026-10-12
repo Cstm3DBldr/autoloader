@@ -2508,6 +2508,113 @@ class SASequences:
                    "Y" if owner._extruder_sensor_active(path) else "N",
                    "Y" if owner._toolhead_sensor_active(path) else "N"))
 
+    def _find_at_extruder_sensor(self, gcmd, path):
+        """Feed forward until the extruder sensor stops the drive, and say how
+        far that was -- which is where the filament had been. True when it
+        stopped on the sensor. Never past it: the sensor is an endstop here."""
+        owner  = self.owner
+        motion = owner.motion
+        sv = owner.printer.lookup_object('save_variables', None)
+        saved_max = float(sv.allVariables.get('encoder_max_speed', 0)) if sv else 0
+        speed  = saved_max if saved_max > 0 else 75.0
+        bowden = owner._bowden_lengths[path]
+        cap    = bowden * 1.10
+        gcmd.respond_info(
+            "SA: Path %d's position is unknown — finding it: feeding to the "
+            "extruder sensor (it stops the drive), then a normal unload from "
+            "there." % path)
+        motion.servo_engage()
+        enc = owner._encoder(path)
+        enc.set_direction(forward=True)
+        enc.reset_distance()
+        try:
+            res = motion.drive_to_sensor(path, cap, speed)
+        except Exception as e:
+            if owner.printer.is_shutdown():
+                raise
+            logging.exception(
+                "Autoloader: finding path %d at the sensor failed", path)
+            gcmd.respond_info(
+                "SA: WARNING — could not feed to the sensor (%s)." % e)
+            return False
+        if not res or not (res[0] or owner._extruder_sensor_active(path)):
+            gcmd.respond_info(
+                "SA: The extruder sensor did not trigger within %.0fmm "
+                "(encoder %.1fmm)." % (cap, enc.get_distance()))
+            return False
+        fed = res[1]
+        gcmd.respond_info(
+            "SA: Found — at the extruder sensor after %.1fmm (encoder %.1fmm), "
+            "so the tip was about %.0fmm short of it. Bowden %.1fmm."
+            % (fed, enc.get_distance(), fed, bowden))
+        return True
+
+    def _blast_back_and_park(self, gcmd, path, is_printing, enc):
+        """From the extruder sensor (tip at it): blast back 95% of
+        the Bowden, park precisely at the encoder, and finish the unload --
+        state, LEDs, and the resume or the what-next prompt.
+
+        Branch A's ending, shared with an unload from 'unknown', which first
+        feeds forward to the extruder sensor so it starts from the same
+        known point."""
+        owner  = self.owner
+        motion = owner.motion
+        # ── Fast bowden blast — pull filament 95% of bowden length ──────────
+        # Filament tip is now clear of the extruder sensor.  One fast continuous
+        # drive move brings the tip to just inside the drive gear area.
+        # The entry sensor is on the roll side of the drive gears so the
+        # filament exits the gears before the entry sensor ever clears —
+        # we park here and let the user physically remove the filament.
+        sv          = owner.printer.lookup_object('save_variables', None)
+        saved_max   = float(sv.allVariables.get('encoder_max_speed', 0)) if sv else 0
+        # Same reasoning as the load blast: the saved figure is already
+        # the safe one, so it is used as given.
+        blast_spd   = saved_max if saved_max > 0 else owner.feed_speed
+        bowden      = owner._bowden_lengths[path]
+        blast_dist  = bowden * 0.95
+        gcmd.respond_info(
+            "SA: Blast retract %.0fmm at %.0fmm/s "
+            "(95%% of bowden %.0fmm)..."
+            % (blast_dist, blast_spd, bowden))
+        enc.reset_distance()
+        motion.drive_move(-blast_dist, speed=blast_spd)
+
+        # Park precisely at drive gear encoder (servo still engaged)
+        gcmd.respond_info("SA: Positioning filament precisely at drive gear...")
+        parked = self._park_filament_at_encoder(gcmd, path, from_load=False)
+
+        motion.servo_disengage()
+        motion.save_position()
+        if parked:
+            owner.path_states[path] = 'partial'
+            gcmd.respond_info(
+                "SA: Filament parked at drive gear — path %d. "
+                "Pull from roll end to remove." % path)
+        else:
+            # `partial` is what the next load trusts as "at the datum" and
+            # blasts from, so it is only written when the park confirmed
+            # the position. Unknown makes the next load park first.
+            owner.path_states[path] = 'unknown'
+            gcmd.respond_info(
+                "SA: Unload finished but path %d is NOT parked at a known "
+                "position — see above. The next load will park it first."
+                % path)
+
+        # Toolhead is empty — force LEDs to UNLOADED (dim white logo,
+        # nozzle off). The profile itself stays: the filament is still at
+        # the entry sensor, and the printer wipes a profile only once the
+        # entry reads empty.
+        owner.gcode.run_script_from_command(
+            "_SA_LED_UNLOADED TOOL=%d" % path)
+
+        if is_printing:
+            gcmd.respond_info("SA: Resuming print...")
+            owner.gcode.run_script_from_command("RESUME")
+        else:
+            owner._cal_state = 'unload_done'
+            owner._cal_data  = {'path': path, 'is_printing': is_printing}
+            self._prompt_unload_park(gcmd, path)
+
     def _do_unload_inner(self, gcmd, path):
         """Full filament unload sequence for *path*.
 
@@ -2665,61 +2772,7 @@ class SASequences:
                         "after %.0fmm forward. "
                         "Proceeding with bowden_length as estimate." % max_zero)
 
-            # ── Fast bowden blast — pull filament 95% of bowden length ──────────
-            # Filament tip is now clear of the extruder sensor.  One fast continuous
-            # drive move brings the tip to just inside the drive gear area.
-            # The entry sensor is on the roll side of the drive gears so the
-            # filament exits the gears before the entry sensor ever clears —
-            # we park here and let the user physically remove the filament.
-            sv          = owner.printer.lookup_object('save_variables', None)
-            saved_max   = float(sv.allVariables.get('encoder_max_speed', 0)) if sv else 0
-            # Same reasoning as the load blast: the saved figure is already
-            # the safe one, so it is used as given.
-            blast_spd   = saved_max if saved_max > 0 else owner.feed_speed
-            bowden      = owner._bowden_lengths[path]
-            blast_dist  = bowden * 0.95
-            gcmd.respond_info(
-                "SA: Blast retract %.0fmm at %.0fmm/s "
-                "(95%% of bowden %.0fmm)..."
-                % (blast_dist, blast_spd, bowden))
-            enc.reset_distance()
-            motion.drive_move(-blast_dist, speed=blast_spd)
-
-            # Park precisely at drive gear encoder (servo still engaged)
-            gcmd.respond_info("SA: Positioning filament precisely at drive gear...")
-            parked = self._park_filament_at_encoder(gcmd, path, from_load=False)
-
-            motion.servo_disengage()
-            motion.save_position()
-            if parked:
-                owner.path_states[path] = 'partial'
-                gcmd.respond_info(
-                    "SA: Filament parked at drive gear — path %d. "
-                    "Pull from roll end to remove." % path)
-            else:
-                # `partial` is what the next load trusts as "at the datum" and
-                # blasts from, so it is only written when the park confirmed
-                # the position. Unknown makes the next load park first.
-                owner.path_states[path] = 'unknown'
-                gcmd.respond_info(
-                    "SA: Unload finished but path %d is NOT parked at a known "
-                    "position — see above. The next load will park it first."
-                    % path)
-
-            # Toolhead is empty — force LEDs to UNLOADED (dim white logo,
-            # nozzle off). The profile itself stays: the filament is still at
-            # the entry sensor, and the printer wipes a profile only once the
-            # entry reads empty.
-            owner.gcode.run_script_from_command(
-                "_SA_LED_UNLOADED TOOL=%d" % path)
-
-            if is_printing:
-                gcmd.respond_info("SA: Resuming print...")
-                owner.gcode.run_script_from_command("RESUME")
-            else:
-                owner._cal_state = 'unload_done'
-                owner._cal_data  = {'path': path, 'is_printing': is_printing}
-                self._prompt_unload_park(gcmd, path)
+            self._blast_back_and_park(gcmd, path, is_printing, enc)
             return  # Branch A complete — do not fall through to entry-sensor loop
 
         # ══════════════════════════════════════════════════════════════════════
@@ -2744,6 +2797,25 @@ class SASequences:
         # Branch C: ENTRY ONLY — filament in bowden
         # ══════════════════════════════════════════════════════════════════════
         elif has_entry and not has_extruder and not has_toolhead:
+            # Position lost: find it first. Mike, 2026-10-11: "the unload in
+            # that state could also simply test length to the extruder sensor
+            # then we know the length fully again and can use a normal unload
+            # from there". Feeding forward on the sensor endstop lands the tip
+            # at the one point a normal unload starts its blast from, so the
+            # fast 95% blast and the precise park follow -- instead of a
+            # 10mm-at-a-time crawl down 1.4m waiting for the encoder to go
+            # quiet, which stays as the fallback.
+            endstops = getattr(owner, '_ext_endstops', None) or []
+            if (owner.path_states[path] == 'unknown'
+                    and path < len(endstops) and endstops[path] is not None):
+                if self._find_at_extruder_sensor(gcmd, path):
+                    enc = owner._encoder(path)
+                    enc.set_direction(forward=False)
+                    self._blast_back_and_park(gcmd, path, is_printing, enc)
+                    return
+                gcmd.respond_info(
+                    "SA: Could not find path %d at the extruder sensor — "
+                    "retracting from wherever it is instead." % path)
             gcmd.respond_info(
                 "SA: Filament in bowden only — retracting to entry sensor...")
             motion.servo_engage()
