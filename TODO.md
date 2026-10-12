@@ -195,7 +195,17 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       now failed a reload on two different heads, so it follows the material,
       not T2's extruder; 195C is on the edge -- clean twice on T2, strings on
       T0. Next: 190C (SA_TIP_CYCLE TEMP=, 1dcd44d), watching for strings and
-      for shear, which PETG hit 5C under its best. PLA on T2 running.
+      for shear, which PETG hit 5C under its best.
+      PLA on T2: cycles 1-4 clean (fill 91/92/91/92%, clear 86/86/83/86%),
+      **cycle 5 stopped before the toolhead sensor**: the encoder says the tip
+      went ~41mm past the extruder sensor (the toolhead sensor is 49mm on)
+      and no further, while the sync feed drove its full 200mm and left T2 at
+      205C (both fixed, 2e... see the commit "a stalled push"). So T2 also
+      fails with PLA, in a different place -- the zone between its gears and
+      its toolhead sensor, where T2's ASA wedge tripped that sensor 10mm early.
+      Reading: T2 likely has debris or a fault in that zone (old extruder),
+      AND ASA strings/wedges on its own (T0). T0 and T2 both 'unknown' with
+      filament in the toolhead, awaiting recovery and a look inside T2.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
