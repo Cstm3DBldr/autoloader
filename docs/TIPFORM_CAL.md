@@ -124,6 +124,14 @@ family needs its own.
 
 If the deltas hold, the table can keep deriving and say so honestly. If they
 do not, the table should stop pretending and mark unmeasured rows as unknown.
+
+**Result, 2026-10-10/11: they do not hold.** PETG (T1) formed best at 185C
+against a derived 192; colder sheared. ASA (T2) strung at every temperature
+from 208 down to 195 with the 15mm sever -- colder only made the string
+thinner and longer -- and came clean at 195C (derived 207) once the sever was
+lengthened to 38mm. So a styrenic needed a different *move*, not just a
+different number, which no temperature offset can derive. The ladders are in
+`parameters.cfg` beside each measured row.
 Either answer is worth having; the current state — guesses labelled as though
 they were data — is the one that is not.
 

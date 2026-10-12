@@ -128,6 +128,13 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       no longer breaks at all and is drawn the length of the retract. Colder
       trades a thick short string for a fine long one rather than removing
       it.
+      ASA TEMP=195 SEVER=38 (Mike's proposal: pull fast as far as the
+      toolhead allows, then back down and cool; 5746a07 lets the sever pass
+      the cooling zone, capped 10mm short of the toolhead sensor): cut
+      195.3C, back down 3mm, clear 89%: **1.95 x 1.85, swell 3.5mm, NO
+      STRING.** ASA is now 195C + 38mm sever in the table. Open: whether the
+      long sever helps or hurts PLA and PETG, which never strung at 15mm --
+      if it is neutral there it could be the default and drop a special case.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 

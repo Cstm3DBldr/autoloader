@@ -481,7 +481,7 @@ is preserved in commits `0079f41` → `d48e0f2`.
 | `docs/INSTALL.md` | The user-facing install guide — plain language, for someone who has never seen the project. Includes the prompt flow and what is safe from updates |
 | `docs/RECOVERY.md` | **Design note, nothing built.** How a path with the entry sensor clear but filament still in the head should be recovered: the new roll is the only thing that can push the remnant out, since the extruder can only move what its gears grip. Records the settled decisions — heat to the higher of the two materials, confirm the stashed profile first, never automatic — and the failure modes the encoder cannot see |
 | `docs/RUNOUT_MIDPRINT.md` | **Design note, nothing built.** What should happen when a roll runs out *during* a print: flag the path `low` and keep its profile rather than wiping it empty, spend the tail on a distance budget, pause with a reserve, then **purge until the extruder sensor clears** — which pins the tail at a known point so the reload purge is a constant instead of accumulated tracking error. Records the three things that decide whether it works: `_is_printing()` reads False while paused, so the existing wipe branch would eat the profile mid-pause; the budget reserves an unmodelled entry→gate distance on top of the intended 50mm; and `sensor_to_gear` is the margin that keeps the tail in the gears and is not a parameter |
-| `docs/TIPFORM_CAL.md` | **Design note, nothing built.** The last autoloader calibration still done by hand-editing a config: form a tip, let the operator score it, and save the answer **per product line** rather than per path, because the behaviour belongs to the filament and a spool moves between paths. Records why `variables.cfg` is the only safe home for it (`post_update.sh` overwrites the tracked brand files), the four-link resolution chain it adds, and the experiment behind Mike's "3-4 materials": the shipped table applies PLA's measured forming-temperature offset to every other row, which assumes it transfers across glass transitions. Measuring PLA, PETG and one styrenic tests that. Its shear rows are moot: cold shear was removed on 2026-10-09 |
+| `docs/TIPFORM_CAL.md` | **Design note, nothing built.** The last autoloader calibration still done by hand-editing a config: form a tip, let the operator score it, and save the answer **per product line** rather than per path, because the behaviour belongs to the filament and a spool moves between paths. Records why `variables.cfg` is the only safe home for it (`post_update.sh` overwrites the tracked brand files), the four-link resolution chain it adds, and the experiment behind Mike's "3-4 materials": the shipped table applies PLA's measured forming-temperature offset to every other row, which assumes it transfers across glass transitions. Measuring PLA, PETG and one styrenic tested that, and it does not transfer (2026-10-11). Its shear rows are moot: cold shear was removed on 2026-10-09 |
 | `docs/PRINTER.md` | **Project-neutral, written to be copied into another repo verbatim.** The machine itself rather than this project: access routes, reading the console out of Moonraker's `gcode_store` instead of asking for screenshots, which restart reloads what, the MCU layout, and the four edges of two projects sharing one printer — restarting under someone else's run, per-repo `[update_manager]` blocks, `printer.cfg` being the machine's not a project's, and symlinked-vs-copied deciding whether a change actually arrived. Says up front that it is a map and not a snapshot: re-read the machine before trusting any inventory claim in it |
 | `docs/LEDS.md` | How to turn LEDs on, what to change for your hardware, and the `STATUS_*` collision |
 | `klipper/extras/autoloader.py` | Main controller — config parsing, GCode registration, status object |
@@ -987,11 +987,11 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   and heat to PLA's temperatures for it. The monitor announces that a stash
   exists; the operator confirms.
 - Do not treat the untuned rows in the per-material tip table as calibrated.
-  Only the PLA row is measured. Every other row is that material's typical
-  print temperature offset by PLA's measured delta, which assumes the delta
-  transfers between polymer families — it may not, since the temperature at
-  which a tip parts depends on glass transition. The table is labelled
-  accordingly; keep it so.
+  PLA, PETG and ASA are measured. Every other row is that material's typical
+  print temperature offset by PLA's measured delta -- and the two measured
+  since show the delta does NOT transfer: PETG formed best 7C below its
+  derived value, ASA 12C below and only with a 38mm sever instead of 15
+  (2026-10-10/11). The table is labelled accordingly; keep it so.
 - Do not bring cold shear back on PLA's evidence. It was removed on 2026-10-09
   after it never beat the cooling moves: 2.02 x 1.50 squashed and stringy
   while its branch skipped them, 1.9mm with a string once it ran them, against
