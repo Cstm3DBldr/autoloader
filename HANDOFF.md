@@ -181,10 +181,14 @@ describe nothing themselves. Adding a step is one edit there, and
 
 ---
 
-## Where things stand — 2026-10-09
+## Where things stand — 2026-10-11
 
-`main`, `dev` and `printer-dev` are one tree. **`TODO.md` is the list of what is
-open and what proves each item done**, so this section only records the shape.
+**`printer-dev` is well ahead of `dev` and `main`** — everything from
+2026-10-10 and 2026-10-11 below is on it alone, some verified and some not;
+TODO's "Never verified" says which. It needs transposing to `dev` (CLAUDE.md,
+the cycle) once the unverified parts are seen or split out. **`TODO.md` is the
+list of what is open and what proves each item done**, so this section only
+records the shape.
 
 **Proved on the machine since 2026-09-11:** a full Mainsail pass through all
 twelve guide steps; `SA_RECOVER` (force-feeding a remnant out with the new roll
@@ -216,6 +220,30 @@ it, the T0 tip measured 1.9mm with a string. The same path the same day with
 the cooling moves alone: 1.9mm, no string, and a much shorter 1.9mm section.
 So shear bought a string, a longer swell and a cooldown wait.
 Retired options in a user's config are reported as deprecated, not fatal.
+
+**2026-10-10/11, on `printer-dev`:**
+- *A load proves its fill went in.* The path's encoder measures fill + purge;
+  under 80% the load fails, the heater goes off and SA_FORM_TIP forms nothing.
+  Caught two real wedged loads (PETG on T1, ASA on T2).
+- *Parks cannot lie.* A park that runs out of retract escalates to the long
+  one or says PARK FAILED; seen working three times on hand-pushed T2.
+- *Power-cut recovery.* Four power losses on 2026-10-10 brought every path
+  back as whatever was last saved, because the sequences never saved their
+  result. A load/unload/park now writes 'unknown' while it runs and the real
+  state when it ends; boot turns a 'partial' the sensors contradict into
+  'unknown'; the monitor names SA_UNLOAD instead of auto-parking it; and
+  SA_FORM_TIP on a half-loaded toolhead unloads it and stops for a snip.
+- *The load blast stops on the extruder sensor.* Each extruder sensor pin is
+  shared with an endstop on the drive motor (multi-board homing, as Tap does
+  for Z), so the blast is one 160mm/s move that ends at the sensor and reports
+  its length against bowden_length_N. First load: -7.8mm on T2. It replaces
+  the polled 98% blast that drove T1's filament ~200mm into the gears when a
+  park misreported its position.
+- *One standard tip.* PETG 185C and ASA 195C measured; the PLA-derived offset
+  does not transfer. ASA strung at every temperature until the sever went
+  from 15mm to 38mm (pull past the cooling zone, then back down). Mike chose
+  to make that the standard for every material, with 2 cooling moves, so
+  only temperature varies per material. PLA and PETG are being re-measured.
 
 **Waiting on Mike at the machine:** the twelve-step guide on KlipperScreen,
 re-measuring all six toolheads by one method (that is guide step 12), and
