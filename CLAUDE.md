@@ -12,8 +12,17 @@ This is a NEW original project. It is NOT a port or fork of any existing project
 - A roll runs out → auto-load new filament to that toolhead
 - Manual swap between prints → unload old, load new filament
 
-**NOT an MMU:** Filament never leaves the path during a tool change. No gate
-selector that moves to filament. No color changes mid-print on a single toolhead.
+**NOT an MMU — today:** Filament never leaves the path during a tool change. No
+gate selector that moves to filament. No color changes mid-print on a single
+toolhead.
+
+**Planned later, not built (Mike, 2026-10-12):** more than one channel per
+toolhead — channels joined by a splitter after their encoders, presented to the
+slicer as extra tools (T6, T7...), up to the 4-16 lanes per toolhead Happy Hare
+offers. "We are building a multitool head system then adding in happy hares
+features." The single-channel scope above stands until that is built, and the
+Happy Hare rule below still holds: reference it, never copy it. Design notes are
+in TODO.md under "Requested, not built".
 
 ---
 

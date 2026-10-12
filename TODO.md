@@ -251,6 +251,33 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* a fresh install loads slowly, the last guide page turns
       on full speed, and Settings can turn it back off.
 
+- [ ] **More than one channel per toolhead (MMU-style, later).** Mike,
+      2026-10-12: "not something i need now but people are crazy and i know
+      it will get asked for" -- Happy Hare runs 4-16 lanes into one toolhead.
+      First step he described: 6 toolheads, 7 channels, the 7th tied to a
+      chosen toolhead during calibration.
+      - *Hardware:* a splitter in the PTFE AFTER both channels' encoders, so
+        each channel keeps its own entry sensor, encoder and park; the
+        extruder and toolhead sensors are per toolhead and become shared.
+      - *Gating:* never load a channel while another channel on the same
+        toolhead is past the splitter -- the two would meet in it. A load
+        requires every sibling channel parked; an unload parks behind the
+        splitter, not just at the gate.
+      - *Calibration:* a channel -> toolhead map, set in the guide, and a
+        Bowden length per channel (each one's route to the shared extruder
+        sensor differs). Splitter position per channel, to know "parked
+        behind the splitter".
+      - *Slicer:* virtual tools (T6...) mapped to (toolhead, channel). A
+        virtual tool change on the mounted head is an in-print swap: form a
+        tip, unload to behind the splitter, load the other channel, purge.
+        That is where today's tip work stops being about spool changes and
+        becomes per-colour-change, so its reliability numbers matter.
+      - *State:* per toolhead, which channel is loaded.
+      - *Then:* generalise from 2 to 3-4 channels per toolhead, with the
+        hardware and calibration each needs.
+      CLAUDE.md's "NOT an MMU" now says this is planned. Reference Happy Hare
+      for the ideas; do not copy it.
+
 ## Never verified
 
 - [ ] **Recovery from a stopped load, unload or park (54b88a6).** Four power
