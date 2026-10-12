@@ -435,6 +435,12 @@ class Autoloader:
         self.sequences   = SASequences(self)
         self.calibration = SACalibration(self)
 
+        # ── Extruder sensors as drive endstops ────────────────────────────────
+        self._ext_endstops = [None] * self.num_paths
+        self._setup_sensor_endstops(config)
+        self.printer.register_event_handler(
+            'klippy:mcu_identify', self._attach_sensor_endstops)
+
         # ── Startup ───────────────────────────────────────────────────────────
         self._register_commands()
         self.printer.register_event_handler('klippy:ready', self._on_ready)
@@ -1468,6 +1474,56 @@ class Autoloader:
     # ══════════════════════════════════════════════════════════════════════════
     # Hardware name helpers
     # ══════════════════════════════════════════════════════════════════════════
+
+    def _setup_sensor_endstops(self, config):
+        """Make each path's extruder sensor an endstop the drive can stop on.
+
+        The load's blast is one long move, and a queued move cannot be
+        stopped by polling a sensor: on 2026-10-10 a park that misreported
+        where T1's filament was sent it ~200mm into the extruder gears at
+        160mm/s, and the sensor that would have said so was only read after
+        the move. Klipper's endstops are not an X/Y feature -- any input pin
+        can stop any stepper, from another board too (Tap already stops Z on
+        the main board from each toolhead board) -- so the blast can be a
+        homing move that ends when the filament reaches the sensor.
+
+        The pin already belongs to the filament_switch_sensor, so it is
+        declared shared: both only read it, with the same pull-up. A path
+        whose pin cannot be shared keeps the polled blast.
+        """
+        ppins = self.printer.lookup_object('pins')
+        for i, name in enumerate(self._extruder_sensor_names):
+            if not name:
+                continue
+            try:
+                pin = config.getsection(name).get('switch_pin')
+                # allow_multi_use_pin parses without modifiers.
+                ppins.allow_multi_use_pin(pin.strip().lstrip('^~!').strip())
+                self._ext_endstops[i] = ppins.setup_pin('endstop', pin)
+            except Exception:
+                logging.exception(
+                    "Autoloader: extruder sensor %d cannot be an endstop -- "
+                    "its blast stays polled", i)
+
+    def _attach_sensor_endstops(self):
+        """Give every sensor endstop the drive motor to stop (mcu_identify,
+        before the boards are configured -- as probe.py does)."""
+        try:
+            ms = self.printer.lookup_object(
+                'manual_stepper %s' % self._drv_name())
+        except Exception:
+            logging.exception("Autoloader: no drive stepper for the sensor "
+                              "endstops -- every blast stays polled")
+            self._ext_endstops = [None] * self.num_paths
+            return
+        for es in self._ext_endstops:
+            if es is None:
+                continue
+            for s in ms.get_steppers():
+                es.add_stepper(s)
+        logging.info("Autoloader: extruder sensors as drive endstops on "
+                     "paths %s", [i for i, es in enumerate(self._ext_endstops)
+                                  if es is not None])
 
     def _drv_name(self):
         """Short name for drive stepper (last word of drive_stepper_name)."""

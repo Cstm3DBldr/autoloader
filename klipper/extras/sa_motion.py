@@ -379,6 +379,54 @@ class SAMotion:
             owner.reactor.monotonic() + self.DRIVE_SPEED_HOLD)
         self._arm_timeout(dn)
 
+    def drive_to_sensor(self, path, distance_mm, speed):
+        """Feed up to *distance_mm*, stopping the instant *path*'s extruder
+        sensor reads filament.
+
+        Returns (stopped_on_sensor, fed_mm), or None when the path has no
+        sensor endstop and the caller has to fall back to polling.
+
+        A homing move, not a polled one: the board the sensor is on stops the
+        drive motor itself, so the stop lands within a millimetre or so at
+        full blast speed whatever the move was told. fed_mm is where the
+        motor was when the sensor fired, from Klipper's own trigger position
+        rather than the commanded length.
+        """
+        owner = self.owner
+        endstops = getattr(owner, '_ext_endstops', None) or []
+        es = endstops[path] if path < len(endstops) else None
+        if es is None or not es.get_steppers():
+            return None
+        from . import homing
+        dn = self._owner_drv_name()
+        ms = owner.printer.lookup_object('manual_stepper %s' % dn)
+        self._cancel_timeout(dn)
+        self.note_drive_speed(speed, distance_mm)
+        owner.gcode.run_script_from_command(
+            "MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
+        owner.gcode.run_script_from_command(
+            "MANUAL_STEPPER STEPPER=%s SET_POSITION=0" % dn)
+        # What MANUAL_STEPPER ... STOP_ON_ENDSTOP does, with an endstop it
+        # chooses per path -- a manual_stepper's own endstop_pin can name
+        # only one, and this drive serves six sensors on six boards.
+        ms.homing_accel = ms.accel
+        hmove = homing.HomingMove(
+            owner.printer, [(es, 'extruder_sensor_%d' % path)], ms)
+        try:
+            trig = hmove.homing_move(
+                [self._drv_sign() * distance_mm, 0., 0., 0.], speed,
+                probe_pos=True, triggered=True, check_triggered=False)
+        finally:
+            owner._drive_speed_until = min(
+                owner._drive_speed_until,
+                owner.reactor.monotonic() + self.DRIVE_SPEED_HOLD)
+            self._arm_timeout(dn)
+        fed = abs(trig[0])
+        # A move that ran its whole length did not stop on the sensor, even
+        # if filament reached it on the last millimetre.
+        stopped = fed < distance_mm - 0.5
+        return stopped, fed
+
     # How long the speed reading outlives the move it describes. The feed
     # loops are move, read a sensor, move again -- a gap of about
     # sensor_polling_delay -- and without a hold the tile would flicker to

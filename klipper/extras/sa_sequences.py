@@ -693,7 +693,12 @@ class SASequences:
         return True
 
     def _blast_and_approach(self, gcmd, path):
-        """Blast 98% + sensor-polling approach. Returns False on sensor miss."""
+        """Blast to the extruder sensor. Returns False on sensor miss.
+
+        With a sensor endstop (motion.drive_to_sensor) the blast stops on the
+        sensor and reports its length against the calibrated one. Without
+        one: blast 98% of the calibrated length, then poll the approach.
+        """
         owner = self.owner
         motion = owner.motion
         enc = owner._encoder(path)
@@ -709,20 +714,69 @@ class SASequences:
         target      = owner._bowden_lengths[path]
 
         start_enc = enc.get_distance()
-        remaining = (target * 0.98) - start_enc
-        if remaining > 0:
-            gcmd.respond_info("SA: Blasting %.1fmm at %.0fmm/s..." % (remaining, blast_speed))
-            motion.drive_move(remaining, speed=blast_speed)
+        # Park datum -> extruder sensor, as SA_CALIBRATE_BOWDEN measured it.
+        expected  = target - start_enc
 
-        gcmd.respond_info(
-            "SA: Blast complete (enc=%.1fmm). Approaching extruder sensor..."
-            % enc.get_distance())
-        # The blast is one blind move measured from the park, so a filament
-        # that was further in than its park said reaches the extruder gears
-        # early and the drive slips on it for the rest -- nothing can stop a
-        # queued move. It cannot be prevented here, only noticed: the encoder
-        # stops short while the extruder sensor already reads filament.
-        if remaining > 0 and owner._extruder_sensor_active(path):
+        # Sensor-stopped blast, where the path has one: the move ends when the
+        # filament reaches the extruder sensor, so a park that misreported the
+        # position can no longer drive it into the gears. The calibrated
+        # length becomes the yardstick rather than the distance -- the cap is
+        # where the polled approach below would have given up anyway.
+        res = None
+        if expected > 0 and not owner._extruder_sensor_active(path):
+            cap = target * 1.10 - start_enc
+            try:
+                gcmd.respond_info(
+                    "SA: Blasting at %.0fmm/s until the extruder sensor "
+                    "(calibrated %.1fmm, %.0fmm at most)..."
+                    % (blast_speed, expected, cap))
+                res = motion.drive_to_sensor(path, cap, blast_speed)
+            except owner.printer.command_error as e:
+                # "Communication timeout during homing" is the one to expect:
+                # the sensor and the motor are on different boards. The drive
+                # has stopped; the polled approach finishes from there.
+                gcmd.respond_info(
+                    "SA: WARNING — the sensor-stopped blast failed (%s). "
+                    "Finishing the approach by polling." % e)
+                res = False
+        if res:
+            stopped, fed = res
+            seen = enc.get_distance() - start_enc
+            diff = fed - expected
+            gcmd.respond_info(
+                "SA: Blast %s after %.1fmm — calibrated %.1fmm (%+.1fmm), "
+                "encoder %.1fmm."
+                % ("stopped at the extruder sensor" if stopped
+                   else "ran its full length", fed, expected, diff, seen))
+            margin = max(25.0, expected * 0.03)
+            if stopped and diff < -margin:
+                gcmd.respond_info(
+                    "SA: NOTE — the filament reached the extruder sensor "
+                    "%.0fmm sooner than calibrated, so it was further in than "
+                    "its park said. The stop held it at the sensor; nothing "
+                    "was driven into the gears." % -diff)
+            elif stopped and diff > margin:
+                gcmd.respond_info(
+                    "SA: NOTE — the filament reached the extruder sensor "
+                    "%.0fmm later than calibrated: the drive slipped, or "
+                    "bowden_length_%d is short of the real tube. Recalibrate "
+                    "it (SA_CALIBRATE_BOWDEN TOOL=%d) if this repeats."
+                    % (diff, path, path))
+        elif res is None:
+            remaining = (target * 0.98) - start_enc
+            if remaining > 0:
+                gcmd.respond_info("SA: Blasting %.1fmm at %.0fmm/s..." % (remaining, blast_speed))
+                motion.drive_move(remaining, speed=blast_speed)
+
+            gcmd.respond_info(
+                "SA: Blast complete (enc=%.1fmm). Approaching extruder sensor..."
+                % enc.get_distance())
+        # The polled blast is one blind move measured from the park, so a
+        # filament that was further in than its park said reaches the extruder
+        # gears early and the drive slips on it for the rest -- nothing can
+        # stop a queued move. It cannot be prevented there, only noticed: the
+        # encoder stops short while the extruder sensor already reads filament.
+        if res is None and remaining > 0 and owner._extruder_sensor_active(path):
             seen = enc.get_distance() - start_enc
             if seen < remaining * 0.9:
                 gcmd.respond_info(
@@ -737,6 +791,14 @@ class SASequences:
         overshoot    = target * 0.10
         inched       = 0.0
         triggered    = False
+        if res:
+            # Stopped on the sensor: done, and trusted over the switch's own
+            # reading, which can trail the endstop by a poll. Ran to the cap:
+            # that is already 10% past calibrated, the same allowance the
+            # approach would add, so inching on would only push harder at a
+            # tube or sensor that has a fault.
+            triggered = res[0] or owner._extruder_sensor_active(path)
+            overshoot = 0.0
 
         while not triggered and inched < overshoot:
             if has_sensor and owner._extruder_sensor_active(path):
