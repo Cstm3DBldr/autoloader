@@ -1596,30 +1596,25 @@ class SASequences:
         saved_max = float(sv.allVariables.get('encoder_max_speed', 0)) if sv else 0
         speed = saved_max if saved_max > 0 else 75.0
 
-        # ---- to the start: `back` mm behind the extruder sensor ----------
+        # ---- the start ----------------------------------------------------
+        # Only a tip already AT the extruder needs moving first. One that is
+        # anywhere behind it -- parked at the gate, or anywhere in the tube --
+        # is fed straight in by cycle 1: the sensor stops the drive wherever
+        # it started. This used to feed to the sensor, back off `back` mm and
+        # then feed in again, so every test hit the sensor twice before its
+        # first load (Mike, 2026-10-12: "is that still needed with our
+        # endstop fast load method now?" -- it was not).
         if owner._extruder_sensor_active(path):
             gcmd.respond_info("%s: tip is at the extruder — pulling it back "
                               "%.0fmm past the sensor to start." % (tag, back))
             if self._retract_past_extruder_sensor(gcmd, path, back) is None:
                 return
+            first_cap = back + 60.0
         else:
-            gcmd.respond_info(
-                "%s: feeding the tip to the extruder sensor (stops on it), "
-                "then back %.0fmm to start. No heat yet." % (tag, back))
-            motion.servo_engage()
-            cap = owner._bowden_lengths[path] * 1.10
-            stopped, fed = motion.drive_to_sensor(path, cap, speed)
-            if not stopped:
-                gcmd.respond_info(
-                    "%s: the extruder sensor never triggered in %.0fmm — "
-                    "stopping." % (tag, fed))
-                motion.servo_disengage()
-                return
-            motion.drive_move(-back, speed=owner.feed_speed)
+            first_cap = owner._bowden_lengths[path] * 1.10
         owner.path_states[path] = 'unknown'
-        gcmd.respond_info(
-            "%s: start position — the tip is %.0fmm behind the extruder "
-            "sensor. %d cycles." % (tag, back, count))
+        gcmd.respond_info("%s: %d cycles; each pulls back %.0fmm past the "
+                          "extruder sensor." % (tag, count, back))
 
         for k in range(1, count + 1):
             label = "%s %d/%d" % (tag, k, count)
@@ -1628,18 +1623,20 @@ class SASequences:
             enc = owner._encoder(path)
             enc.set_direction(forward=True)
             enc.reset_distance()
-            stopped, fed = motion.drive_to_sensor(path, back + 60.0, speed)
+            cap = first_cap if k == 1 else back + 60.0
+            stopped, fed = motion.drive_to_sensor(path, cap, speed)
             if not stopped:
                 gcmd.respond_info(
                     "%s: FAILED — the tip did not reach the extruder sensor "
                     "within %.0fmm (encoder %.1fmm). Stopping with it there."
-                    % (label, back + 60.0, enc.get_distance()))
+                    % (label, cap, enc.get_distance()))
                 motion.servo_disengage()
                 return
             gcmd.respond_info(
                 "%s: in — at the extruder sensor after %.1fmm (encoder "
-                "%.1fmm; expected ~%.0f)." % (label, fed, enc.get_distance(),
-                                             back))
+                "%.1fmm; %s)." % (label, fed, enc.get_distance(),
+                                  "from where it started" if k == 1
+                                  else "expected ~%.0f" % back))
             # load -- sync feed, fill + purge with the fill check
             if not self._load_into_nozzle(gcmd, path, is_printing):
                 gcmd.respond_info(
