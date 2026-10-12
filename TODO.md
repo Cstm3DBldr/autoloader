@@ -283,6 +283,27 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* a fresh install loads slowly, the last guide page turns
       on full speed, and Settings can turn it back off.
 
+- [ ] **Recover a failed load automatically, and retry once.** Mike,
+      2026-10-12, after T0 and T2 both failed their 5th reload: "shouldn't we
+      build in an auto recover when we sense an error so we don't fail a print
+      and or make sure testing finishes (forward thinking for mmu use)".
+      The recovery is proven: the unload brought a wedged load back to the
+      gate every time it was asked (T2 on 10-11 and twice on 10-12, T0 once).
+      Proposed, awaiting Mike's call on the retry count and what follows:
+      - a load that fails the fill check or stalls short of the toolhead
+        sensor unloads itself to the gate, waits, and tries once more;
+      - a second failure stops and asks (a pause, under a print) instead of
+        retrying into a grind;
+      - `SA_TIP_CYCLE` recovers and CONTINUES, counting failures, so a test
+        always finishes with a rate ("5 cycles, 1 recovered").
+      This is the mechanism an in-print colour swap (multi-channel heads)
+      will need, which is why it is worth building before that.
+      *Also open -- why the 4th/5th cycle:* all three 2026-10-12 failures
+      came 4-5 cycles into back-to-back heating (T2 ASA 4th, T0 ASA 5th, T2
+      PLA 5th), never earlier, though T0 PLA and T1 PETG did pass 5 the night
+      before. Leading theory: heat soak into the cold side. Test: the same
+      cycles with `HOLD=120`.
+
 - [ ] **Toolhead LEDs: dark colours breathe to black, and half the heads
       sometimes do nothing.** Mike, 2026-10-12. Two separate things:
       1. *Dark colours go fully dark.* Why, in the code: the pulse is the
