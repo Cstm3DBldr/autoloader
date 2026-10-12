@@ -155,7 +155,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       (271050c -- the park would have pulled 800mm, said PARK FAILED and
       refused), blasted until the sensor stopped it after 100.6mm, filled 91%;
       then `SA_RESPOND VALUE=unload:0` formed a tip (clear 95%), retracted
-      the Bowden and parked 5.0mm before the encoder. T1 and T2 still to run.
+      the Bowden and parked 5.0mm before the encoder.
+      T1 PETG, 5 cycles: in 110-111mm, fill 94/94/95/94/94%, clear
+      91/91/88/91/91%, sensor clear after 30mm each time; Mike: "tips looked
+      good". The standard SA_UNLOAD from there then called a false jam
+      ("encoder stopped after 1371.3mm") -- the loop only knew "past the
+      encoder" beyond a full Bowden. Fixed (a0c3ebe): re-run, it said "Tip is
+      past the encoder after 1390mm" and parked, but crawled 10mm at a time for
+      114s. Mike: far too slow. a80d5c5 makes an unload from 'unknown' find the
+      extruder sensor first (fast, sensor-stopped) and then unload normally;
+      the crawl is only the fallback. **a80d5c5 is loaded but NOT yet run** --
+      the test was stopped by emergency stop during its G28 when Mike had to
+      leave (2026-10-11 23:35). T1 is 'unknown' from that (its filament did
+      not move: still parked). T2 cycles not run.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
