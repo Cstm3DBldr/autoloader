@@ -731,14 +731,27 @@ class SASequences:
                     "(calibrated %.1fmm, %.0fmm at most)..."
                     % (blast_speed, expected, cap))
                 res = motion.drive_to_sensor(path, cap, blast_speed)
-            except owner.printer.command_error as e:
+            except Exception as e:
                 # "Communication timeout during homing" is the one to expect:
                 # the sensor and the motor are on different boards. The drive
                 # has stopped; the polled approach finishes from there.
+                #
+                # Anything, not only command_error: an exception escaping a
+                # gcode handler shuts Klipper down, and on 2026-10-11 a bug in
+                # this new path did exactly that. The polled approach is the
+                # old, proven one, so falling back costs nothing. A real
+                # shutdown still goes up.
+                if owner.printer.is_shutdown():
+                    raise
+                logging.exception(
+                    "Autoloader: sensor-stopped blast failed on path %d", path)
                 gcmd.respond_info(
                     "SA: WARNING — the sensor-stopped blast failed (%s). "
-                    "Finishing the approach by polling." % e)
-                res = False
+                    "Finishing with the polled blast." % e)
+                # None, not False: the move may have failed before it started,
+                # so the polled blast below runs from wherever the filament
+                # actually is -- measured, not assumed.
+                res = None
         if res:
             stopped, fed = res
             seen = enc.get_distance() - start_enc
@@ -762,8 +775,14 @@ class SASequences:
                     "bowden_length_%d is short of the real tube. Recalibrate "
                     "it (SA_CALIBRATE_BOWDEN TOOL=%d) if this repeats."
                     % (diff, path, path))
-        elif res is None:
-            remaining = (target * 0.98) - start_enc
+        else:
+            # From where the encoder says the filament is now, which after a
+            # failed sensor-stopped blast is not where the park left it. Never
+            # with the sensor already reading: the filament is there.
+            blast_from = enc.get_distance()
+            remaining = (target * 0.98) - blast_from
+            if owner._extruder_sensor_active(path):
+                remaining = 0.0
             if remaining > 0:
                 gcmd.respond_info("SA: Blasting %.1fmm at %.0fmm/s..." % (remaining, blast_speed))
                 motion.drive_move(remaining, speed=blast_speed)
@@ -776,8 +795,8 @@ class SASequences:
         # gears early and the drive slips on it for the rest -- nothing can
         # stop a queued move. It cannot be prevented there, only noticed: the
         # encoder stops short while the extruder sensor already reads filament.
-        if res is None and remaining > 0 and owner._extruder_sensor_active(path):
-            seen = enc.get_distance() - start_enc
+        if not res and remaining > 0 and owner._extruder_sensor_active(path):
+            seen = enc.get_distance() - blast_from
             if seen < remaining * 0.9:
                 gcmd.respond_info(
                     "SA: WARNING — the filament reached the extruder ~%.0fmm "

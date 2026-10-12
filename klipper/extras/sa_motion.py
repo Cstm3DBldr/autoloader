@@ -397,7 +397,13 @@ class SAMotion:
         es = endstops[path] if path < len(endstops) else None
         if es is None or not es.get_steppers():
             return None
-        from . import homing
+        # Klipper's own homing module, as Klipper loaded it. Not `from .
+        # import homing`: autoloader.py puts this directory on sys.path and
+        # imports these files as top-level modules, so they have no package
+        # and a relative import raises -- which on 2026-10-11 shut Klipper
+        # down at the first sensor-stopped blast, before anything moved.
+        homing = sys.modules[
+            type(owner.printer.lookup_object('homing')).__module__]
         dn = self._owner_drv_name()
         ms = owner.printer.lookup_object('manual_stepper %s' % dn)
         self._cancel_timeout(dn)
