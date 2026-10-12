@@ -1438,29 +1438,8 @@ class SASequences:
         # ══════════════════════════════════════════════════════════════════════
         # Common: cooling pad → heat → fill nozzle → purge → restore
         # ══════════════════════════════════════════════════════════════════════
-        # Heat (cooling pad already set by _park for no-print loads)
-        self._heat_for_load(gcmd, path)
-        # Move to purge position (no-print: cooling pad → X175 Y0)
-        self._move_to_purge_position(gcmd, is_printing)
-
-        # Re-engage servo if Branch B disengaged it; Branch C is already engaged
-        if not owner._servo_is_engaged:
-            motion.servo_engage()
-
-        # Sync drive + extruder together until toolhead sensor confirms grip.
-        # Handles dead zone (extruder sensor → extruder gears, ~20mm) and beyond.
-        # Disengages servo on return.
-        if not self._sync_feed_to_toolhead_sensor(gcmd, path):
+        if not self._load_into_nozzle(gcmd, path, is_printing):
             return
-
-        # Ensure servo is disengaged before extruder-only fill+purge
-        motion.servo_disengage()
-
-        # Fill nozzle (extruder gears → nozzle tip) then initial purge
-        if not self._fill_and_purge(gcmd, path):
-            return
-
-        owner.path_states[path] = 'loaded'
 
         # Refresh this toolhead's status LEDs now that it's loaded —
         # _SA_LED_FROM_STATE picks ACTIVE/PARKED/UNLOADED based on
@@ -1481,6 +1460,216 @@ class SASequences:
         owner._cal_state = 'load_purge'
         owner._cal_data  = {'path': path, 'is_printing': is_printing}
         self._prompt_purge(gcmd, path)
+
+    def _load_into_nozzle(self, gcmd, path, is_printing):
+        """Filament at the extruder sensor -> a filled, purged nozzle.
+
+        The load's last stage, shared with SA_TIP_CYCLE. True and 'loaded'
+        when the fill went in; False, with the reason already said, when not.
+        """
+        owner  = self.owner
+        motion = owner.motion
+        # Heat (cooling pad already set by _park for no-print loads)
+        self._heat_for_load(gcmd, path)
+        # Move to purge position (no-print: cooling pad → X175 Y0)
+        self._move_to_purge_position(gcmd, is_printing)
+
+        # Re-engage servo if Branch B disengaged it; Branch C is already engaged
+        if not owner._servo_is_engaged:
+            motion.servo_engage()
+
+        # Sync drive + extruder together until toolhead sensor confirms grip.
+        # Handles dead zone (extruder sensor → extruder gears, ~20mm) and beyond.
+        # Disengages servo on return.
+        if not self._sync_feed_to_toolhead_sensor(gcmd, path):
+            return False
+
+        # Ensure servo is disengaged before extruder-only fill+purge
+        motion.servo_disengage()
+
+        # Fill nozzle (extruder gears → nozzle tip) then initial purge
+        if not self._fill_and_purge(gcmd, path):
+            return False
+
+        owner.path_states[path] = 'loaded'
+        return True
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Tip cycle test -- a formed tip, reloaded and re-formed, short travel
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def tip_cycle(self, gcmd, path, count, back, hold):
+        """SA_TIP_CYCLE: does a formed tip load and unload well, repeatedly?
+
+        Every real reload sends an UNSNIPPED formed tip back through the
+        extruder and into the melt, and on 2026-10-10 one such tip wedged a
+        PETG reload. Mike, 2026-10-11, asked for the test without the 1.4m
+        Bowden each way: park the tip `back` mm behind the extruder sensor,
+        where it can be seen in the tube, then load, form and pull back to
+        there, `count` times, holding `hold` seconds after each pull.
+        """
+        return self._run_op(gcmd, path,
+                            lambda g, p: self._tip_cycle_inner(
+                                g, p, count, back, hold))
+
+    def _tip_cycle_inner(self, gcmd, path, count, back, hold):
+        owner  = self.owner
+        motion = owner.motion
+        tag = "SA_TIP_CYCLE T%d" % path
+
+        if owner._toolhead_sensor_active(path):
+            gcmd.respond_info(
+                "%s: the toolhead already has filament in it. Unload first "
+                "(SA_UNLOAD TOOL=%d) -- this test starts from a formed tip "
+                "outside the extruder." % (tag, path))
+            return
+        if not owner._entry_sensor_active(path):
+            gcmd.respond_info("%s: no filament on this path." % tag)
+            return
+        endstops = getattr(owner, '_ext_endstops', None) or []
+        if path >= len(endstops) or endstops[path] is None:
+            gcmd.respond_info(
+                "%s: this path's extruder sensor is not an endstop, and the "
+                "test only feeds to the sensor that way -- a blind feed is "
+                "what this is meant to avoid." % tag)
+            return
+
+        if not self._is_homed():
+            gcmd.respond_info("SA: Printer not homed — running G28...")
+            owner.gcode.run_script_from_command("G28")
+            owner.gcode.run_script_from_command("M400")
+        is_printing = self._is_printing()
+        self._park(gcmd, is_printing)
+        self._switch_tool(gcmd, path)
+        self._ensure_selector(gcmd, path)
+        extruder_name = owner._extruder_names[path]
+
+        sv = owner.printer.lookup_object('save_variables', None)
+        saved_max = float(sv.allVariables.get('encoder_max_speed', 0)) if sv else 0
+        speed = saved_max if saved_max > 0 else 75.0
+
+        # ---- to the start: `back` mm behind the extruder sensor ----------
+        if owner._extruder_sensor_active(path):
+            gcmd.respond_info("%s: tip is at the extruder — pulling it back "
+                              "%.0fmm past the sensor to start." % (tag, back))
+            if self._retract_past_extruder_sensor(gcmd, path, back) is None:
+                return
+        else:
+            gcmd.respond_info(
+                "%s: feeding the tip to the extruder sensor (stops on it), "
+                "then back %.0fmm to start. No heat yet." % (tag, back))
+            motion.servo_engage()
+            cap = owner._bowden_lengths[path] * 1.10
+            stopped, fed = motion.drive_to_sensor(path, cap, speed)
+            if not stopped:
+                gcmd.respond_info(
+                    "%s: the extruder sensor never triggered in %.0fmm — "
+                    "stopping." % (tag, fed))
+                motion.servo_disengage()
+                return
+            motion.drive_move(-back, speed=owner.feed_speed)
+        owner.path_states[path] = 'unknown'
+        gcmd.respond_info(
+            "%s: start position — the tip is %.0fmm behind the extruder "
+            "sensor. %d cycles." % (tag, back, count))
+
+        for k in range(1, count + 1):
+            label = "%s %d/%d" % (tag, k, count)
+            # in -- the sensor stops the drive
+            motion.servo_engage()
+            enc = owner._encoder(path)
+            enc.set_direction(forward=True)
+            enc.reset_distance()
+            stopped, fed = motion.drive_to_sensor(path, back + 60.0, speed)
+            if not stopped:
+                gcmd.respond_info(
+                    "%s: FAILED — the tip did not reach the extruder sensor "
+                    "within %.0fmm (encoder %.1fmm). Stopping with it there."
+                    % (label, back + 60.0, enc.get_distance()))
+                motion.servo_disengage()
+                return
+            gcmd.respond_info(
+                "%s: in — at the extruder sensor after %.1fmm (encoder "
+                "%.1fmm; expected ~%.0f)." % (label, fed, enc.get_distance(),
+                                             back))
+            # load -- sync feed, fill + purge with the fill check
+            if not self._load_into_nozzle(gcmd, path, is_printing):
+                gcmd.respond_info(
+                    "%s: FAILED on the load — see above. Stopping." % label)
+                return
+            # form, with the standard
+            self.form_tip(gcmd, path, is_printing)
+            owner.gcode.run_script_from_command(
+                "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0" % extruder_name)
+            # out -- past the sensor and back to the start
+            pulled = self._retract_past_extruder_sensor(gcmd, path, back)
+            if pulled is None:
+                gcmd.respond_info(
+                    "%s: FAILED on the pull-back — see above. Stopping." % label)
+                return
+            owner.path_states[path] = 'unknown'
+            gcmd.respond_info(
+                "%s: out — the tip is %.0fmm behind the extruder sensor. "
+                "Holding %.0fs." % (label, back, hold))
+            owner.reactor.pause(owner.reactor.monotonic() + hold)
+
+        motion.servo_disengage()
+        gcmd.respond_info(
+            "%s: all %d cycles done. The tip is %.0fmm behind the extruder "
+            "sensor; SA_UNLOAD TOOL=%d takes it back to the gate."
+            % (tag, count, back, path))
+
+    def _retract_past_extruder_sensor(self, gcmd, path, back):
+        """Pull a formed tip out of the extruder until its sensor clears,
+        then `back` mm further with the drive alone.
+
+        Returns the encoder distance, or None when the sensor never cleared.
+        The tip is in the gears when this starts, and they grip it, so the
+        extruder runs with the drive until its sensor clears -- the same
+        reasoning as the load's Branch B retract. No heat: the tip is formed
+        and out of the melt, which is what _allow_cold_extrude is for.
+        """
+        owner  = self.owner
+        motion = owner.motion
+        enc = owner._encoder(path)
+        enc.set_direction(forward=False)
+        enc.reset_distance()
+        motion.servo_engage()
+        dn    = owner._drv_name()
+        step  = owner.feed_step_size
+        limit = 120.0
+        pulled = 0.0
+        cold = self._allow_cold_extrude(path)
+        try:
+            owner.gcode.run_script_from_command("M83")
+            motion._cancel_timeout(dn)
+            owner.gcode.run_script_from_command(
+                "MANUAL_STEPPER STEPPER=%s ENABLE=1" % dn)
+            while owner._extruder_sensor_active(path) and pulled < limit:
+                motion.note_drive_speed(owner.feed_speed, step)
+                owner.gcode.run_script_from_command(
+                    "MANUAL_STEPPER STEPPER=%s SET_POSITION=0 MOVE=%.3f "
+                    "SPEED=%.1f SYNC=0"
+                    % (dn, motion._drv_sign() * -step, owner.feed_speed))
+                owner.gcode.run_script_from_command(
+                    "G1 E-%.2f F%d" % (step, int(owner.feed_speed * 60.0)))
+                owner.gcode.run_script_from_command("M400")
+                pulled += step
+                owner.reactor.pause(owner.reactor.monotonic() + owner.sensor_delay)
+        finally:
+            self._restore_extrude_floor(cold)
+            motion._arm_timeout(dn)
+        if owner._extruder_sensor_active(path):
+            gcmd.respond_info(
+                "SA: ERROR — extruder sensor path %d still reads filament after "
+                "%.0fmm of pull (encoder %.1fmm). The tip may be caught in the "
+                "gears." % (path, pulled, enc.get_distance()))
+            return None
+        gcmd.respond_info(
+            "SA: Extruder sensor cleared after %.0fmm (encoder %.1fmm); back "
+            "%.0fmm more." % (pulled, enc.get_distance(), back))
+        motion.drive_move(-back, speed=owner.feed_speed)
+        return enc.get_distance()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Unload sequence

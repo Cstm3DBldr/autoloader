@@ -1760,6 +1760,10 @@ class Autoloader:
              "Run only the tip-forming sequence, for tuning. TOOL=N "
              "[MATERIAL=] [PUSH=] [PURGE=] [PURGE_TEMP=] [SEVER=] [COOL_POS=] [COOL_LEN=] "
              "[COOL_MOVES=] [COOL_IN=] [COOL_OUT=] [TEMP=] [EASE=]"),
+            ('SA_TIP_CYCLE',
+             self._cmd_tip_cycle,
+             "Reload and re-form one tip repeatedly over a short travel: "
+             "TOOL=N [COUNT=5] [BACK=100] [HOLD=20]"),
         ]
         for name, fn, desc in cmds:
             self.gcode.register_command(name, fn, desc=desc)
@@ -2306,6 +2310,16 @@ class Autoloader:
         gcmd.respond_info(
             "SA_SET_CONFIG: staged autoloader.%s = %s  "
             "(run SAVE_CONFIG to persist and restart)" % (param, value))
+
+    def _cmd_tip_cycle(self, gcmd):
+        """SA_TIP_CYCLE TOOL=N [COUNT=5] [BACK=100] [HOLD=20] -- see
+        SASequences.tip_cycle. Uses the configured tip values, no overrides:
+        the point is to test the standard as shipped."""
+        path  = gcmd.get_int('TOOL', minval=0, maxval=self.num_paths - 1)
+        count = gcmd.get_int('COUNT', 5, minval=1, maxval=20)
+        back  = gcmd.get_float('BACK', 100.0, minval=20.0, maxval=300.0)
+        hold  = gcmd.get_float('HOLD', 20.0, minval=0.0, maxval=300.0)
+        self.sequences.tip_cycle(gcmd, path, count, back, hold)
 
     def _cmd_form_tip(self, gcmd):
         """SA_FORM_TIP TOOL=N [overrides] — tip forming on its own, for tuning.
