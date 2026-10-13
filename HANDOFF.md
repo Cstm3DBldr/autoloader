@@ -112,20 +112,12 @@ reloads -- ASA wedged it twice (once from a clean snipped end), and PLA stalled
 in it short of the toolhead sensor -- so look for debris in T2's path between
 its gears and its toolhead sensor before suspecting the software.
 
-**"Timer too close" shutdowns -- two kinds, neither the autoloader's code now.**
-Klipper keeps ~10 logs; the ones on the printer at 2026-10-13 hold three:
-- *Autoloader board, under a burst of host work:* 2026-10-09 at startup (six
-  separate variables.cfg rewrites while KlipperScreen restarted); CLAUDE.md
-  records 2026-09-06 and 2026-09-11 (back-to-back park homings) whose logs are
-  gone. Fixed by batching the startup writes and settling the park queue; not
-  seen since.
-- *The active toolhead's board, during G28:* 2025-10-20 (et1, Z probing, the
-  Happy Hare era -- before this project) and 2026-10-12 (et0). Same shape a
-  year apart, so not caused by the extruder-sensor endstops added 2026-10-11.
-  Multi-board homing over CAN, as Tap does; rare.
-No event showed CAN errors (rx/tx errors and retries all 0) or host load
-(sysload 0.11-0.65), so Klipper's "host overloaded" hint fits none of them.
-FIRMWARE_RESTART recovers.
+**"Timer too close" shutdowns are logged in `docs/TIMER_TOO_CLOSE.md`** --
+every event, the machine baseline, what each turned out to be, and the open
+threads. Two kinds so far: the autoloader board under a burst of host work
+(fixed in code), and the active toolhead's board during G28 (rare, predates
+this project). Klipper rotates its logs away within days, so record a new one
+promptly with `scripts/timer_too_close_report.sh`.
 
 ## Topology
 
