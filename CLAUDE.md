@@ -67,7 +67,7 @@ knows what manual hooks to reapply.
   commented `detection_pin` read `et4:PB6`, T4's pin. Corrected to `et5:PB6`
   (2026-09-03). Still commented, so no functional change — but if tool
   detection is ever enabled, the uncorrected line would have pointed T5 at
-  T4's board. Pre-edit file preserved as `T5.cfg.bak.<epoch>`.
+  T4's board. Pre-edit file preserved as `T5.cfg.2026-09-03-215151.bkp`.
 
   Note the pins cannot simply be uncommented: `detection_pin` and
   `[tool_probe TN] pin:` are both `etN:PB6`, and Tap already owns it, so
@@ -86,7 +86,7 @@ knows what manual hooks to reapply.
   The macro is defined in the LED config, which is **opt-in** — only add
   this hook on a printer that enabled LEDs, or every toolchange errors on
   an unknown command. The pre-edit file
-  is preserved on the printer as `toolchanger.cfg.bak.<epoch>`.
+  is preserved on the printer as `toolchanger.cfg.2026-05-05-215614.bkp`.
 
 ## Branching and what counts as a fix
 
@@ -1011,6 +1011,12 @@ If code resembles Happy Hare too closely, simplify it for single-path-per-tool a
   moves alone gave 1.9mm with NO string, and the 1.9mm section itself much
   shorter. The code is in 066fd08 if a material with a very different glass
   transition ever needs it.
+- Do not name a backup `<file>.bak.<epoch>`. Mainsail's "Hide backup files"
+  hides only Klipper's `printer-YYYYMMDD_HHMMSS.cfg`, crowsnest's dated name and
+  anything ending `.bkp`, so that name sits in every user's config list -- 29
+  did on this printer by 2026-10-13. Use `<file>.<YYYY-MM-DD-HHMMSS>.bkp`, or
+  Klipper's own name for a printer.cfg backup. meteyou's position is that
+  add-ons conform rather than Mainsail adding filters, and he is right.
 - Do not run `scripts/klipper_service_restart.sh` from a dev machine without
   `SA_HOST` set. It posts to `localhost:7125`, which is the printer only when
   the script runs there.
