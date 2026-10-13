@@ -236,8 +236,17 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       none failed: fills 96 / 95 / 96 / 95 / **86%**, clears 95 / 98 / 98 /
       98 / 95%. 20mm is not enough -- probably short of the heat. Cycle 5's
       fill fell to 86% after four at 95-96, the fifth cycle again: more
-      weight on heat soak. Next: DIP=28 DIP_PAUSE=0.5 (7mm above the
-      nozzle for half a second), watching for a re-melted, swollen tip.
+      weight on heat soak.
+      **Dip test 2, same day, T0 snipped: TEMP=190 DIP=28 DIP_PAUSE=0.5**
+      (7mm above the nozzle for half a second): strings on 1 and 3, NONE on
+      2, 4 and 5 (Mike). Fills 95 / 95 / 94 / 94 / 97% (cycle 5 back up),
+      clears 98 / 98 / 101 / 98 / 95% -- no sign of a re-melted tip. So far:
+      no dip 0/5 clean, DIP=20 1/5, DIP=28 + 0.5s 3/5. Better, not cured.
+      Both dip runs alternated string / none at first, which suggests each
+      cycle inherits something from the one before. Next: the exit speed --
+      the clear move leaves the melt at 8mm/s, slow enough to draw a string;
+      `EASE=` now sets only that exit and the 3mm back-down, so
+      `SA_TIP_CYCLE TOOL=0 TEMP=190 EASE=50` tests it with no code change.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
