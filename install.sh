@@ -385,7 +385,8 @@ else
 
     case "${SA_CHOICE}" in
         o|O)
-            SA_BAK="${USER_CFG}.bak.$(date +%s)"
+            # .bkp: the suffix Mainsail's "Hide backup files" hides.
+            SA_BAK="${USER_CFG}.$(date +%Y-%m-%d-%H%M%S).bkp"
             cp -a "${USER_CFG}" "${SA_BAK}"
             sa_write_user_cfg "${USER_CFG}"
             echo "[INSTALL] Overwrote it. Your previous file: ${SA_BAK}"
@@ -484,7 +485,10 @@ if grep -q '^CONFIG_WRITE_PRINTER_CFG_INCLUDE=y' "${SA_ANSWERS}" 2>/dev/null; th
     elif grep -qE '^\s*\[include autoloader/autoloader\.cfg\]' "${SA_PCFG}"; then
         echo "[INSTALL] printer.cfg already includes the autoloader."
     else
-        cp -a "${SA_PCFG}" "${SA_PCFG}.bak.$(date +%s)"
+        # Klipper's own backup name for printer.cfg (what SAVE_CONFIG writes),
+        # so Mainsail's "Hide backup files" treats it like Klipper's.
+        SA_PBAK="${CONFIG_DIR}/printer-$(date +%Y%m%d_%H%M%S).cfg"
+        cp -a "${SA_PCFG}" "${SA_PBAK}"
         # Insert ABOVE the SAVE_CONFIG block. Klipper appends its saved state as
         # "#*#" lines at the very end and rewrites that region wholesale, so an
         # include appended after it would be destroyed on the next SAVE_CONFIG.
@@ -498,7 +502,7 @@ if grep -q '^CONFIG_WRITE_PRINTER_CFG_INCLUDE=y' "${SA_ANSWERS}" 2>/dev/null; th
 ' >> "${SA_PCFG}"
         fi
         echo "[INSTALL] Added [include autoloader/autoloader.cfg] to printer.cfg"
-        echo "          (previous kept as printer.cfg.bak.*)"
+        echo "          (previous kept as $(basename "${SA_PBAK}"))"
     fi
 fi
 

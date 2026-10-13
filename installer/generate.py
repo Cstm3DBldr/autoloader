@@ -493,7 +493,15 @@ def main():
             continue
 
         if current is not None:
-            bak = "%s.bak.%d" % (dest, int(time.time()))
+            # Moonraker's backup style, ending in .bkp: Mainsail's "Hide
+            # backup files" hides exactly that suffix (plus Klipper's and
+            # crowsnest's own names), and nothing else. The old name,
+            # <file>.bak.<epoch>, was never hidden -- 22 of them stood in this
+            # printer's config list by 2026-10-13, one per regenerating
+            # update. meteyou's position (Mainsail Discord, 2026-10-10) is that
+            # add-ons should use the ecosystem's names rather than Mainsail
+            # growing a filter per add-on.
+            bak = "%s.%s.bkp" % (dest, time.strftime("%Y-%m-%d-%H%M%S"))
             os.replace(dest, bak)
             print("  wrote %s  (previous kept as %s)"
                   % (dest, os.path.basename(bak)))

@@ -42,7 +42,12 @@ def config_text(config_dir):
     """
     out = []
     for path in glob.glob(os.path.join(config_dir, "**", "*.cfg"), recursive=True):
-        if ".bak" in path or os.sep + "autoloader" + os.sep in path:
+        # Backups, in every naming this ecosystem uses: ours old (.bak.<epoch>)
+        # and new (.bkp), and Klipper's own printer-YYYYMMDD_HHMMSS.cfg.
+        base = os.path.basename(path)
+        if (".bak" in path or path.endswith(".bkp")
+                or re.match(r"^printer-\d{8}_\d{6}\.cfg$", base)
+                or os.sep + "autoloader" + os.sep in path):
             continue
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:

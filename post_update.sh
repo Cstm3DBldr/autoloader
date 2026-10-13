@@ -166,4 +166,35 @@ else
     echo "[POST-UPDATE]   (KlipperScreen not installed — skipping panel sync)"
 fi
 
+# Backups this project made under its old name, <file>.bak.<epoch>, renamed
+# once to the names Mainsail's "Hide backup files" actually hides: .bkp for
+# ours, Klipper's printer-YYYYMMDD_HHMMSS.cfg for printer.cfg. Only what our
+# own code wrote -- everything in autoloader/, and the printer.cfg backup the
+# installer took -- so another tool's files are never touched. The timestamp
+# is kept, converted from the epoch. Idempotent: renamed files no longer
+# match, and a name that is already taken is left alone.
+sa_rename_backup() {
+    local f="$1" epoch stamp dir base new
+    epoch="${f##*.bak.}"
+    dir="$(dirname "$f")"; base="$(basename "$f" ".bak.${epoch}")"
+    if [ "$base" = "printer.cfg" ]; then
+        stamp="$(date -d "@${epoch}" +%Y%m%d_%H%M%S 2>/dev/null)" || return 0
+        new="${dir}/printer-${stamp}.cfg"
+    else
+        stamp="$(date -d "@${epoch}" +%Y-%m-%d-%H%M%S 2>/dev/null)" || return 0
+        new="${dir}/${base}.${stamp}.bkp"
+    fi
+    [ -e "$new" ] && return 0
+    mv -n "$f" "$new" && SA_RENAMED=$((SA_RENAMED + 1))
+}
+SA_RENAMED=0
+for f in "${CONFIG}"/autoloader/*.bak.[0-9]*[0-9] "${CONFIG}"/printer.cfg.bak.[0-9]*[0-9]; do
+    [ -f "$f" ] || continue
+    case "${f##*.bak.}" in *[!0-9]*|'') continue ;; esac
+    sa_rename_backup "$f"
+done
+if [ "$SA_RENAMED" -gt 0 ]; then
+    echo "[POST-UPDATE] Renamed ${SA_RENAMED} old backup(s) so Mainsail's \"Hide backup files\" hides them."
+fi
+
 echo "[POST-UPDATE] Sync complete."

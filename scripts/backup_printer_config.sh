@@ -87,7 +87,7 @@ echo "Pulling configuration from the printer..."
 # Everything under printer_data/config except gcodes, logs and the database.
 ssh "$PRINTER" 'cd ~/printer_data && tar czf - \
         --exclude="config/.moonraker.conf.bkp" \
-        --exclude="*.bak.*" \
+        --exclude="*.bak.*"         --exclude="*.bkp" \
         config' > "$STAGING/config.tar.gz" 2>/dev/null \
     || { echo "ERROR: Failed to read ~/printer_data/config from the printer."; exit 1; }
 
