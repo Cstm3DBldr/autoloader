@@ -1763,6 +1763,11 @@ class SASequences:
             # out -- past the sensor and back to the start
             pulled = self._retract_past_extruder_sensor(gcmd, path, back)
             if pulled is None:
+                # Formed and partly pulled, so neither loaded nor parked. It
+                # was left 'loaded' from the fill on 2026-10-13 (T0, cycle 5:
+                # 120mm pulled by the encoder, extruder sensor still reading --
+                # a tip broken off at the gears).
+                owner.path_states[path] = 'unknown'
                 gcmd.respond_info(
                     "%s: FAILED on the pull-back — see above. Stopping." % label)
                 return

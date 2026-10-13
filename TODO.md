@@ -247,6 +247,15 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       the clear move leaves the melt at 8mm/s, slow enough to draw a string;
       `EASE=` now sets only that exit and the 3mm back-down, so
       `SA_TIP_CYCLE TOOL=0 TEMP=190 EASE=50` tests it with no code change.
+      **EASE=50, same day: ruled out, and worse.** Strings on 2, 3 and 5 (1
+      not seen); cycle 4 a bad load (fill 62%) -- **the first real failure
+      the auto-recovery met, and it worked:** recovered to the gate, cycle 5
+      reloaded from there (1509.4mm in one sensor-stopped move, fill 94%).
+      Then cycle 5's pull-back moved the filament 120mm by the encoder with
+      the extruder sensor still reading: most likely the tip, pulled out of
+      the melt at 50mm/s still soft, snapped at the gears and left a piece
+      at the sensor. (That stop left T0 'loaded'; fixed to 'unknown'.)
+      Next: DIP=30 DIP_PAUSE=1, the deepest dip, held a second.
       *Done when:* a tip under 1.75mm, or Mike calls 1.9 x 1.8 good enough
       and this line goes.
 
