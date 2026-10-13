@@ -1768,8 +1768,19 @@ class SASequences:
                 # 120mm pulled by the encoder, extruder sensor still reading --
                 # a tip broken off at the gears).
                 owner.path_states[path] = 'unknown'
+                # Park what can be parked before stopping (Mike, 2026-10-13:
+                # "it never parked"). The unload starts from the sensors and,
+                # when the pull-out cannot clear a sensor held by something
+                # else, finds the end by the encoder instead.
                 gcmd.respond_info(
-                    "%s: FAILED on the pull-back — see above. Stopping." % label)
+                    "%s: FAILED on the pull-back — parking the filament before "
+                    "stopping." % label)
+                parked = self._recover_to_gate(gcmd, path)
+                gcmd.respond_info(
+                    "%s: stopped. %s Check T%d's extruder entry for a piece of "
+                    "tip holding its sensor."
+                    % (label, "The filament is parked at the gate." if parked
+                       else "The filament did NOT park -- see above.", path))
                 return
             owner.path_states[path] = 'unknown'
             next_cap = back + 60.0
@@ -2838,6 +2849,7 @@ class SASequences:
         has_entry    = owner._entry_sensor_active(path)
         has_extruder = owner._extruder_sensor_active(path)
         has_toolhead = owner._toolhead_sensor_active(path)
+        pulled_free  = False   # set when Branch B's pull-out ran out freely
 
         gcmd.respond_info("SA: Sensors — entry:%s extruder:%s toolhead:%s" % (
             "Y" if has_entry else "N",
@@ -2942,8 +2954,18 @@ class SASequences:
                 self._blast_back_and_park(gcmd, path, is_printing,
                                           owner._encoder(path))
                 return
+            # The pull-out ran out with the sensor still reading. If the
+            # encoder says the filament came back freely, the sensor is held
+            # by something else -- a broken-off tip, 2026-10-13 on T0 -- and
+            # it can no longer say where the tip is. Then the stepped retract
+            # must not assume "a Bowden from the extruder": that called the
+            # tip passing the encoder at 1300mm a jam, short of 1517.
+            pulled_free = abs(owner._encoder(path).get_distance()) >= 60.0
             gcmd.respond_info(
-                "SA: Falling back to the stepped retract to the entry sensor...")
+                "SA: Falling back to the stepped retract to the entry sensor%s..."
+                % (" -- the filament came back freely, so the sensor is held "
+                   "by something else and the end is found by the encoder"
+                   if pulled_free else ""))
 
         # ══════════════════════════════════════════════════════════════════════
         # Branch C: ENTRY ONLY — filament in bowden
@@ -3032,7 +3054,7 @@ class SASequences:
         # retract, which is the encoder doing the job Mike described for it:
         # "the sensor to poll to see when it stops reading to stop the feed
         # motor". A snag that looks the same is caught by the park after.
-        unknown_start = not has_extruder and not has_toolhead
+        unknown_start = (not has_extruder and not has_toolhead) or pulled_free
         # Long runs have to be EARNED. The no-motion check is three strikes,
         # so making a strike 300mm made a blind drive cost 900mm instead of
         # 30: measured on a path parked before the encoder, which drove 900mm
