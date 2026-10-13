@@ -340,11 +340,16 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
         always finishes with a rate ("5 cycles, 1 recovered").
       This is the mechanism an in-print colour swap (multi-channel heads)
       will need, which is why it is worth building before that.
-      *Also open -- why the 4th/5th cycle:* all three 2026-10-12 failures
-      came 4-5 cycles into back-to-back heating (T2 ASA 4th, T0 ASA 5th, T2
-      PLA 5th), never earlier, though T0 PLA and T1 PETG did pass 5 the night
-      before. Leading theory: heat soak into the cold side. Test: the same
-      cycles with `HOLD=120`.
+      *Also open -- why the 4th/5th cycle:* **every SA_TIP_CYCLE load
+      failure to 2026-10-13 came on cycle 4 or 5, none on 1-3, across ~10
+      runs (~50 cycles):** T2 ASA c4 (34%), T0 ASA c5 (16%), T2 PLA c5 (stall
+      short of the toolhead sensor), T0 ASA EASE=50 c4 (62%). ASA is in 5 of
+      the 7 filament failures to date; the failures follow the material,
+      not the head. Leading theory: heat soak into the cold side over
+      back-to-back heating with 20s holds. Test: `SA_TIP_CYCLE TOOL=2
+      HOLD=120` with PLA, which keeps ASA's strings out of it.
+      **Seen 2026-10-13:** the auto-recovery on a real failure (T0 c4, 62% ->
+      recovered -> c5 loaded 94%).
 
 - [ ] **Toolhead LEDs: dark colours breathe to black, and half the heads
       sometimes do nothing.** Mike, 2026-10-12. Two separate things:
