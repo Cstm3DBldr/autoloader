@@ -272,6 +272,28 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       the toolhead sensor and block the next load. 2 of the last 7 Prusa
       tips did it. Both are now caught (9cf788e: the load stops and names
       SA_RECOVER; the unload warns), but the cause -- the string -- is not.
+      **Mike found the mechanism (2026-10-14):** the toolhead sensor is a
+      ball type, and tiny string debris lodged in the BALL passage held the
+      ball triggered -- the filament path was clear. He also pulled a
+      decent string out of the filament passage, not enough to trip the
+      sensor: the likely wedge behind the 20% fills (a ~2mm tip plus a
+      string in a 2mm bore).
+      **Run 2, cold, 2026-10-14 23:58 (the decider):** after a 25min pause,
+      nozzle 25.7C, passage and sensor cleaned, RECOVER=0. Cycle 1 loaded
+      at 94% with only 14s at 250C -- the conditions of the 22:09 failure
+      -- then cycles 2-3 at 94% / 95% (clears 101 / 95 / 93%), no strings
+      seen. **So it was never the cold nozzle or the soak: it was string
+      debris.** Heat soak and the slowed fill are dropped; loads stay full
+      speed. Cycle 4 stopped BEFORE the fill on the new check -- the ball
+      stuck again, after tips with no visible string. Third stuck ball of
+      the night, all T0 on ASA, in about 12 tips.
+      *Open:* (1) the ball sensor is now the weakest link -- a hardware
+      question for Mike (a passage debris cannot settle in, or another
+      sensor type); (2) check the toolhead sensor reads clear right after
+      every pull-back, so a stuck ball is reported then, not at the next
+      load; (3) SA_FORM_TIP's retract re-formed a second tip when the stuck
+      sensor said "loaded" -- after an encoder-confirmed clear it should
+      believe the encoder.
       **EASE=50, same day: ruled out, and worse.** Strings on 2, 3 and 5 (1
       not seen); cycle 4 a bad load (fill 62%) -- **the first real failure
       the auto-recovery met, and it worked:** recovered to the gate, cycle 5
