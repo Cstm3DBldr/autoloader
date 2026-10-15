@@ -2511,6 +2511,42 @@ class SASequences:
         return mms, ("%s, derated %.0f%% -> %.1fmm/s"
                      % (src, (1.0 - self._RECOVERY_FLOW_DERATE) * 100.0, mms))
 
+    # Length of each piece of a watched blast: how far the drive can push
+    # against a blockage in the tube before the encoder check catches it.
+    WATCHED_BLAST_PIECE = 50.0
+
+    def _watched_blast(self, path, budget, speed):
+        """A sensor-stopped blast in pieces, with the encoder checked after
+        each one.
+
+        Returns (outcome, fed_mm, seen_last_mm): outcome 'sensor' when the
+        extruder sensor stopped it, 'jam' when the filament stopped following
+        the drive, 'budget' when it ran out of length. None when the path has
+        no sensor endstop, so the caller falls back to polling.
+        """
+        owner  = self.owner
+        motion = owner.motion
+        enc    = owner._encoder(path)
+        fed, seen = 0.0, 0.0
+        while fed < budget - 0.5:
+            if owner._extruder_sensor_active(path):
+                return 'sensor', fed, seen
+            piece  = min(self.WATCHED_BLAST_PIECE, budget - fed)
+            before = enc.get_distance()
+            res = motion.drive_to_sensor(path, piece, speed)
+            if res is None:
+                return None
+            stopped, moved = res
+            fed += moved
+            seen = abs(enc.get_distance() - before)
+            if stopped:
+                return 'sensor', fed, seen
+            # Half, not 80%: a normal blast reads ~101% of the drive, so
+            # anything near half is the filament not going where it is sent.
+            if moved > 5.0 and seen < moved * 0.5:
+                return 'jam', fed, seen
+        return 'budget', fed, seen
+
     def recover(self, gcmd, path):
         """Push a remnant out of the head using the filament behind it.
 
@@ -2623,11 +2659,15 @@ class SASequences:
             budget = owner._bowden_lengths[path] * 1.10
             step   = owner.feed_step_size
             crept  = 0.0
-            # The sensor-stopped blast removes the reason for creeping: the
-            # extruder sensor stops the drive itself, so an unknown start
-            # cannot ram the gears (the same move the load uses from
-            # 'unknown'). Mike, 2026-10-14: "recovery is still using the slow
-            # load code". The creep below stays as the fallback.
+            # Fast, but watched. Mike, 2026-10-14: "recovery is still using
+            # the slow load code" -- and then: "if there is a piece in the
+            # ptfe tube above the toolhead and extruder sensor the blast would
+            # never properly trigger and stop the feed and only jam". One
+            # sensor-stopped move is blind between its ends: against a piece
+            # wedged in the tube nothing reaches the sensor, and the drive
+            # grinds for the whole budget. So pieces of WATCHED_BLAST_PIECE,
+            # each stopping on the sensor, with the encoder checked between
+            # them. The creep below stays as the fallback.
             sv = owner.printer.lookup_object('save_variables', None)
             saved_max = (float(sv.allVariables.get('encoder_max_speed', 0))
                          if sv else 0)
@@ -2635,9 +2675,11 @@ class SASequences:
             res = None
             try:
                 gcmd.respond_info(
-                    "SA RECOVER: blasting at %.0fmm/s until the extruder "
-                    "sensor stops it (%.0fmm at most)." % (blast_speed, budget))
-                res = motion.drive_to_sensor(path, budget, blast_speed)
+                    "SA RECOVER: blasting at %.0fmm/s in %.0fmm pieces until "
+                    "the extruder sensor stops it (%.0fmm at most), checking "
+                    "the encoder after each." % (
+                        blast_speed, self.WATCHED_BLAST_PIECE, budget))
+                res = self._watched_blast(path, budget, blast_speed)
             except Exception as e:
                 if owner.printer.is_shutdown():
                     raise
@@ -2649,7 +2691,19 @@ class SASequences:
                     "creeping instead." % e)
                 res = None
             if res:
-                crept = res[1]
+                outcome, crept, seen = res
+                if outcome == 'jam':
+                    motion.servo_disengage()
+                    gcmd.respond_info(
+                        "SA RECOVER: STOPPED — %.0fmm into the blast the "
+                        "encoder stopped following the drive (it saw %.1fmm "
+                        "of the last piece). Something in the tube is "
+                        "blocking it. That is hand work (docs/RECOVERY.md), "
+                        "not more pushing." % (crept, seen))
+                    owner.gcode.run_script_from_command(
+                        "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
+                        % extruder_name)
+                    return
             if not owner._extruder_sensor_active(path):
                 gcmd.respond_info(
                     "SA RECOVER: creeping to the extruder sensor at %.0fmm/s "
@@ -2670,6 +2724,9 @@ class SASequences:
                         "a jam, not a slow feed. Nothing is melted yet, so "
                         "this stops here rather than spending the remaining "
                         "%.0fmm against a blockage." % (crept, budget - crept))
+                    owner.gcode.run_script_from_command(
+                        "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
+                        % extruder_name)
                     return
             if not owner._extruder_sensor_active(path):
                 motion.servo_disengage()
@@ -2679,6 +2736,9 @@ class SASequences:
                     "may be obstructed by the remnant — that is the case "
                     "docs/RECOVERY.md says needs a cold pull by hand, not more "
                     "pushing." % (path, crept, abs(enc.get_distance())))
+                owner.gcode.run_script_from_command(
+                    "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
+                    % extruder_name)
                 return
             gcmd.respond_info(
                 "SA RECOVER: at the extruder sensor after %.0fmm driven "
