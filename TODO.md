@@ -443,7 +443,47 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
         matching channel, whose filament pushes the old tail through (the
         SA_RECOVER mechanism) -> purge, fill check, resume.
       - What already exists for it: the sensor-stopped blast (a splitter
-        cannot be overrun), the fill check with one retry, `low`, recovery.
+        cannot be overrun), the fill check with retries, `low`, recovery.
+      - *Mike, 2026-10-14:* the splitter layout is fixed hardware, but the
+        mapping is software -- set in the guide or Settings and changeable
+        there. The slicer only ever says T0, T1, T2 ..., so the extra
+        channels are emulated as tool numbers, and **a T number with no
+        channel behind it must pause or error** (T9 on a machine set up for
+        T0-T6). This matters because **Klipper does not stop on it by
+        itself**: an undefined command goes to `cmd_default`, which ends in
+        `respond_info('Unknown command:"%s"')` -- an info line -- and the
+        print carries on with whatever tool is mounted
+        (klippy/gcode.py L221, L316 at 9cb9975; virtual_sdcard only stops
+        on a gcode.error). Best caught before the print starts: Happy Hare's
+        Moonraker component scans the file for T<n> and its start check
+        pauses on an empty gate (presence only; material/colour checks are
+        listed there as "Future").
+      - *Research, 2026-10-14 (sources in the session; summary):*
+        - **Toolhead fallback ships today on toolchangers and needs no
+          splitter**: Prusa XL Tools Mapping ("If Tool 1 runs out of
+          filament, then Tool 4 will be used"), Snapmaker U1 auto-refill
+          (same brand, material, colour; ascending tool order), AFC's runout
+          lane on another extruder. klipper-toolchanger already remaps at
+          runtime (`ASSIGN_TOOL TOOL=<name> N=<n>`; the vacated number is
+          left unassigned). Prusa's join: heat the new head while the old
+          one unloads, park, purge, return in nozzle coordinates, resync E.
+          Reported weak spot: an oozy layer at the join.
+        - **Runout vs jam by the upstream sensor** -- entry clear = runout,
+          entry still full = jam/break -- is what AFC, Happy Hare and Bambu
+          AMS Lite all do. Our chain matches.
+        - **Pushing the old tail through the nozzle is the risky step.**
+          Happy Hare, AFC and MMU3 pull the tail back and eject it instead;
+          Bambu flushes it only when the tail has already left the feeder;
+          U1 owners report jams from exactly the butt-to-butt push. Our
+          drive can still grip the tail only until it passes the gear, so
+          "pull back" means acting at the entry sensor and wasting what is
+          in the tube (~1.5m, ~4-5g); "consume" means the push. A choice
+          for when this is built, not now.
+        - Matching rules elsewhere: Bambu brand + type + colour + temp
+          "exactly the same"; Anycubic refuses same colour, other material.
+        - Staging the next lane DURING a print is likely out: a
+          manual_stepper move with SYNC dwells the toolhead for its length
+          (a reading of manual_stepper.py, not measured).
 
 ## Never verified
 
