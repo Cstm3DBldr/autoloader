@@ -701,7 +701,7 @@ Single `[autoloader]` config section, single class instance, controls everything
 | `SA_SELECT TOOL=N` | Move selector to path N (servo stays neutral) |
 | `SA_ENGAGE` | Engage drive servo (grip filament) |
 | `SA_DISENGAGE` | Disengage drive servo (neutral) |
-| `SA_LOAD TOOL=N` | Full load sequence for path N. **A load that fails at the nozzle -- the fill check, or a push that stalls short of the toolhead sensor -- recovers itself once:** it unloads to the gate, waits, and tries again; a second failure stops and says so (Mike, 2026-10-12: "one retry then stop"). Every failed load turns its heater off |
+| `SA_LOAD TOOL=N` | Full load sequence for path N. **A load that fails at the nozzle -- the fill check, or a push that stalls short of the toolhead sensor -- recovers itself and tries again, slower each time:** it unloads to the gate, waits, and retries at 50% and then 25% of the nozzle-stage speed (the sync push and the fill + purge); after the third failure it stops and says so, and a load that only went in slowed down is reported as a speed limit at that head (Mike, 2026-10-14: "try 3 times but slow down progressivly on each retry to see if its a speed problem"). The fill is checked every 10mm, so a filament that stops is caught after 20mm rather than at the end. Every failed load turns its heater off |
 | `SA_UNLOAD TOOL=N` | Full unload sequence for path N |
 | `SA_STATUS` | Print state for all paths |
 | `SA_BUZZ_DRIVE` | Test drive motor |

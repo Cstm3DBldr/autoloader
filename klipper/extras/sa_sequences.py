@@ -23,6 +23,11 @@ class SASequences:
 
     def __init__(self, owner):
         self.owner = owner
+        self._nozzle_failed = False
+        # Share of the normal speed the nozzle stage runs at -- the sync push
+        # to the toolhead sensor and the fill + purge. 1.0 except on a load
+        # retry, which slows each attempt down (LOAD_TRY_SPEEDS).
+        self._load_speed = 1.0
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Internal helpers
@@ -940,7 +945,7 @@ class SASequences:
         the extruder really pulls it counts (the tip purge reads 97-103%).
         """
         owner = self.owner
-        f = self._extrude_speed_mmm()
+        f = max(1, int(self._extrude_speed_mmm() * self._load_speed))
         # Toolhead sensor to tip, measured by step 12 where it has been run.
         fill = owner.th_toolhead_to_nozzle(path)
         purge, why = owner.purge_for_load(path)
@@ -952,6 +957,11 @@ class SASequences:
         return self._extrude_verified(gcmd, path, (fill, purge), f,
                                       "Fill + purge")
 
+    # The fill is extruded in pieces this long and each one checked, so a
+    # filament that has stopped is caught after two of them instead of after
+    # the whole fill + purge.
+    FILL_CHECK_CHUNK = 10.0
+
     def _extrude_verified(self, gcmd, path, amounts, speed_mmm, what):
         """Extrude each of `amounts` in turn and prove it went in.
 
@@ -959,6 +969,12 @@ class SASequences:
         total. Otherwise the heater goes off -- a head jammed short of the
         melt only cooks filament into the heatbreak while it waits -- the
         failure is said plainly, and False tells the caller to stop.
+
+        Watched as it goes, not only at the end (Mike, 2026-10-14: "we
+        monitor length so we know to abort when it doesnt sense movement and
+        trigger a retry"). Two pieces in a row with the encoder seeing under
+        a fifth of them stops it there -- the same rule the sync push uses.
+        A filament that slips but still moves is left to the 80% total.
         """
         owner = self.owner
         enc = owner._encoder(path)
@@ -967,17 +983,38 @@ class SASequences:
             enc.reset_distance()
         except Exception:
             enc = None
-        for mm in amounts:
-            self._extrude_mm(mm, speed_mmm)
         if enc is None:
+            for mm in amounts:
+                self._extrude_mm(mm, speed_mmm)
             return True
         asked = float(sum(amounts))
+        done = 0.0
+        stalled = 0
+        remaining = asked
+        while remaining > 0.01:
+            piece = min(self.FILL_CHECK_CHUNK, remaining)
+            before = enc.get_distance()
+            self._extrude_mm(piece, speed_mmm)
+            remaining -= piece
+            done += piece
+            if enc.get_distance() - before < piece * 0.2:
+                stalled += 1
+                if stalled >= 2:
+                    break
+            else:
+                stalled = 0
         moved = enc.get_distance()
         frac = moved / asked if asked > 0 else 1.0
-        gcmd.respond_info(
-            "SA: %s — asked %.1fmm, the encoder saw %.1fmm (%.0f%%)."
-            % (what, asked, moved, frac * 100.0))
-        if frac >= self.FILL_MIN_FRACTION:
+        if stalled >= 2:
+            gcmd.respond_info(
+                "SA: %s — STOPPED after %.0fmm of %.0fmm: the encoder saw "
+                "%.1fmm, and almost nothing in the last %.0fmm."
+                % (what, done, asked, moved, 2 * self.FILL_CHECK_CHUNK))
+        else:
+            gcmd.respond_info(
+                "SA: %s — asked %.1fmm, the encoder saw %.1fmm (%.0f%%)."
+                % (what, asked, moved, frac * 100.0))
+        if stalled < 2 and frac >= self.FILL_MIN_FRACTION:
             return True
         owner.gcode.run_script_from_command(
             "SET_HEATER_TEMPERATURE HEATER=%s TARGET=0"
@@ -1009,7 +1046,7 @@ class SASequences:
         dn     = owner._drv_name()
 
         has_sensor = bool(owner._toolhead_sensor_names[path])
-        sync_speed = owner.feed_speed
+        sync_speed = owner.feed_speed * self._load_speed
         sync_f     = int(sync_speed * 60)
         step       = owner.feed_step_size
         # Safety ceiling: 2× fill_nozzle_length or 200mm, whichever is larger
@@ -1267,41 +1304,69 @@ class SASequences:
     # takes ~30-45s, which is most of the rest; this is the margin.
     LOAD_RETRY_WAIT = 5.0
 
+    # One entry per try, as a share of the normal nozzle-stage speed.
+    LOAD_TRY_SPEEDS = (1.0, 0.5, 0.25)
+
     def _do_load_inner(self, gcmd, path):
-        """One load, and if it fails at the nozzle, ONE recovery and retry.
+        """A load, and if it fails at the nozzle, recover and try again --
+        slower each time.
 
         Mike, 2026-10-12: "build in an auto recover when we sense an error so
-        we don't fail a print and or make sure testing finishes" -- "one retry
-        then stop". The recovery is the plain unload, which brought a wedged
-        load back to the gate every time it was asked that day. Only a
-        failure at the nozzle stage retries (the fill check, or a push that
-        stalled short of the toolhead sensor); anything earlier is a fault
-        the same load would just meet again. A second failure stops and says
-        so, rather than grinding on.
+        we don't fail a print and or make sure testing finishes" -- at first
+        "one retry then stop". 2026-10-14: "try 3 times but slow down
+        progressivly on each retry to see if its a speed problem". So three
+        tries at LOAD_TRY_SPEEDS of the sync push and the fill + purge, and
+        the console says which one went in: a load that only succeeds slowed
+        down is a speed limit at that head, not bad luck.
+
+        The recovery is the plain unload, which brought a wedged load back to
+        the gate every time it was asked. Only a failure at the nozzle stage
+        retries (the fill check, or a push that stalled short of the toolhead
+        sensor); anything earlier is a fault the same load would just meet
+        again. After the last try it stops and says so, rather than grinding
+        on.
         """
         owner = self.owner
-        self._nozzle_failed = False
-        self._load_once(gcmd, path)
-        if not self._nozzle_failed:
-            return
-        gcmd.respond_info(
-            "SA: Load failed at the nozzle — recovering: unloading path %d to "
-            "the gate, then ONE more try." % path)
-        if not self._recover_to_gate(gcmd, path):
+        speeds = self.LOAD_TRY_SPEEDS
+        try:
+            for i, speed in enumerate(speeds):
+                if i:
+                    gcmd.respond_info(
+                        "SA: Retrying the load on path %d — try %d of %d, at "
+                        "%d%% speed through the toolhead."
+                        % (path, i + 1, len(speeds), int(speed * 100)))
+                self._load_speed = speed
+                self._nozzle_failed = False
+                self._load_once(gcmd, path)
+                if not self._nozzle_failed:
+                    if i:
+                        gcmd.respond_info(
+                            "SA: Path %d loaded on try %d, at %d%% speed. The "
+                            "faster tries failed at the nozzle — if this "
+                            "keeps happening on this head, it is a speed "
+                            "limit there, not bad luck."
+                            % (path, i + 1, int(speed * 100)))
+                    return
+                if i == len(speeds) - 1:
+                    break
+                gcmd.respond_info(
+                    "SA: Load failed at the nozzle — recovering: unloading "
+                    "path %d to the gate, then trying again slower." % path)
+                if not self._recover_to_gate(gcmd, path):
+                    gcmd.respond_info(
+                        "SA: ERROR — the recovery unload did not park path "
+                        "%d, so it will not retry. See above." % path)
+                    return
+                owner.reactor.pause(
+                    owner.reactor.monotonic() + self.LOAD_RETRY_WAIT)
             gcmd.respond_info(
-                "SA: ERROR — the recovery unload did not park path %d, so it "
-                "will not retry. See above." % path)
-            return
-        owner.reactor.pause(owner.reactor.monotonic() + self.LOAD_RETRY_WAIT)
-        gcmd.respond_info("SA: Retrying the load on path %d." % path)
-        self._nozzle_failed = False
-        self._load_once(gcmd, path)
-        if self._nozzle_failed:
-            gcmd.respond_info(
-                "SA: ERROR — path %d failed to load twice, so it has stopped "
-                "rather than try again. Snip the end and look at the toolhead "
-                "between the gears and the nozzle; SA_UNLOAD TOOL=%d brings it "
-                "back to the gate." % (path, path))
+                "SA: ERROR — path %d failed to load %d times, down to %d%% "
+                "speed, so slowing down did not help and it has stopped. Snip "
+                "the end and look at the toolhead between the gears and the "
+                "nozzle; SA_UNLOAD TOOL=%d brings it back to the gate."
+                % (path, len(speeds), int(speeds[-1] * 100), path))
+        finally:
+            self._load_speed = 1.0
 
     def _recover_to_gate(self, gcmd, path):
         """Unload *path* to the gate as part of something else -- no
@@ -1383,10 +1448,11 @@ class SASequences:
             self._wiggle_check_toolhead(gcmd, path)
 
             gcmd.respond_info("SA: Purging %.1fmm..." % owner.purge_length)
-            f = self._extrude_speed_mmm()
+            f = max(1, int(self._extrude_speed_mmm() * self._load_speed))
             owner.gcode.run_script_from_command("M83")
             if not self._extrude_verified(gcmd, path, (owner.purge_length,),
                                           f, "Purge"):
+                self._nozzle_failed = True
                 return
 
             owner.path_states[path] = 'loaded'

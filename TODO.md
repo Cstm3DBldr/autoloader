@@ -332,10 +332,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       *Done when:* a fresh install loads slowly, the last guide page turns
       on full speed, and Settings can turn it back off.
 
-- [ ] **Recover a failed load automatically, and retry once -- BUILT
-      2026-10-12, not yet seen on the machine.** Mike approved "one retry then
-      stop". SA_LOAD: a failure at the nozzle unloads to the gate, waits 5s,
-      tries once more, and stops on a second failure. SA_TIP_CYCLE: recovers
+- [ ] **Recover a failed load automatically, and retry -- three tries,
+      slower each time.** Mike approved "one retry then stop" (2026-10-12),
+      then 2026-10-14: "try 3 times but slow down progressivly on each retry
+      to see if its a speed problem and we monitor length so we know to abort
+      when it doesnt sense movement". SA_LOAD: a failure at the nozzle unloads
+      to the gate, waits 5s, and retries at 50% then 25% of the nozzle-stage
+      speed (sync push + fill + purge; the blast is sensor-stopped and keeps
+      its speed); a load that only went in slowed down is reported as a speed
+      limit at that head. The fill is now checked every 10mm and stops after
+      two pieces with almost no encoder motion, instead of extruding all of
+      it and checking at the end. **3-try version BUILT 2026-10-14, not yet
+      deployed or seen.** The Branch A purge-only check now counts as a
+      nozzle failure too, so it retries like the others. SA_TIP_CYCLE: recovers
       and carries on, two in a row stop it. *Done when:* a real failure is
       seen recovering and retrying -- the original request follows. Mike,
       2026-10-12, after T0 and T2 both failed their 5th reload: "shouldn't we
