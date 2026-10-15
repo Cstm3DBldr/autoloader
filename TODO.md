@@ -247,6 +247,18 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       the clear move leaves the melt at 8mm/s, slow enough to draw a string;
       `EASE=` now sets only that exit and the 3mm back-down, so
       `SA_TIP_CYCLE TOOL=0 TEMP=190 EASE=50` tests it with no code change.
+      **Prusa's ASA cooling moves (docs/MATERIAL_PLAN.md), 2026-10-14, T0,
+      snipped: TEMP=195 COOL_MOVES=3 COOL_LEN=15 COOL_IN=5 COOL_OUT=2.5** --
+      three slow moves instead of two fast ones, nothing else changed. All 5
+      loaded (fills 94 / 91 / 84 / 94 / 95%, clears 95 / 101 / 95 / 95 / 95%),
+      no failures, fast unload parked it. **Mike: cycles 3, 4 and 5 NO string**
+      (1-2 not seen) -- the first ASA run clean on every cycle observed. One
+      reload (cycle 3, the 84%) skipped a couple of times and pushed through.
+      ~30s more per cycle. Next: repeat on T0 with every cycle watched, then
+      T2; if it holds, ASA's own rows: tip_form_cooling_moves_asa 3,
+      tip_form_cooling_len_asa 15, tip_form_cool_speed_in_asa 5,
+      tip_form_cool_speed_out_asa 2.5 (Mike: per material, "temp and cooling
+      moves unless ... they need more work").
       **EASE=50, same day: ruled out, and worse.** Strings on 2, 3 and 5 (1
       not seen); cycle 4 a bad load (fill 62%) -- **the first real failure
       the auto-recovery met, and it worked:** recovered to the gate, cycle 5
@@ -402,6 +414,27 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
         hardware and calibration each needs.
       CLAUDE.md's "NOT an MMU" now says this is planned. Reference Happy Hare
       for the ideas; do not copy it.
+      **Second use of the same hardware: auto-refill (Mike, 2026-10-14).**
+      Group channels on one toolhead with the SAME profile and the group is
+      one slicer tool that never runs out -- "the roll could be completely
+      used". Shape:
+      - *Grouping* set in the guide, any channels the user's tubing joins:
+        pairs (T0+T1, T2+T3, ...), fours on a 4-way splitter, or whatever
+        stacked units line up.
+      - *Two modes per group.* Multi-colour: each channel its own slicer tool
+        (T0 = T0A, T6 = T0B, T7 = T0C, ...). Auto-refill: one tool; switch
+        channels automatically ONLY when the profiles match exactly
+        (material, brand, line, colour -- all logged). A separate opt-in
+        "use-up" mode relaxes that to the same chemistry, for emptying
+        part rolls into prints where colour does not matter.
+      - *Detection chain* (most of it designed in docs/RUNOUT_MIDPRINT.md):
+        entry sensor clears -> `low`, profile kept; the encoder going quiet
+        while the extruder still pulls confirms it (a measured datum); the
+        extruder sensor clearing is the runout trigger -> pause -> load the
+        matching channel, whose filament pushes the old tail through (the
+        SA_RECOVER mechanism) -> purge, fill check, resume.
+      - What already exists for it: the sensor-stopped blast (a splitter
+        cannot be overrun), the fill check with one retry, `low`, recovery.
 
 ## Never verified
 
