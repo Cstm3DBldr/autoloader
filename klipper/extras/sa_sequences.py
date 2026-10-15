@@ -24,6 +24,9 @@ class SASequences:
     def __init__(self, owner):
         self.owner = owner
         self._nozzle_failed = False
+        # Set when a load finds the toolhead sensor already reading filament
+        # that cannot be this filament -- see _sync_feed_to_toolhead_sensor.
+        self._remnant_seen = False
         # Share of the normal speed the nozzle stage runs at -- the sync push
         # to the toolhead sensor and the fill + purge. 1.0 except on a load
         # retry, which slows each attempt down (LOAD_TRY_SPEEDS).
@@ -1068,9 +1071,23 @@ class SASequences:
             return True
 
         if owner._toolhead_sensor_active(path):
-            gcmd.respond_info("SA: Toolhead sensor already active on path %d." % path)
+            # Every caller has just put THIS filament's tip at (or behind)
+            # the extruder sensor, which is upstream of the gears -- so it
+            # cannot be what the toolhead sensor is reading. That is a piece
+            # left in the toolhead, or a stuck sensor. It used to return
+            # True here and skip the push: on 2026-10-14 (T0 c5, after a
+            # stringy c4 tip left a piece at the sensor) the extruder then
+            # turned with nothing in its gears and the fill read 0.0mm.
             motion.servo_disengage()
-            return True
+            self._remnant_seen = True
+            gcmd.respond_info(
+                "SA: ERROR — the toolhead sensor on path %d already reads "
+                "filament, but this filament has only reached the extruder "
+                "sensor, upstream of the gears. So something else is in the "
+                "toolhead — a piece of an old tip or string — or the sensor "
+                "is stuck. Stopped before the fill. SA_RECOVER TOOL=%d pushes "
+                "a piece out with this filament behind it." % (path, path))
+            return False
 
         gcmd.respond_info(
             "SA: Sync feed — drive + extruder at %.0fmm/s until toolhead sensor (path %d)..."
@@ -1683,8 +1700,11 @@ class SASequences:
         # Sync drive + extruder together until toolhead sensor confirms grip.
         # Handles dead zone (extruder sensor → extruder gears, ~20mm) and beyond.
         # Disengages servo on return.
+        self._remnant_seen = False
         if not self._sync_feed_to_toolhead_sensor(gcmd, path):
-            self._nozzle_failed = True
+            # A remnant is not retried: unloading to the gate leaves the
+            # piece where it is, and the next try meets it again.
+            self._nozzle_failed = not self._remnant_seen
             # Heater off on EVERY failed load, not only the fill check's. On
             # 2026-10-12 this return left T2 holding 205C over a stopped load.
             owner.path_states[path] = 'unknown'
@@ -1817,6 +1837,13 @@ class SASequences:
             # load -- sync feed, fill + purge with the fill check
             if not self._load_into_nozzle(gcmd, path, is_printing):
                 failures += 1
+                if self._remnant_seen:
+                    gcmd.respond_info(
+                        "%s: stopped — a piece in the toolhead, see above. "
+                        "Recovering to the gate would leave it there for the "
+                        "next cycle to meet. %d of %d cycles failed."
+                        % (label, failures, k))
+                    return
                 if not recover:
                     # The heater is already off and the path 'unknown' --
                     # _load_into_nozzle did both on the way out.
@@ -2596,10 +2623,37 @@ class SASequences:
             budget = owner._bowden_lengths[path] * 1.10
             step   = owner.feed_step_size
             crept  = 0.0
-            gcmd.respond_info(
-                "SA RECOVER: creeping to the extruder sensor at %.0fmm/s "
-                "(up to %.0fmm). No blast — the tail's position is unknown."
-                % (owner.feed_speed, budget))
+            # The sensor-stopped blast removes the reason for creeping: the
+            # extruder sensor stops the drive itself, so an unknown start
+            # cannot ram the gears (the same move the load uses from
+            # 'unknown'). Mike, 2026-10-14: "recovery is still using the slow
+            # load code". The creep below stays as the fallback.
+            sv = owner.printer.lookup_object('save_variables', None)
+            saved_max = (float(sv.allVariables.get('encoder_max_speed', 0))
+                         if sv else 0)
+            blast_speed = saved_max if saved_max > 0 else 75.0
+            res = None
+            try:
+                gcmd.respond_info(
+                    "SA RECOVER: blasting at %.0fmm/s until the extruder "
+                    "sensor stops it (%.0fmm at most)." % (blast_speed, budget))
+                res = motion.drive_to_sensor(path, budget, blast_speed)
+            except Exception as e:
+                if owner.printer.is_shutdown():
+                    raise
+                logging.exception(
+                    "Autoloader: sensor-stopped blast failed in SA_RECOVER "
+                    "on path %d", path)
+                gcmd.respond_info(
+                    "SA RECOVER: the sensor-stopped blast failed (%s) — "
+                    "creeping instead." % e)
+                res = None
+            if res:
+                crept = res[1]
+            if not owner._extruder_sensor_active(path):
+                gcmd.respond_info(
+                    "SA RECOVER: creeping to the extruder sensor at %.0fmm/s "
+                    "(up to %.0fmm)." % (owner.feed_speed, budget - crept))
             last, strikes, stalled = abs(enc.get_distance()), 0, False
             while crept < budget and not owner._extruder_sensor_active(path):
                 motion.drive_move(step, speed=owner.feed_speed)
@@ -2891,6 +2945,15 @@ class SASequences:
             gcmd.respond_info(
                 "SA: Filament parked at drive gear — path %d. "
                 "Pull from roll end to remove." % path)
+            if owner._toolhead_sensor_active(path):
+                # The path's own filament is at the gate, so whatever the
+                # toolhead sensor reads was left behind (2026-10-14, T0: a
+                # piece from a stringy tip). The load would now stop on it.
+                gcmd.respond_info(
+                    "SA: WARNING — path %d is parked, but its toolhead sensor "
+                    "still reads filament: a piece was left in the toolhead. "
+                    "SA_RECOVER TOOL=%d pushes it out with the roll behind "
+                    "it." % (path, path))
         else:
             # `partial` is what the next load trusts as "at the datum" and
             # blasts from, so it is only written when the park confirmed
