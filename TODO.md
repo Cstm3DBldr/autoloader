@@ -358,6 +358,18 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       rate, purge at full, sync at 25mm/s -- about +13s a load; or a soak
       before the fill. Not separated yet: whether the sync speed or the fill
       rate is the one that matters -- one load each way would say.
+      **Soak test, same night (Mike: Rapido 2 Plus UHF, PT1000, big heater --
+      "the heater absolutly could heat fast then reach temp quick and the
+      plastic still not be fully melted"):** unload, cool T0 below 120C, heat
+      to 250 and hold, then a FULL-speed SA_LOAD: 93s at 250 before the fill
+      -> **94%, first try.** Against 8-15s -> 19-22% on the three failures.
+      Our wait is already Klipper's M109 rule (SET_TOOL_TEMPERATURE WAIT=1:
+      within 1C and < 0.1C/s), releasing ~4-5s after first touching target;
+      PRINT_START differs in time, not rule (M109 150, then target-30 and a
+      clean, G28, mesh, then target). *Catch:* heating at load start alone
+      adds no soak -- 100->250C is ~34s, park + blast ~24s. *Proposed:* heat
+      at load start + the first ~20mm of the fill at half rate (~19s faster
+      than today, untested), fallback a hold-at-temperature timer.
       *Found on the way:* the profile's PURGE_SPEED is stored and shown but
       the load never reads it -- same as UNLOAD_TEMP.
       *Fixed on the way (8c26f4a):* a load from `unknown` whose grip check
