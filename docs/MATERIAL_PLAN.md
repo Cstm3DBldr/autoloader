@@ -60,7 +60,7 @@ the manufacturer range (a load has to melt a cold strand fast).
 |---|---|---|---|---|---|
 | **PLA** | 190-230 [PM-PLA] | 61 | 205 (profile) | **165 measured** | Done: clean, no swell, 5/5 reloads. Reference material |
 | **PETG** | 230-260 [PM-PETG] | 81 | 250 (profile) | **185 measured** (180 shears) | Done: 5/5 reloads. Window is narrow |
-| **ASA** | 230-260 [PM-ASA] | 98 | 250 | 190-195 measured, **strings** | In progress — section 4 |
+| **ASA** | 230-260 [PM-ASA] | 98 | 250 | **195**, strings with the standard cooling moves; clean with Prusa's slow ones | In progress — section 4: rung 1 clean on 3/3 seen, repeat before adopting |
 | ABS | 245-265 [PM-ABS] | 101 | 250-255 | ~200 (row: 202) | Next after ASA: same family, checks whether ASA's answer transfers. Dry 70C/6h |
 | CoPE (Polymaker Panchroma CoPE) | 190-230 [PM-CoPE] | **58** [PM-CoPE-FR] | 210-215 | **~160 by Tg** vs 182 in the row (by family) | **The decisive experiment for the Tg rule**: a copolyester with a PLA-like Tg. Near the 150C floor |
 | coPETG | nGen 220-240, XT 240-260, HT 250-280 (S) | nGen 85, HT >100 | 230 / 250 / 265 | nGen ~185; HT ~200 | One row cannot serve three resins; HT likely needs its own. Per product line, not per material (`docs/TIPFORM_CAL.md`) |
@@ -86,6 +86,14 @@ Ranked by evidence, cheapest first. Mike watches each run for strings.
    moves go DOWN from the 35mm cooling zone and 20 would reach 15mm above the
    nozzle.) If promising, try Prusa's MMU2S ASA value: `COOL_MOVES=1 COOL_IN=3
    COOL_OUT=2`.
+   **Result, 2026-10-14, T0, snipped first:** all 5 loaded (fills 94 / 91 /
+   84 / 94 / 95%, clears 95 / 101 / 95 / 95 / 95%), and **no string on
+   cycles 3, 4 and 5** (Mike; 1-2 not seen). The first ASA run clean on
+   every cycle observed, where every earlier one strung on most. Cycle 3's
+   reload skipped a couple of times and pushed through (the 84%). About 30s
+   more per cycle. **Next:** the same run with every cycle watched, then on
+   T2; if both hold, these become ASA's own rows and rungs 2-4 are not
+   needed for ASA.
 2. **Part-cooling fan during forming.** Happy Hare's fan assist defaults to
    50%; the Core One script uses full fan [HH-VARS, CORE-ONE]. Needs a small
    code change (fan on for the form, off after). Also the cheapest heat-soak
