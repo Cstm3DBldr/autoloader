@@ -1709,7 +1709,8 @@ class SASequences:
     # Tip cycle test -- a formed tip, reloaded and re-formed, short travel
     # ═══════════════════════════════════════════════════════════════════════════
 
-    def tip_cycle(self, gcmd, path, count, back, hold, ov=None):
+    def tip_cycle(self, gcmd, path, count, back, hold, ov=None,
+                  recover=True):
         """SA_TIP_CYCLE: does a formed tip load and unload well, repeatedly?
 
         Every real reload sends an UNSNIPPED formed tip back through the
@@ -1718,12 +1719,18 @@ class SASequences:
         Bowden each way: park the tip `back` mm behind the extruder sensor,
         where it can be seen in the tube, then load, form and pull back to
         there, `count` times, holding `hold` seconds after each pull.
+
+        recover=False stops at the first failed load with the filament left
+        exactly where it failed, so what happens next can be tried on that
+        state (Mike, 2026-10-14: "dont fully retract the filament as we want
+        it in the same position as when it failed").
         """
         return self._run_op(gcmd, path,
                             lambda g, p: self._tip_cycle_inner(
-                                g, p, count, back, hold, ov))
+                                g, p, count, back, hold, ov, recover))
 
-    def _tip_cycle_inner(self, gcmd, path, count, back, hold, ov=None):
+    def _tip_cycle_inner(self, gcmd, path, count, back, hold, ov=None,
+                         recover=True):
         owner  = self.owner
         motion = owner.motion
         tag = "SA_TIP_CYCLE T%d" % path
@@ -1810,6 +1817,16 @@ class SASequences:
             # load -- sync feed, fill + purge with the fill check
             if not self._load_into_nozzle(gcmd, path, is_printing):
                 failures += 1
+                if not recover:
+                    # The heater is already off and the path 'unknown' --
+                    # _load_into_nozzle did both on the way out.
+                    gcmd.respond_info(
+                        "%s: FAILED on the load — RECOVER=0, so it stops "
+                        "here with the filament where it failed. SA_LOAD "
+                        "TOOL=%d carries on from this position; SA_UNLOAD "
+                        "TOOL=%d brings it back to the gate."
+                        % (label, path, path))
+                    return
                 if failed_last:
                     gcmd.respond_info(
                         "%s: FAILED on the load again, straight after a "

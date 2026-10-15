@@ -2364,12 +2364,14 @@ class Autoloader:
         count = gcmd.get_int('COUNT', 5, minval=1, maxval=20)
         back  = gcmd.get_float('BACK', 100.0, minval=20.0, maxval=300.0)
         hold  = gcmd.get_float('HOLD', 20.0, minval=0.0, maxval=300.0)
+        recover = gcmd.get_int('RECOVER', 1, minval=0, maxval=1) == 1
         ov = self._tip_overrides(gcmd)
         if ov:
             gcmd.respond_info(
                 "SA_TIP_CYCLE: overrides %s"
                 % ", ".join("%s=%g" % (k, v) for k, v in sorted(ov.items())))
-        self.sequences.tip_cycle(gcmd, path, count, back, hold, ov or None)
+        self.sequences.tip_cycle(gcmd, path, count, back, hold, ov or None,
+                                 recover)
 
     def _cmd_form_tip(self, gcmd):
         """SA_FORM_TIP TOOL=N [overrides] — tip forming on its own, for tuning.
