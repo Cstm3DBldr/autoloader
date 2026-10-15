@@ -1075,9 +1075,11 @@ class SASequences:
             # the extruder sensor, which is upstream of the gears -- so it
             # cannot be what the toolhead sensor is reading. That is a piece
             # left in the toolhead, or a stuck sensor. It used to return
-            # True here and skip the push: on 2026-10-14 (T0 c5, after a
-            # stringy c4 tip left a piece at the sensor) the extruder then
-            # turned with nothing in its gears and the fill read 0.0mm.
+            # True here and skip the push: on 2026-10-14 (T0 c5) the
+            # extruder then turned with nothing in its gears and the fill
+            # read 0.0mm. Mike found the cause: string debris in the ball
+            # sensor's ball passage holding the ball triggered, with the
+            # filament path itself clear.
             motion.servo_disengage()
             self._remnant_seen = True
             gcmd.respond_info(
@@ -1085,8 +1087,10 @@ class SASequences:
                 "filament, but this filament has only reached the extruder "
                 "sensor, upstream of the gears. So something else is in the "
                 "toolhead — a piece of an old tip or string — or the sensor "
-                "is stuck. Stopped before the fill. SA_RECOVER TOOL=%d pushes "
-                "a piece out with this filament behind it." % (path, path))
+                "is stuck: debris in a ball sensor's ball passage holds it "
+                "triggered (2026-10-14, T0). Stopped before the fill. Look at "
+                "the sensor first; SA_RECOVER TOOL=%d pushes a real piece out "
+                "with this filament behind it." % (path, path))
             return False
 
         gcmd.respond_info(
@@ -3011,9 +3015,10 @@ class SASequences:
                 # piece from a stringy tip). The load would now stop on it.
                 gcmd.respond_info(
                     "SA: WARNING — path %d is parked, but its toolhead sensor "
-                    "still reads filament: a piece was left in the toolhead. "
-                    "SA_RECOVER TOOL=%d pushes it out with the roll behind "
-                    "it." % (path, path))
+                    "still reads filament: a piece was left in the toolhead, "
+                    "or the sensor is stuck (debris in a ball sensor's ball "
+                    "passage). Look at the sensor first; SA_RECOVER TOOL=%d "
+                    "pushes a real piece out." % (path, path))
         else:
             # `partial` is what the next load trusts as "at the datum" and
             # blasts from, so it is only written when the park confirmed
