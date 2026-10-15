@@ -344,7 +344,25 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       two pieces with almost no encoder motion, instead of extruding all of
       it and checking at the end. **3-try version BUILT 2026-10-14, not yet
       deployed or seen.** The Branch A purge-only check now counts as a
-      nozzle failure too, so it retries like the others. SA_TIP_CYCLE: recovers
+      nozzle failure too, so it retries like the others.
+      **Seen 2026-10-14, T0 ASA at 250C:** three full-speed fills failed in a
+      row at 19-22%, the third with a fresh snipped end -- so not the tip. The
+      new 10mm check stopped the third after 40mm instead of 88. Try 2 at 50%
+      (sync 25mm/s, fill 124mm/min = ~5mm3/s) loaded at 94%, and the console
+      said so. Then, loaded and hot, 30mm at the FULL rate (249mm/min): drive
+      motor off 97%, drive motor on and holding 93%; at half rate 97%. So it
+      is not the drive gear holding the filament and not the nozzle's
+      steady-state flow: **it is the first ~20mm into a just-reheated
+      nozzle at full rate** (the fills began 6-14s after the thermistor read
+      250). *Proposed, awaiting Mike:* fill (toolhead sensor -> tip) at half
+      rate, purge at full, sync at 25mm/s -- about +13s a load; or a soak
+      before the fill. Not separated yet: whether the sync speed or the fill
+      rate is the one that matters -- one load each way would say.
+      *Found on the way:* the profile's PURGE_SPEED is stored and shown but
+      the load never reads it -- same as UNLOAD_TEMP.
+      *Fixed on the way (8c26f4a):* a load from `unknown` whose grip check
+      put the filament on the extruder sensor refused with "will not blast
+      blind"; the sensor reading IS the datum, so it now carries on. SA_TIP_CYCLE: recovers
       and carries on, two in a row stop it. *Done when:* a real failure is
       seen recovering and retrying -- the original request follows. Mike,
       2026-10-12, after T0 and T2 both failed their 5th reload: "shouldn't we
