@@ -769,10 +769,15 @@ class SASequences:
                 # so the polled blast below runs from wherever the filament
                 # actually is -- measured, not assumed.
                 res = None
-        if from_unknown and not res:
+        if (from_unknown and not res
+                and not owner._extruder_sensor_active(path)):
             # No datum, so the polled blast below would be 98% of a Bowden
             # from an unknown point -- up to the whole length into the gears.
-            # Never fall back from an unknown start.
+            # Never fall back from an unknown start. Unless the sensor is
+            # already reading: then the filament is AT it, which is the datum.
+            # 2026-10-14, T0 left by hand just short of the sensor: the grip
+            # check's 10mm put it on the sensor, the blast rightly skipped,
+            # and this refused a load whose position was known.
             motion.servo_disengage()
             gcmd.respond_info(
                 "SA: ERROR — the sensor-stopped blast did not run, and path "
