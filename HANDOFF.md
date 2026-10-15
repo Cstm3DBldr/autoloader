@@ -260,9 +260,24 @@ Retired options in a user's config are reported as deprecated, not fatal.
   to make that the standard for every material, with 2 cooling moves, so
   only temperature varies per material. PLA and PETG are being re-measured.
 
-**Queued for the morning of 2026-10-13 (Mike: "no more tests for the night
-just que them till the morning").** Everything below is deployed; nothing has
-run on it yet.
+**2026-10-12 to 2026-10-14, on `printer-dev`** (TODO.md has the detail):
+- *Auto-recovery seen working* on a real failed load (T0 c4 62% -> recovered
+  -> 94%). **Changed 2026-10-14 to three tries, slower each time** (100 / 50
+  / 25% of the toolhead speed) with the fill checked every 10mm -- built and
+  pushed, NOT yet deployed or seen.
+- *ASA:* the skinny dip cleared 1/5 and 3/5; Prusa's slow cooling moves
+  (`COOL_MOVES=3 COOL_LEN=15 COOL_IN=5 COOL_OUT=2.5`) gave no string on every
+  cycle Mike saw (3/3). Its repeat on 2026-10-14 failed loads 1 and 2 at
+  20-22% with the extruder skipping, T0 at 250C -- under investigation; the
+  first suspect is something holding the filament upstream (drive gear not
+  fully releasing, or spool drag), since the lane moved ~19mm then nothing.
+- *Timer too close* now has its own record: docs/TIMER_TOO_CLOSE.md.
+- *Researched plans:* docs/MATERIAL_PLAN.md (every material), and the
+  auto-refill / multi-channel design in TODO.md (toolhead fallback ships on
+  Prusa XL and Snapmaker U1; Klipper does NOT stop on an undefined T9).
+
+**Queued 2026-10-13 (Mike: "no more tests for the night just que them till
+the morning").** Item 1 ran (above); 2, 4 and 5 are still open.
 1. ASA skinny dip on T0 (snip the end first): `SA_TIP_CYCLE TOOL=0 TEMP=190
    DIP=20` -- Mike watches each cycle's string. DIP=20 takes the tip from the
    35mm cooling zone to 15mm above the nozzle, about the top of the melt; try

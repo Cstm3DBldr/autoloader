@@ -183,6 +183,11 @@ Full automated load sequence for path N:
 7. Heat extruder to `load_temperature`.
 8. Extrude `nozzle_distance` mm to push filament to nozzle tip.
 9. Purge `purge_length` mm.
+10. Check it went in: the path's encoder must see at least 80% of the fill +
+    purge, checked every 10mm. A load that fails here (or stalls before the
+    toolhead sensor) turns its heater off, unloads itself to the gate and
+    tries again at 50%, then 25%, of the toolhead speed; after three failures
+    it stops and says so.
 
 ```
 SA_LOAD TOOL=0
@@ -681,4 +686,4 @@ The KlipperScreen panels are the strictest case — AGPL-3.0 — so anything
 derived from them carries that obligation regardless of what this file says.
 
 
-*Last updated: 2026-08-30 — added the printer backup script and the first systems-test log.*
+*Last updated: 2026-10-14 — SA_LOAD's fill check and three-try, slower-each-time retry.*
