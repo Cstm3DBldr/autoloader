@@ -259,6 +259,19 @@ speed from 40 to 160mm/s. Both diagnosed faults were real and both fixes held.
       tip_form_cooling_len_asa 15, tip_form_cool_speed_in_asa 5,
       tip_form_cool_speed_out_asa 2.5 (Mike: per material, "temp and cooling
       moves unless ... they need more work").
+      **Second Prusa run, 2026-10-14 23:08 (T0, from a Prusa tip at the gate):**
+      cycles 1-4 loaded at 94% with clears of 95%, at only 13-16s at 250C
+      before each fill -- the same gap as the 20% failures earlier that
+      night, so a short soak alone is NOT what failed those. Mike: cycles
+      1-3 no string, **cycle 4 a string**. Cycle 5 then found the toolhead
+      sensor "already active", skipped the push, and the fill read 0.0mm:
+      **the string had left a piece in the toolhead sensor** (Mike saw it).
+      SA_RECOVER pushed it out (70mm at 101%, then a 103mm purge). The next
+      Prusa tip formed cleanly (clear 98%) and **left another piece in the
+      sensor**. So a string is not cosmetic: when it snaps it can lodge in
+      the toolhead sensor and block the next load. 2 of the last 7 Prusa
+      tips did it. Both are now caught (9cf788e: the load stops and names
+      SA_RECOVER; the unload warns), but the cause -- the string -- is not.
       **EASE=50, same day: ruled out, and worse.** Strings on 2, 3 and 5 (1
       not seen); cycle 4 a bad load (fill 62%) -- **the first real failure
       the auto-recovery met, and it worked:** recovered to the gate, cycle 5
